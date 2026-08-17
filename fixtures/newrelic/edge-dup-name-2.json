@@ -1,0 +1,24 @@
+{
+  "name": "Team Dashboard",
+  "description": "SECOND file with this name",
+  "permissions": "PUBLIC_READ_WRITE",
+  "pages": [
+    {
+      "name": "Main",
+      "description": "",
+      "widgets": [
+        {
+          "title": "WIDGET FROM FILE TWO",
+          "layout": { "column": 1, "row": 1, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.billboard" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              { "accountId": 1234567, "query": "SELECT count(*) FROM Transaction WHERE appName = 'beta' SINCE 1 hour ago" }
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "variables": []
+}

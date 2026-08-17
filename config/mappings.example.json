@@ -1,0 +1,46 @@
+{
+  "_comment": "nr2grafana mapping config. Copy this file, adjust to your LGTM stack, and pass it with: nr2grafana convert --config my-mappings.json. Every key is optional; anything omitted falls back to built-in defaults (see: python3 -m nr2grafana example-config).",
+
+  "datasources": {
+    "prometheus": { "type": "prometheus", "uid": "${datasource}" },
+    "loki": { "type": "loki", "uid": "${loki_datasource}" },
+    "tempo": { "type": "tempo", "uid": "${tempo_datasource}" },
+    "newrelic": { "type": "nrgrafanaplugin-newrelic-datasource", "uid": "${newrelic_datasource}" }
+  },
+
+  "_comment_datasources": "Default '${...}' uids become `type: datasource` template variables that bind to your default Mimir/Loki/Tempo datasources on import. To pin panels to specific datasources instead, replace with concrete uids, e.g. \"uid\": \"mimir\".",
+
+  "label_map": {
+    "appName": "service_name",
+    "host": "instance",
+    "clusterName": "cluster",
+    "environment": "deployment_environment",
+    "myCustomAttribute": "my_custom_label"
+  },
+
+  "_comment_label_map": "New Relic attribute -> Prometheus/Loki label, applied in WHERE, FACET, and variable queries. Merged over a large built-in default map (appName->service_name, k8s.pod.name->pod, httpResponseCode->http_response_status_code, ...).",
+
+  "metric_map": {
+    "checkout.orders.completed": { "name": "checkout_orders_completed_total", "type": "counter" },
+    "queue.depth": { "name": "queue_depth", "type": "gauge" },
+    "payment.duration": { "name": "payment_duration_seconds", "type": "histogram", "unit": "s" }
+  },
+
+  "_comment_metric_map": "NR metric name -> Prometheus metric. 'type' (gauge|counter|histogram) controls how aggregations translate (rate/increase vs avg_over_time vs histogram_quantile). Anything not listed is name-normalized (dots->underscores) and type-guessed, flagged needs-review.",
+
+  "loki_stream_labels": ["service_name", "namespace", "cluster", "container", "pod", "level", "job", "instance"],
+  "loki_parser": "json",
+
+  "spanmetrics_flavor": "otel",
+  "_comment_spanmetrics": "otel = traces_span_metrics_duration_milliseconds/_calls_total (OTel collector spanmetrics connector default); otel-seconds = ..._duration_seconds; tempo = traces_spanmetrics_latency/_calls_total (Tempo metrics-generator); or set span_metrics overrides explicitly.",
+  "span_metrics": { "duration_histogram": "", "calls_total": "" },
+
+  "http_metrics_flavor": "semconv",
+  "_comment_http": "semconv = http_server_request_duration_seconds (current OTel semconv); legacy = http_server_duration_milliseconds (older agents).",
+
+  "passthrough_fallback": false,
+  "page_strategy": "rows",
+  "tags": ["newrelic-migration"],
+  "row_height_units": 3,
+  "extra_variables": []
+}

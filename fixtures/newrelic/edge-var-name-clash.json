@@ -1,0 +1,39 @@
+{
+  "name": "Variable Name Clash",
+  "description": "NR variable literally named 'datasource'",
+  "permissions": "PUBLIC_READ_WRITE",
+  "pages": [
+    {
+      "name": "Main",
+      "description": "",
+      "widgets": [
+        {
+          "title": "Count",
+          "layout": { "column": 1, "row": 1, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              { "accountId": 1234567, "query": "SELECT count(*) FROM Transaction WHERE appName = 'checkout' TIMESERIES SINCE 1 hour ago" }
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "variables": [
+    {
+      "name": "datasource",
+      "title": "Data source picker",
+      "type": "ENUM",
+      "nrqlQuery": null,
+      "items": [
+        { "title": "Kafka", "value": "kafka" },
+        { "title": "SQS", "value": "sqs" }
+      ],
+      "defaultValues": [],
+      "isMultiSelection": false,
+      "replacementStrategy": "STRING",
+      "options": { "ignoreTimeRange": false }
+    }
+  ]
+}

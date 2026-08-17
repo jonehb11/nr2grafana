@@ -1,0 +1,34 @@
+{
+  "name": "Where Or Probe",
+  "description": "OR in WHERE across different and same attributes",
+  "permissions": "PUBLIC_READ_WRITE",
+  "pages": [
+    {
+      "name": "OR cases",
+      "description": "",
+      "widgets": [
+        {
+          "title": "OR across different attrs",
+          "layout": { "column": 1, "row": 1, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              { "accountId": 1234567, "query": "SELECT count(*) FROM Transaction WHERE appName = 'checkout' OR host = 'web-1' TIMESERIES SINCE 1 hour ago" }
+            ]
+          }
+        },
+        {
+          "title": "OR on the same attr",
+          "layout": { "column": 7, "row": 1, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              { "accountId": 1234567, "query": "SELECT count(*) FROM Transaction WHERE appName = 'checkout' OR appName = 'payments' TIMESERIES SINCE 1 hour ago" }
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "variables": []
+}

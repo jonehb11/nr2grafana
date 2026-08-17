@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Convenience wrapper: run nr2grafana from anywhere.
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+exec env PYTHONPATH="$ROOT" python3 -m nr2grafana "$@"

@@ -1,0 +1,86 @@
+{
+  "guid": "MTIzNDU2N3xWSVp8REFTSEJPQVJEfDk4NzY1",
+  "name": "NerdGraph Exported Service",
+  "description": null,
+  "permissions": "PUBLIC_READ_ONLY",
+  "pages": [
+    {
+      "guid": "MTIzNDU2N3xWSVp8UEFHRXwxMTEx",
+      "name": "Overview",
+      "description": null,
+      "widgets": [
+        {
+          "id": "1001",
+          "title": "Throughput",
+          "layout": { "column": 1, "row": 1, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "linkedEntities": [
+            { "guid": "MTIzNDU2N3xBUE18QVBQTElDQVRJT058NTU1" }
+          ],
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [1234567],
+                "query": "SELECT rate(count(*), 1 minute) FROM Transaction WHERE appName = 'payments' TIMESERIES AUTO SINCE 1 hour ago"
+              }
+            ],
+            "legend": { "enabled": true }
+          }
+        },
+        {
+          "id": "1002",
+          "title": "Error count",
+          "layout": { "column": 7, "row": 1, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.billboard" },
+          "linkedEntities": [],
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [1234567, 7654321],
+                "query": "SELECT count(*) FROM TransactionError WHERE appName = 'payments' SINCE 1 hour ago"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "guid": "MTIzNDU2N3xWSVp8UEFHRXwyMjIy",
+      "name": "Infra",
+      "description": null,
+      "widgets": [
+        {
+          "id": "2001",
+          "title": "Host CPU",
+          "layout": { "column": 1, "row": 1, "width": 12, "height": 3 },
+          "visualization": { "id": "viz.area" },
+          "linkedEntities": null,
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [1234567],
+                "query": "SELECT average(cpuPercent) FROM SystemSample WHERE hostname LIKE 'payments-%' FACET hostname TIMESERIES SINCE 6 hours ago"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "variables": [
+    {
+      "name": "app",
+      "title": "Application",
+      "type": "NRQL",
+      "nrqlQuery": {
+        "accountIds": [1234567],
+        "query": "SELECT uniques(appName) FROM Transaction SINCE 1 day ago"
+      },
+      "items": null,
+      "defaultValues": null,
+      "isMultiSelection": true,
+      "replacementStrategy": "STRING",
+      "options": { "excluded": null, "ignoreTimeRange": false, "showApplyAction": false, "hiddenOnVariablesBar": false }
+    }
+  ]
+}

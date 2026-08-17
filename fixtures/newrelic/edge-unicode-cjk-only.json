@@ -1,0 +1,24 @@
+{
+  "name": "支付服务总览",
+  "description": "Name is entirely non-ASCII",
+  "permissions": "PUBLIC_READ_WRITE",
+  "pages": [
+    {
+      "name": "概览",
+      "description": "",
+      "widgets": [
+        {
+          "title": "吞吐量",
+          "layout": { "column": 1, "row": 1, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              { "accountId": 1234567, "query": "SELECT count(*) FROM Transaction WHERE appName = 'payments' TIMESERIES SINCE 1 hour ago" }
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "variables": []
+}

@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.DS_Store
+newrelic-dashboards/
+grafana-dashboards/
+
+# Site-specific mapping configs stay local (they encode your environment);
+# only the generic example ships with the repo.
+config/mappings.*.json
+!config/mappings.example.json

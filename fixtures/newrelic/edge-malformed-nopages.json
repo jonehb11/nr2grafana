@@ -1,0 +1,4 @@
+{
+  "name": "Alert Policy Export",
+  "policies": [{ "id": 1, "incident_preference": "PER_POLICY" }]
+}

@@ -1,0 +1,306 @@
+{
+  "name": "Checkout Service Overview",
+  "description": "Golden signals + logs and traces for the checkout service",
+  "permissions": "PUBLIC_READ_WRITE",
+  "pages": [
+    {
+      "name": "Golden Signals",
+      "description": "",
+      "widgets": [
+        {
+          "title": "Throughput",
+          "layout": { "column": 1, "row": 1, "width": 4, "height": 3 },
+          "linkedEntityGuids": null,
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountId": 1234567,
+                "query": "SELECT rate(count(*), 1 minute) FROM Transaction WHERE appName = 'checkout' TIMESERIES AUTO SINCE 1 hour ago"
+              }
+            ],
+            "legend": { "enabled": true },
+            "yAxisLeft": { "zero": true }
+          }
+        },
+        {
+          "title": "p95 / p99 Latency",
+          "layout": { "column": 5, "row": 1, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountId": 1234567,
+                "query": "SELECT percentile(duration, 95, 99) FROM Transaction WHERE appName = 'checkout' TIMESERIES SINCE 1 hour ago"
+              }
+            ],
+            "units": { "unit": "SECONDS" }
+          }
+        },
+        {
+          "title": "Error rate",
+          "layout": { "column": 9, "row": 1, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.billboard" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountId": 1234567,
+                "query": "SELECT percentage(count(*), WHERE httpResponseCode >= 500) FROM Transaction WHERE appName = 'checkout' SINCE 1 hour ago"
+              }
+            ],
+            "thresholds": [
+              { "alertSeverity": "WARNING", "value": 1 },
+              { "alertSeverity": "CRITICAL", "value": 5 }
+            ]
+          }
+        },
+        {
+          "title": "Requests by endpoint",
+          "layout": { "column": 1, "row": 4, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.pie" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountId": 1234567,
+                "query": "SELECT count(*) FROM Transaction WHERE appName = 'checkout' FACET name LIMIT 10 SINCE 1 hour ago"
+              }
+            ],
+            "facet": { "showOtherSeries": false }
+          }
+        },
+        {
+          "title": "Latency by endpoint",
+          "layout": { "column": 7, "row": 4, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.table" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountId": 1234567,
+                "query": "SELECT average(duration), percentile(duration, 95) FROM Transaction WHERE appName = 'checkout' FACET name LIMIT 25 SINCE 1 hour ago"
+              }
+            ],
+            "initialSorting": { "direction": "desc", "name": "name" }
+          }
+        },
+        {
+          "title": "Throughput this week vs last week",
+          "layout": { "column": 1, "row": 7, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountId": 1234567,
+                "query": "SELECT count(*) FROM Transaction WHERE appName = 'checkout' TIMESERIES 30 minutes SINCE 1 day ago COMPARE WITH 1 week ago"
+              }
+            ]
+          }
+        },
+        {
+          "title": "Apdex",
+          "layout": { "column": 7, "row": 7, "width": 3, "height": 3 },
+          "visualization": { "id": "viz.bullet" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountId": 1234567,
+                "query": "SELECT apdex(duration, t: 0.5) FROM Transaction WHERE appName = 'checkout' SINCE 1 hour ago"
+              }
+            ],
+            "limit": 1
+          }
+        },
+        {
+          "title": "Notes",
+          "layout": { "column": 10, "row": 7, "width": 3, "height": 3 },
+          "visualization": { "id": "viz.markdown" },
+          "rawConfiguration": {
+            "text": "### Checkout runbook\nSee [runbook](https://wiki.example.com/checkout) for escalation. Filter with {{env}}."
+          }
+        },
+        {
+          "title": "Checkout funnel",
+          "layout": { "column": 1, "row": 10, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.funnel" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountId": 1234567,
+                "query": "SELECT funnel(session, WHERE pageUrl LIKE '%/cart%' AS 'Cart', WHERE pageUrl LIKE '%/pay%' AS 'Pay') FROM PageView SINCE 1 day ago"
+              }
+            ]
+          }
+        },
+        {
+          "title": "Duration distribution",
+          "layout": { "column": 7, "row": 10, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.histogram" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountId": 1234567,
+                "query": "SELECT histogram(duration, 10, 20) FROM Transaction WHERE appName = 'checkout' SINCE 1 hour ago"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Logs",
+      "description": "",
+      "widgets": [
+        {
+          "title": "Error logs",
+          "layout": { "column": 1, "row": 1, "width": 8, "height": 4 },
+          "visualization": { "id": "logger.log-table-widget" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountId": 1234567,
+                "query": "SELECT * FROM Log WHERE service.name = 'checkout' AND level = 'error' AND message LIKE '%payment%' LIMIT 100"
+              }
+            ]
+          }
+        },
+        {
+          "title": "Log volume by level",
+          "layout": { "column": 9, "row": 1, "width": 4, "height": 4 },
+          "visualization": { "id": "viz.stacked-bar" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountId": 1234567,
+                "query": "SELECT count(*) FROM Log WHERE service.name = 'checkout' FACET level TIMESERIES SINCE 6 hours ago"
+              }
+            ]
+          }
+        },
+        {
+          "title": "Warn+error count",
+          "layout": { "column": 1, "row": 5, "width": 4, "height": 2 },
+          "visualization": { "id": "viz.billboard" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountId": 1234567,
+                "query": "SELECT count(*) FROM Log WHERE service.name = 'checkout' AND level IN ('warn', 'error') SINCE 1 hour ago"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Traces & Infra",
+      "description": "",
+      "widgets": [
+        {
+          "title": "Span p95 by operation",
+          "layout": { "column": 1, "row": 1, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountId": 1234567,
+                "query": "SELECT percentile(duration.ms, 95) FROM Span WHERE service.name = 'checkout' FACET name LIMIT 10 TIMESERIES SINCE 3 hours ago"
+              }
+            ]
+          }
+        },
+        {
+          "title": "Slow error traces",
+          "layout": { "column": 7, "row": 1, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.table" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountId": 1234567,
+                "query": "SELECT * FROM Span WHERE service.name = 'checkout' AND duration.ms > 500 AND error IS TRUE LIMIT 50"
+              }
+            ]
+          }
+        },
+        {
+          "title": "Host CPU",
+          "layout": { "column": 1, "row": 4, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.area" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountId": 1234567,
+                "query": "SELECT average(cpuPercent) FROM SystemSample WHERE hostname LIKE 'checkout-%' FACET hostname TIMESERIES SINCE 1 hour ago"
+              }
+            ]
+          }
+        },
+        {
+          "title": "Container restarts",
+          "layout": { "column": 7, "row": 4, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.bar" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountId": 1234567,
+                "query": "SELECT sum(restartCount) FROM K8sContainerSample WHERE clusterName = 'prod' FACET podName LIMIT 15 SINCE 1 day ago"
+              }
+            ]
+          }
+        },
+        {
+          "title": "Custom metric",
+          "layout": { "column": 1, "row": 7, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountId": 1234567,
+                "query": "FROM Metric SELECT sum(checkout.orders.completed) WHERE deployment.environment = 'prod' FACET k8s.namespace.name TIMESERIES SINCE 12 hours ago"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "variables": [
+    {
+      "name": "app",
+      "title": "Application",
+      "type": "NRQL",
+      "nrqlQuery": {
+        "accountIds": [1234567],
+        "query": "SELECT uniques(appName) FROM Transaction SINCE 1 day ago"
+      },
+      "items": null,
+      "defaultValues": [],
+      "isMultiSelection": true,
+      "replacementStrategy": "STRING",
+      "options": { "ignoreTimeRange": false }
+    },
+    {
+      "name": "env",
+      "title": "Environment",
+      "type": "ENUM",
+      "nrqlQuery": null,
+      "items": [
+        { "title": "Production", "value": "prod" },
+        { "title": "Staging", "value": "staging" }
+      ],
+      "defaultValues": [{ "value": { "string": "prod" } }],
+      "isMultiSelection": false,
+      "replacementStrategy": "STRING",
+      "options": { "ignoreTimeRange": false }
+    },
+    {
+      "name": "filter",
+      "title": "Free text",
+      "type": "STRING",
+      "nrqlQuery": null,
+      "items": null,
+      "defaultValues": [],
+      "isMultiSelection": false,
+      "replacementStrategy": "STRING",
+      "options": { "ignoreTimeRange": false }
+    }
+  ]
+}

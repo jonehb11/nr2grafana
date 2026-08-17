@@ -1,0 +1,40 @@
+{
+  "name": "Zahlungs-Dienst / Überwachung — 支付服务总览 (production & staging) ✨ extremely long dashboard name for uid safety testing ✨",
+  "description": "Unicode, slashes, 60+ chars in dashboard and page names",
+  "permissions": "PUBLIC_READ_WRITE",
+  "pages": [
+    {
+      "name": "概览 / overview — with a really really really long page name too",
+      "description": "",
+      "widgets": [
+        {
+          "title": "Throughput ✨",
+          "layout": { "column": 1, "row": 1, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              { "accountId": 1234567, "query": "SELECT count(*) FROM Transaction WHERE appName = 'payments' TIMESERIES SINCE 1 hour ago" }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "错误 / errors",
+      "description": "",
+      "widgets": [
+        {
+          "title": "Errors",
+          "layout": { "column": 1, "row": 1, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.billboard" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              { "accountId": 1234567, "query": "SELECT count(*) FROM TransactionError WHERE appName = 'payments' SINCE 1 hour ago" }
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "variables": []
+}

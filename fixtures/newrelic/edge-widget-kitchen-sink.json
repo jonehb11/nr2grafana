@@ -1,0 +1,240 @@
+{
+  "name": "Widget Kitchen Sink",
+  "description": "Adversarial widget matrix",
+  "permissions": "PUBLIC_READ_WRITE",
+  "pages": [
+    {
+      "name": "Everything",
+      "description": "",
+      "widgets": [
+        {
+          "title": "Overlaid avg + p95",
+          "layout": { "column": 1, "row": 1, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              { "accountId": 1234567, "query": "SELECT average(duration) FROM Transaction WHERE appName = 'checkout' TIMESERIES SINCE 1 hour ago" },
+              { "accountId": 1234567, "query": "SELECT percentile(duration, 95) FROM Transaction WHERE appName = 'checkout' TIMESERIES SINCE 1 hour ago" }
+            ]
+          }
+        },
+        {
+          "title": "Var eq unquoted",
+          "layout": { "column": 5, "row": 1, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              { "accountId": 1234567, "query": "SELECT count(*) FROM Transaction WHERE appName = {{app}} TIMESERIES SINCE 1 hour ago" }
+            ]
+          }
+        },
+        {
+          "title": "Var IN unquoted",
+          "layout": { "column": 9, "row": 1, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              { "accountId": 1234567, "query": "SELECT count(*) FROM Transaction WHERE appName IN ({{app}}) TIMESERIES SINCE 1 hour ago" }
+            ]
+          }
+        },
+        {
+          "title": "Var eq quoted",
+          "layout": { "column": 1, "row": 4, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              { "accountId": 1234567, "query": "SELECT count(*) FROM Transaction WHERE appName = '{{app}}' TIMESERIES SINCE 1 hour ago" }
+            ]
+          }
+        },
+        {
+          "title": "Var IN quoted",
+          "layout": { "column": 5, "row": 4, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              { "accountId": 1234567, "query": "SELECT count(*) FROM Transaction WHERE appName IN ('{{app}}') TIMESERIES SINCE 1 hour ago" }
+            ]
+          }
+        },
+        {
+          "title": "FACET cases",
+          "layout": { "column": 9, "row": 4, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              { "accountId": 1234567, "query": "SELECT count(*) FROM Transaction WHERE appName = 'checkout' FACET cases(WHERE duration < 0.1 AS 'fast', WHERE duration >= 0.1 AS 'slow') TIMESERIES SINCE 1 hour ago" }
+            ]
+          }
+        },
+        {
+          "title": "FACET buckets",
+          "layout": { "column": 1, "row": 7, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.bar" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              { "accountId": 1234567, "query": "SELECT count(*) FROM Transaction WHERE appName = 'checkout' FACET buckets(duration, 10, 20) SINCE 1 hour ago" }
+            ]
+          }
+        },
+        {
+          "title": "Unique users",
+          "layout": { "column": 5, "row": 7, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.billboard" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              { "accountId": 1234567, "query": "SELECT uniqueCount(userAgentName) FROM Transaction WHERE appName = 'checkout' SINCE 1 hour ago" }
+            ]
+          }
+        },
+        {
+          "title": "Latest queue depth",
+          "layout": { "column": 9, "row": 7, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              { "accountId": 1234567, "query": "FROM Metric SELECT latest(checkout.queue.depth) WHERE deployment.environment = 'prod' TIMESERIES SINCE 1 hour ago" }
+            ]
+          }
+        },
+        {
+          "title": "Backquoted dotted metric",
+          "layout": { "column": 1, "row": 10, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              { "accountId": 1234567, "query": "FROM Metric SELECT average(`checkout.cart.value`) WHERE deployment.environment = 'prod' TIMESERIES SINCE 3 hours ago" }
+            ]
+          }
+        },
+        {
+          "title": "IN with regex specials",
+          "layout": { "column": 5, "row": 10, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              { "accountId": 1234567, "query": "SELECT count(*) FROM Transaction WHERE name IN ('a.b', 'c+d') TIMESERIES SINCE 1 hour ago" }
+            ]
+          }
+        },
+        {
+          "title": "LIKE with regex metachars",
+          "layout": { "column": 9, "row": 10, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              { "accountId": 1234567, "query": "SELECT count(*) FROM Transaction WHERE appVersion LIKE '%v1.2 (beta)%' TIMESERIES SINCE 1 hour ago" }
+            ]
+          }
+        },
+        {
+          "title": "",
+          "layout": { "column": 1, "row": 13, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.billboard" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              { "accountId": 1234567, "query": "SELECT count(*) FROM Transaction WHERE appName = 'checkout' SINCE 30 minutes ago" }
+            ]
+          }
+        },
+        {
+          "title": "Raw JSON events",
+          "layout": { "column": 5, "row": 13, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.json" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              { "accountId": 1234567, "query": "SELECT * FROM Transaction WHERE appName = 'checkout' LIMIT 10 SINCE 1 hour ago" }
+            ]
+          }
+        },
+        {
+          "title": "Event feed",
+          "layout": { "column": 9, "row": 13, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.event-feed" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              { "accountId": 1234567, "query": "SELECT timestamp, message FROM InfrastructureEvent SINCE 1 day ago LIMIT 50" }
+            ]
+          }
+        },
+        {
+          "title": "Full width trend",
+          "layout": { "column": 1, "row": 16, "width": 12, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              { "accountId": 1234567, "query": "SELECT count(*) FROM Transaction WHERE appName = 'checkout' TIMESERIES SINCE 1 day ago" }
+            ]
+          }
+        },
+        {
+          "title": "Custom viz widget",
+          "layout": { "column": 1, "row": 19, "width": 4, "height": 3 },
+          "visualization": { "id": "abcd1234-ab12-cd34-ef56-abcdef123456.custom-viz" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              { "accountId": 1234567, "query": "SELECT count(*) FROM Transaction WHERE appName = 'checkout' TIMESERIES SINCE 1 hour ago" }
+            ]
+          }
+        },
+        {
+          "title": "Legacy metric chart",
+          "layout": { "column": 5, "row": 19, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.line" },
+          "rawConfiguration": {
+            "entityIds": [123456789],
+            "metrics": [ { "name": "Apdex", "values": ["score"] } ],
+            "duration": 1800000,
+            "facet": null
+          }
+        },
+        {
+          "title": "Bullet no limit",
+          "layout": { "column": 9, "row": 19, "width": 4, "height": 3 },
+          "visualization": { "id": "viz.bullet" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              { "accountId": 1234567, "query": "SELECT average(duration) FROM Transaction WHERE appName = 'checkout' SINCE 30 minutes ago" }
+            ]
+          }
+        },
+        {
+          "title": "Notes",
+          "layout": { "column": 1, "row": 22, "width": 6, "height": 3 },
+          "visualization": { "id": "viz.markdown" },
+          "rawConfiguration": {
+            "text": "## Env: {{env}}\nCurrent app filter: {{app}}. Escalate via [runbook](https://wiki.example.com/checkout)."
+          }
+        }
+      ]
+    }
+  ],
+  "variables": [
+    {
+      "name": "app",
+      "title": "Application",
+      "type": "NRQL",
+      "nrqlQuery": { "accountIds": [1234567], "query": "SELECT uniques(appName) FROM Transaction SINCE 1 day ago" },
+      "items": null,
+      "defaultValues": [],
+      "isMultiSelection": true,
+      "replacementStrategy": "STRING",
+      "options": { "ignoreTimeRange": false }
+    },
+    {
+      "name": "env",
+      "title": "Environment",
+      "type": "ENUM",
+      "nrqlQuery": null,
+      "items": [
+        { "title": "Production", "value": "prod" },
+        { "title": "Staging", "value": "staging" }
+      ],
+      "defaultValues": [{ "value": { "string": "prod" } }],
+      "isMultiSelection": false,
+      "replacementStrategy": "STRING",
+      "options": { "ignoreTimeRange": false }
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "name": "Logs Only With NRQL Var",
+  "description": "Only Loki widgets, but an NRQL variable that becomes a prometheus label_values query",
+  "permissions": "PUBLIC_READ_WRITE",
+  "pages": [
+    {
+      "name": "Logs",
+      "description": "",
+      "widgets": [
+        {
+          "title": "Service logs",
+          "layout": { "column": 1, "row": 1, "width": 12, "height": 4 },
+          "visualization": { "id": "logger.log-table-widget" },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              { "accountId": 1234567, "query": "SELECT * FROM Log WHERE service.name = 'checkout' LIMIT 50" }
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "variables": [
+    {
+      "name": "app",
+      "title": "Application",
+      "type": "NRQL",
+      "nrqlQuery": { "accountIds": [1234567], "query": "SELECT uniques(appName) FROM Transaction SINCE 1 day ago" },
+      "items": null,
+      "defaultValues": [],
+      "isMultiSelection": true,
+      "replacementStrategy": "STRING",
+      "options": { "ignoreTimeRange": false }
+    }
+  ]
+}

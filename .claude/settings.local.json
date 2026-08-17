@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git clone *)",
+      "WebFetch(domain:docs.newrelic.com)",
+      "WebSearch",
+      "WebFetch(domain:grafana.com)",
+      "Bash(curl -sL -o create-widgets.mdx https://raw.githubusercontent.com/newrelic/docs-website/develop/src/content/docs/apis/nerdgraph/examples/create-widgets-dashboards-api.mdx)",
+      "Bash(curl -sL -o nerdgraph-dashboards.mdx https://raw.githubusercontent.com/newrelic/docs-website/develop/src/content/docs/apis/nerdgraph/examples/nerdgraph-dashboards.mdx)",
+      "Bash(curl -sL -o template-vars.mdx https://raw.githubusercontent.com/newrelic/docs-website/develop/src/content/docs/query-your-data/explore-query-data/dashboards/dashboard-template-variables.mdx)",
+      "Bash(gh api *)",
+      "Bash(curl -s https://api.github.com/repos/newrelic/newrelic-grafana-plugin)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\({k:d.get\\(k\\) for k in ['archived','pushed_at','stargazers_count','open_issues_count']}\\)\")",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\({k:d.get\\(k\\) for k in ['archived','pushed_at','stargazers_count','open_issues_count','description']}\\)\")",
+      "Bash(curl -sL -o import-export.mdx https://raw.githubusercontent.com/newrelic/docs-website/develop/src/content/docs/query-your-data/explore-query-data/dashboards/dashboards-charts-import-export-data.mdx)",
+      "Bash(curl -sL -o export-import-api.mdx https://raw.githubusercontent.com/newrelic/docs-website/develop/src/content/docs/apis/nerdgraph/examples/export-import-dashboards-using-api.mdx)",
+      "Bash(curl -sL -o nerdgraph-intro.mdx https://raw.githubusercontent.com/newrelic/docs-website/develop/src/content/docs/apis/nerdgraph/get-started/introduction-new-relic-nerdgraph.mdx)",
+      "Bash(grep -n '```\\\\|replacementStrategy\\\\|defaultValues\\\\|isMultiSelection\\\\|nrqlQuery\\\\|\"type\"\\\\|excluded\\\\|ignoreTimeRange\\\\|showApplyAction' template-vars.mdx)",
+      "WebFetch(domain:opentelemetry.io)",
+      "Bash(curl -sL -o composed.json https://raw.githubusercontent.com/newrelic-experimental/nr-terraform-json-dashboard-examples/main/dashboards/composed_widgets.json.src)"
+    ]
+  }
+}
