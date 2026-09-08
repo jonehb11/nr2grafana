@@ -18,7 +18,7 @@ import getpass
 import json
 import os
 import sys
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .config import DEFAULT_CONFIG
 from .grafana.client import GrafanaClient, GrafanaError
@@ -250,7 +250,10 @@ class Wizard:
                     "🔄  Convert New Relic JSON → Grafana JSON",
                     "✅  Validate converted dashboards",
                     "🔎  Live-check queries against Mimir/Loki",
+                    "🧩  Check Grafana requirements",
+                    "📊  Test dashboards against Grafana (data pull)",
                     "📤  Import dashboards into Grafana",
+                    "🌐  Launch web UI",
                     "⚙️   Choose / create a mapping config",
                     "👋  Quit",
                 ])
@@ -268,8 +271,14 @@ class Wizard:
                 elif choice == 4:
                     self.flow_livecheck()
                 elif choice == 5:
-                    self.flow_import()
+                    self.flow_grafana_check()
                 elif choice == 6:
+                    self.flow_grafana_test()
+                elif choice == 7:
+                    self.flow_import()
+                elif choice == 8:
+                    self.flow_web()
+                elif choice == 9:
                     self.flow_config()
                 else:
                     print(dim("bye!"))
@@ -363,6 +372,14 @@ class Wizard:
                                   passthrough=passthrough)
         rc = cmd_convert(args)
         self.summarize_report(os.path.join(out, "migration-report.json"))
+        if rc == 0 and confirm(
+                "Package with requirements analysis? (per-dashboard dirs "
+                "with README, requirements.json and test.sh)"):
+            from .cli import cmd_analyze
+            arc = cmd_analyze(argparse.Namespace(inputs=[out], out=out,
+                                                 config=config))
+            print(green("✓ packages written → %s" % out) if arc == 0 else
+                  red("✗ packaging had problems (see above)"))
         return rc
 
     def summarize_report(self, report_path: str) -> None:
@@ -405,14 +422,20 @@ class Wizard:
             nxt = menu("Next step?", [
                 "Validate the converted dashboards",
                 "Live-check queries against Mimir/Loki",
+                "Check Grafana requirements",
+                "Test dashboards against Grafana (data pull)",
                 "Import into Grafana",
                 "Back to main menu",
-            ], default=3)
+            ], default=5)
             if nxt == 0:
                 self.flow_validate()
             elif nxt == 1:
                 self.flow_livecheck()
             elif nxt == 2:
+                self.flow_grafana_check()
+            elif nxt == 3:
+                self.flow_grafana_test()
+            elif nxt == 4:
                 self.flow_import()
             else:
                 return
@@ -458,6 +481,75 @@ class Wizard:
               % (green(str(passed)),
                  red(str(failed)) if failed else "0", skipped))
         return 1 if failed else 0
+
+    # -- live Grafana (requirements / data tests) ---------------------------
+
+    def _grafana_connection(self) -> Tuple[str, str]:
+        """Prompt for the Grafana URL + service-account token. The URL
+        is remembered between runs; the token never is."""
+        url = prompt("Grafana URL",
+                     self.recall("grafana_url", "http://localhost:3000"))
+        self.remember("grafana_url", url)
+        token = prompt_secret("Grafana service-account token",
+                              env_var="GRAFANA_TOKEN")
+        return url, token
+
+    def flow_grafana_check(self) -> int:
+        header("Check Grafana requirements")
+        print(dim("Verifies the datasources/plugins each packaged "
+                  "dashboard needs exist on a live Grafana instance. "
+                  "Needs packages from convert (with packaging) or "
+                  "'nr2grafana analyze'."))
+        src = prompt("Package dir or requirements.json",
+                     self.recall("convert_out", "./grafana-dashboards"),
+                     validator=lambda v: "" if os.path.exists(v)
+                     else "no such file or directory")
+        url, token = self._grafana_connection()
+        from .cli import cmd_grafana_check
+        rc = cmd_grafana_check(argparse.Namespace(
+            inputs=[src], grafana_url=url, grafana_token=token,
+            insecure=False))
+        if rc == 0:
+            print(green("✓ all requirements met"))
+        elif rc == 1:
+            print(red("✗ requirements missing (see fixes above)"))
+        return rc
+
+    def flow_grafana_test(self) -> int:
+        header("Test dashboards against Grafana (data pull)")
+        print(dim("Runs every panel query through Grafana's "
+                  "/api/ds/query and reports data / no-data / error per "
+                  "panel; results land in datatest-results.json."))
+        src = prompt("Package dir or dashboard JSON",
+                     self.recall("convert_out", "./grafana-dashboards"),
+                     validator=lambda v: "" if os.path.exists(v)
+                     else "no such file or directory")
+        url, token = self._grafana_connection()
+        from .cli import cmd_grafana_test
+        rc = cmd_grafana_test(argparse.Namespace(
+            inputs=[src], grafana_url=url, grafana_token=token,
+            insecure=False))
+        if rc == 0:
+            print(green("✓ no query errors"))
+        elif rc == 1:
+            print(red("✗ some queries errored (see above)"))
+        return rc
+
+    # -- web ui -------------------------------------------------------------
+
+    def flow_web(self) -> int:
+        header("Launch web UI")
+        print(dim("A localhost-only UI for the whole workflow (convert, "
+                  "test, edit queries, AI assistance). API keys entered "
+                  "there stay in process memory."))
+        port_raw = prompt("Port", self.recall("web_port", "8765"),
+                          validator=lambda v: "" if v.isdigit()
+                          else "enter a port number")
+        self.remember("web_port", port_raw)
+        from .cli import cmd_web
+        return cmd_web(argparse.Namespace(host="127.0.0.1",
+                                          port=int(port_raw),
+                                          no_browser=False))
 
     # -- import -------------------------------------------------------------
 
