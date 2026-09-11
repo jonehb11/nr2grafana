@@ -166,6 +166,12 @@ def translate_to_traceql(nq: NrqlQuery, cfg: Dict[str, Any]) -> Translation:
         t.note("no WHERE filters; this searches all traces", NEEDS_REVIEW)
     if isinstance(nq.limit, int):
         t.notes.append("limit:%d" % nq.limit)
+    if nq.facet:
+        t.note("FACET has no effect on a trace-search panel; grouping "
+               "dropped", NEEDS_REVIEW)
+    if nq.compare_with:
+        t.note("COMPARE WITH is not applicable to trace search; "
+               "comparison dropped", NEEDS_REVIEW)
     t.notes.append("panel-hint:traces")
     t.note("trace search results differ from NR raw span listings; "
            "Tempo returns matching traces/spans within the time range")

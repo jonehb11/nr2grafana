@@ -6,7 +6,7 @@ from typing import Any, Dict
 
 from ..nrql.parser import Func, NrqlParseError, Star, parse_nrql
 from .common import (
-    NEEDS_REVIEW, UNTRANSLATABLE, Translation, Untranslatable,
+    APPROXIMATE, NEEDS_REVIEW, UNTRANSLATABLE, Translation, Untranslatable,
     route_event_type,
 )
 from .logs import translate_to_logql
@@ -14,6 +14,42 @@ from .metrics import (
     nr_duration_to_grafana_range, translate_to_promql,
 )
 from .traces import translate_to_traceql
+
+
+def _interval_text(seconds: float) -> str:
+    n = int(seconds) if seconds == int(seconds) else seconds
+    if isinstance(n, int):
+        for div, unit in ((86400, "d"), (3600, "h"), (60, "m")):
+            if n % div == 0 and n >= div:
+                return "%d%s" % (n // div, unit)
+        return "%ds" % n
+    return "%gs" % n
+
+
+def _timing_notes(q, t) -> None:
+    """SLIDE BY / fixed TIMESERIES buckets / ORDER BY / unlimited FACET —
+    query-shape aspects Grafana handles differently; note them honestly."""
+    ts = q.timeseries
+    if ts is not None and ts.slide_by:
+        t.note("SLIDE BY %s (sliding aggregation windows) has no "
+               "equivalent; Grafana steps by the query interval, so the "
+               "series will look more stepped than in NR" % ts.slide_by,
+               APPROXIMATE)
+    if ts is not None and ts.interval_seconds:
+        t.notes.append(
+            "TIMESERIES %s: Grafana buckets by the query interval; set "
+            "the panel's 'Min interval' to %s to mirror NR bucketing"
+            % (_interval_text(ts.interval_seconds),
+               _interval_text(ts.interval_seconds)))
+    if q.facet and t.group_by and not isinstance(q.limit, int):
+        t.notes.append(
+            "FACET without LIMIT: NR returns the top 10 groups by "
+            "default, the translated query returns ALL groups — wrap in "
+            "topk(10, ...) if the cardinality is high")
+    if q.order_by is not None and t.group_by:
+        t.notes.append(
+            "ORDER BY is not preserved in the query; topk() sorts by "
+            "value — use panel sorting for other orderings")
 
 
 def translate_query(nrql_text: str, cfg: Dict[str, Any]) -> Translation:
@@ -47,6 +83,8 @@ def translate_query(nrql_text: str, cfg: Dict[str, Any]) -> Translation:
         t.note("NRQL fragment(s) not understood and DROPPED from the "
                "translation: %s — verify the query semantics"
                % "; ".join(repr(x) for x in q.extras), NEEDS_REVIEW)
+    if t.confidence != UNTRANSLATABLE:
+        _timing_notes(q, t)
     if len(q.from_) > 1:
         t.note("query selects FROM multiple event types (%s); only %r was "
                "translated" % (", ".join(q.from_), q.from_[0]), NEEDS_REVIEW)

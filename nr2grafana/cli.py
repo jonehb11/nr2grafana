@@ -7,7 +7,8 @@ Commands:
   analyze   (Re)generate requirements/packages for converted output
   validate  Statically validate Grafana dashboard JSON file(s)
   list      List dashboards visible to the API key
-  grafana   Live Grafana ops: check requirements, test data, import
+  grafana   Live Grafana ops: check requirements, test data, parity,
+            diagnose, heal, datasources, import
   changes   Change-log reports and config codification
   web       Localhost web UI for the whole workflow
 """
@@ -23,12 +24,17 @@ from typing import Any, Dict, List, Optional, Tuple
 from .artifacts import package_dashboard, write_index
 from .changelog import ChangeLog
 from .config import DEFAULT_CONFIG, load_config
+from .diagnose import diagnose
 from .grafana.builder import build_dashboards, slugify
 from .grafana.client import GrafanaError
-from .grafana.live import GrafanaLive
+from .grafana.live import (DS_TEMPLATES, GrafanaLive,
+                           build_datasource_payload)
 from .grafana.validate import validate_dashboard
 from .model import parse_nr_dashboard
 from .nerdgraph import NerdGraphClient, NerdGraphError
+from .parity import readiness, run_parity
+from .remediate import auto_heal
+from .samples import collect_samples, review_summary
 from .requirements import analyze_dashboard, summarize
 from .store import Store, StoreError
 
@@ -36,7 +42,7 @@ from .store import Store, StoreError
 # package directories; never treated as dashboards to analyze/import.
 _ARTIFACT_NAMES = frozenset([
     "migration-report.json", "requirements.json", "widget-report.json",
-    "datatest.json", "datatest-results.json",
+    "datatest.json", "datatest-results.json", "samples.json",
 ])
 
 
@@ -705,6 +711,525 @@ def cmd_grafana_import(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# grafana parity / diagnose / heal / datasources
+# ---------------------------------------------------------------------------
+
+def _sidecar_path(dash_path: str, package_name: str, flat_suffix: str) \
+        -> str:
+    """Path for a per-dashboard result file: <pkg>/<package_name> for
+    package dirs, <stem>.<flat_suffix> next to flat dashboard files."""
+    base = os.path.basename(dash_path)
+    d = os.path.dirname(os.path.abspath(dash_path))
+    if base == "dashboard.json":
+        return os.path.join(d, package_name)
+    stem = base[:-len(".json")] if base.endswith(".json") else base
+    return os.path.join(d, "%s.%s" % (stem, flat_suffix))
+
+
+def _load_json_soft(path: str) -> Any:
+    """Load JSON, returning None when absent or unreadable."""
+    if not os.path.isfile(path):
+        return None
+    try:
+        return _load_json(path)
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _package_dir_of(dash_path: str) -> str:
+    """The package dir of a dashboard.json path, '' for flat files."""
+    if os.path.basename(dash_path) == "dashboard.json":
+        return os.path.dirname(os.path.abspath(dash_path))
+    return ""
+
+
+def _widget_report_for(dash_path: str) -> List[Dict[str, Any]]:
+    """Best-effort widget report for a dashboard file: the package's
+    widget-report.json, else the migration-report.json entry next to
+    the file (or next to the package dir)."""
+    base = os.path.basename(dash_path)
+    d = os.path.dirname(os.path.abspath(dash_path))
+    if base == "dashboard.json":
+        loaded = _load_json_soft(os.path.join(d, "widget-report.json"))
+        if isinstance(loaded, list):
+            return loaded
+        rep_dir, key = os.path.dirname(d), os.path.basename(d)
+    else:
+        rep_dir, key = d, base
+    rep = _load_json_soft(os.path.join(rep_dir,
+                                       "migration-report.json"))
+    if isinstance(rep, dict):
+        for entry in rep.get("reports") or []:
+            out = entry.get("output") or ""
+            name = os.path.basename(out)
+            if name == "dashboard.json":
+                name = os.path.basename(os.path.dirname(out))
+            if name == key:
+                widgets = entry.get("widgets")
+                if isinstance(widgets, list):
+                    return widgets
+    return []
+
+
+def _nr_account_ids(args: argparse.Namespace,
+                    widget_report: List[Dict[str, Any]]) -> List[int]:
+    """NR account ids for parity: --account-id flags first, then the
+    NEW_RELIC_ACCOUNT_ID env var (comma-separated), then any ids
+    recorded in the widget report."""
+    raw: List[str] = list(getattr(args, "account_id", []) or [])
+    if not raw:
+        env = os.environ.get("NEW_RELIC_ACCOUNT_ID", "")
+        raw = [x for x in env.split(",") if x.strip()]
+    ids: List[int] = []
+    for v in raw:
+        try:
+            ids.append(int(str(v).strip()))
+        except ValueError:
+            _err("ignoring non-numeric account id %r" % v)
+    if ids:
+        return ids
+    seen = set()
+    for w in widget_report or []:
+        for v in (w.get("account_ids") or w.get("accountIds") or []):
+            try:
+                seen.add(int(v))
+            except (TypeError, ValueError):
+                pass
+    return sorted(seen)
+
+
+def _save_artifact_soft(store: Optional[Store], slug: str, kind: str,
+                        data: Dict[str, Any]) -> None:
+    if store is None:
+        return
+    try:
+        store.save_artifact(slug, kind, data)
+    except (StoreError, ValueError):
+        pass
+
+
+def cmd_grafana_parity(args: argparse.Namespace) -> int:
+    """Compare real data: original NRQL via NerdGraph vs the translated
+    query via Grafana, per panel target. Exit 1 only on gf-error
+    panels (the translated query itself failed)."""
+    files = _collect_dashboard_files(args.inputs)
+    if not files:
+        _err("no dashboard JSON files found")
+        return 2
+    client = _grafana_live(args)
+    nr = NerdGraphClient(_api_key(args), region=args.region)
+    store = _open_store_soft()
+    gf_errors = 0
+    for path in files:
+        try:
+            dash = _load_json(path)
+        except (json.JSONDecodeError, OSError) as e:
+            _err("%s: %s" % (path, e))
+            gf_errors += 1
+            continue
+        report_widgets = _widget_report_for(path)
+        aids = _nr_account_ids(args, report_widgets)
+        if not aids:
+            try:
+                aids = nr.list_account_ids()
+            except NerdGraphError:
+                aids = []
+            if aids:
+                print("note: no account id recorded; trying the "
+                      "key's %d visible account(s): %s"
+                      % (len(aids), ", ".join(map(str, aids))),
+                      file=sys.stderr)
+        if not aids:
+            print("note: no New Relic account id known -- pass "
+                  "--account-id or set NEW_RELIC_ACCOUNT_ID (NR side "
+                  "will be skipped)", file=sys.stderr)
+        print("%s:" % (dash.get("title") or path), file=sys.stderr)
+        try:
+            par = run_parity(nr, aids, client, dash, report_widgets,
+                             frm=args.frm, to=args.to,
+                             log=lambda m: print(m, file=sys.stderr))
+        except GrafanaError as e:
+            _err(str(e))
+            if store is not None:
+                store.close()
+            return 1
+        res_path = _sidecar_path(path, "parity-results.json",
+                                 "parity-results.json")
+        _write_json(res_path, par)
+        print("  results -> %s" % res_path, file=sys.stderr)
+        _save_artifact_soft(store, _dashboard_slug(path), "parity", par)
+
+        for row in par.get("panels") or []:
+            print("  %-15s [%s] %-32s %s"
+                  % (row.get("verdict", "?"), row.get("refId", "?"),
+                     (row.get("panel_title") or "")[:32],
+                     row.get("detail", "")))
+        summary = par.get("summary") or {}
+        print("\nscore %s/100  (%s)"
+              % (par.get("score"),
+                 ", ".join("%d %s" % (v, k)
+                           for k, v in sorted(summary.items()))
+                 or "no panels compared"))
+
+        pkg_dir = _package_dir_of(path)
+        check_rows = None
+        req = _load_json_soft(os.path.join(pkg_dir,
+                                           "requirements.json")) \
+            if pkg_dir else None
+        if isinstance(req, dict):
+            try:
+                check_rows = client.check_requirements(req)
+            except GrafanaError:
+                check_rows = None
+        tests = _load_json_soft(_sidecar_path(
+            path, "datatest-results.json", "datatest-results.json"))
+        test_rows = tests.get("results") if isinstance(tests, dict) \
+            else None
+        ready = readiness(par, check_rows=check_rows,
+                          test_rows=test_rows)
+        print("readiness: %s (%s/100)" % (ready.get("grade"),
+                                          ready.get("score")))
+        for reason in ready.get("reasons") or []:
+            print("  - %s" % reason)
+        gf_errors += int(summary.get("gf-error") or 0)
+    if store is not None:
+        store.close()
+    return 1 if gf_errors else 0
+
+
+def cmd_grafana_samples(args: argparse.Namespace) -> int:
+    """Pull raw samples from both sides for human review: NR events/
+    rows via NerdGraph vs Loki log lines / Prometheus datapoints via
+    /api/ds/query. Writes samples.json next to each dashboard."""
+    files = _collect_dashboard_files(args.inputs)
+    if not files:
+        _err("no dashboard JSON files found")
+        return 2
+    client = _grafana_live(args)
+    nr = _optional_nerdgraph(args)
+    if nr is None:
+        print("note: no New Relic API key -- the NR side of each "
+              "sample will be skipped (pass --api-key or set "
+              "NEW_RELIC_API_KEY)", file=sys.stderr)
+    store = _open_store_soft()
+    rc = 0
+    for path in files:
+        try:
+            dash = _load_json(path)
+        except (json.JSONDecodeError, OSError) as e:
+            _err("%s: %s" % (path, e))
+            rc = 1
+            continue
+        report_widgets = _widget_report_for(path)
+        aids = _nr_account_ids(args, report_widgets)
+        if nr is not None and not aids:
+            try:
+                aids = nr.list_account_ids()
+            except NerdGraphError:
+                aids = []
+        print("%s:" % (dash.get("title") or path), file=sys.stderr)
+        try:
+            rep = collect_samples(nr, aids, client, dash,
+                                  report_widgets, frm=args.frm,
+                                  to=args.to, limit=args.limit,
+                                  log=lambda m: print(m,
+                                                      file=sys.stderr))
+        except GrafanaError as e:
+            _err(str(e))
+            if store is not None:
+                store.close()
+            return 1
+        res_path = _sidecar_path(path, "samples.json", "samples.json")
+        _write_json(res_path, rep)
+        print("  samples -> %s" % res_path, file=sys.stderr)
+        slug = _dashboard_slug(path)
+        _save_artifact_soft(store, slug, "samples", rep)
+
+        for row in rep.get("panels") or []:
+            nrs = row.get("nr") or {}
+            gfs = row.get("grafana") or {}
+            print("  %-32s [%s]  NR:%s(%d)  Grafana:%s(%d)"
+                  % ((row.get("panel_title") or "(untitled)")[:32],
+                     row.get("refId") or "?",
+                     nrs.get("kind", "?"),
+                     len(nrs.get("samples") or []),
+                     gfs.get("kind", "?"),
+                     len(gfs.get("samples") or [])))
+            preview = _sample_preview(nrs)
+            if preview:
+                print("      nr> %s" % preview)
+            preview = _sample_preview(gfs)
+            if preview:
+                print("      gf> %s" % preview)
+        if store is not None:
+            summ = review_summary(store, slug)
+            reviewed = (summ.get("confirmed", 0)
+                        + summ.get("rejected", 0)
+                        + summ.get("unsure", 0))
+            if reviewed:
+                print("review: %d confirmed, %d rejected, %d unsure, "
+                      "%s unreviewed"
+                      % (summ.get("confirmed", 0),
+                         summ.get("rejected", 0),
+                         summ.get("unsure", 0),
+                         summ.get("unreviewed", "?")))
+            else:
+                print("review: none yet -- confirm or reject each "
+                      "panel in the web UI (Panels tab) so readiness "
+                      "can report human sign-off", file=sys.stderr)
+    if store is not None:
+        store.close()
+    return rc
+
+
+def _sample_preview(side: Dict[str, Any]) -> str:
+    """One-line preview of a sample side for terminal output."""
+    kind = side.get("kind", "")
+    samples = side.get("samples") or []
+    if kind == "error":
+        return "ERROR: %s" % (side.get("error") or "")[:90]
+    if not samples:
+        return ""
+    first = samples[0]
+    if kind == "logs":
+        return str(first.get("line", ""))[:90]
+    if kind == "events":
+        msg = first.get("message")
+        if msg is not None:
+            return str(msg)[:90]
+        return ", ".join("%s=%s" % (k, v)
+                         for k, v in list(first.items())[:4])[:90]
+    if kind == "points":
+        pts = first.get("points") or []
+        return "%d point(s), last %s" % (
+            len(pts), pts[-1][1] if pts else "?")
+    return str(first)[:90]
+
+
+def _optional_nerdgraph(args: argparse.Namespace) \
+        -> Optional[NerdGraphClient]:
+    """A NerdGraph client when a key is available, else None (the
+    NR-side checks simply degrade)."""
+    key = getattr(args, "api_key", "") \
+        or os.environ.get("NEW_RELIC_API_KEY", "")
+    if not key:
+        return None
+    return NerdGraphClient(key, region=getattr(args, "region", "US"))
+
+
+def cmd_grafana_diagnose(args: argparse.Namespace) -> int:
+    """Root-cause every failure layer by layer; exit 1 on blockers."""
+    files = _collect_dashboard_files(args.inputs)
+    if not files:
+        _err("no dashboard JSON files found")
+        return 2
+    client = _grafana_live(args)
+    nr = _optional_nerdgraph(args)
+    cfg: Dict[str, Any] = {}
+    try:
+        cfg = load_config(getattr(args, "config", "") or "")
+    except (FileNotFoundError, json.JSONDecodeError) as e:
+        _err(str(e))
+        return 2
+    store = _open_store_soft()
+    blockers = 0
+    for path in files:
+        try:
+            dash = _load_json(path)
+        except (json.JSONDecodeError, OSError) as e:
+            _err("%s: %s" % (path, e))
+            blockers += 1
+            continue
+        pkg_dir = _package_dir_of(path)
+        req = _load_json_soft(os.path.join(
+            pkg_dir, "requirements.json")) if pkg_dir else None
+        tests = _load_json_soft(_sidecar_path(
+            path, "datatest-results.json", "datatest-results.json"))
+        test_rows = tests.get("results") if isinstance(tests, dict) \
+            else None
+        par = _load_json_soft(_sidecar_path(
+            path, "parity-results.json", "parity-results.json"))
+        print("%s:" % (dash.get("title") or path), file=sys.stderr)
+        diag = diagnose(client, nr=nr, dash=dash, requirements=req,
+                        test_results=test_rows, parity=par, cfg=cfg,
+                        log=lambda m: print(m, file=sys.stderr))
+        res_path = _sidecar_path(path, "diagnosis.json",
+                                 "diagnosis.json")
+        _write_json(res_path, diag)
+        print("  diagnosis -> %s" % res_path, file=sys.stderr)
+        _save_artifact_soft(store, _dashboard_slug(path), "diagnosis",
+                            diag)
+
+        findings = diag.get("findings") or []
+        if not findings:
+            print("no problems found")
+        for f in findings:
+            where = ""
+            if f.get("panel_id") is not None:
+                where = " panel %s:" % f["panel_id"]
+            print("  %-8s %-11s%s %s"
+                  % (f.get("severity", "?"), f.get("area", ""),
+                     where, f.get("problem", "")))
+            fix = f.get("fix") or {}
+            if fix.get("description"):
+                print("           fix (%s): %s"
+                      % (fix.get("kind", "none"), fix["description"]))
+        blockers += int((diag.get("summary") or {}).get("blocker")
+                        or 0)
+    if store is not None:
+        store.close()
+    if blockers:
+        print("\n%d blocker(s) found (see fixes above)" % blockers,
+              file=sys.stderr)
+    return 1 if blockers else 0
+
+
+def cmd_grafana_heal(args: argparse.Namespace) -> int:
+    """Auto-heal: test -> diagnose -> apply safe fixes -> re-test."""
+    files = _collect_dashboard_files(args.inputs)
+    if not files:
+        _err("no dashboard JSON files found")
+        return 2
+    client = _grafana_live(args)
+    nr = _optional_nerdgraph(args)
+    store = _open_store_soft()
+    clog = ChangeLog(store) if store is not None else None
+    rc = 0
+    for path in files:
+        try:
+            dash = _load_json(path)
+        except (json.JSONDecodeError, OSError) as e:
+            _err("%s: %s" % (path, e))
+            rc = 1
+            continue
+        pkg_dir = _package_dir_of(path)
+        req = _load_json_soft(os.path.join(
+            pkg_dir, "requirements.json")) if pkg_dir else None
+        slug = _dashboard_slug(path)
+        print("%s:" % (dash.get("title") or path), file=sys.stderr)
+        result = auto_heal(client, nr, dash, _widget_report_for(path),
+                           req or {}, slug, pkg_dir, changelog=clog,
+                           max_rounds=getattr(args, "max_rounds", 3),
+                           log=lambda m: print(m, file=sys.stderr),
+                           push=bool(getattr(args, "push", False)))
+        for rnd in result.get("rounds") or []:
+            tests_str = ", ".join(
+                "%d %s" % (v, k)
+                for k, v in sorted((rnd.get("tests") or {}).items())) \
+                or "no targets"
+            print("round %d: %s; %d finding(s), %d fixed"
+                  % (rnd.get("round", 0), tests_str,
+                     rnd.get("findings", 0), rnd.get("fixed", 0)))
+        print("%d fix(es) applied, %d finding(s) remaining%s"
+              % (result.get("fixed", 0),
+                 len(result.get("remaining_findings") or []),
+                 " (converged)" if result.get("converged") else ""))
+        if result.get("fixed") and not pkg_dir:
+            # flat file: apply_fix only edited the in-memory dash
+            _write_json(path, dash)
+            print("  updated %s" % path, file=sys.stderr)
+        _save_artifact_soft(store, slug, "heal", result)
+        if result.get("error"):
+            _err(result["error"])
+            rc = 1
+    if store is not None:
+        store.close()
+    return rc
+
+
+def cmd_grafana_datasources(args: argparse.Namespace) -> int:
+    """List the instance's datasources with a live health check."""
+    client = _grafana_live(args)
+    try:
+        dss = client.datasources()
+    except GrafanaError as e:
+        _err(str(e))
+        return 1
+    if not dss:
+        print("no datasources configured", file=sys.stderr)
+        return 0
+    print("%-10s %-24s %-28s %-8s %s"
+          % ("HEALTH", "NAME", "TYPE", "DEFAULT", "UID"))
+    for ds in dss:
+        uid = ds.get("uid") or ""
+        health = {"status": "unknown", "message": ""}
+        if uid:
+            health = client.datasource_health(uid)
+        print("%-10s %-24s %-28s %-8s %s"
+              % (health.get("status", "?"), ds.get("name", ""),
+                 ds.get("type", ""),
+                 "yes" if ds.get("isDefault") else "",
+                 uid))
+        if health.get("status") not in ("ok", "unknown") \
+                and health.get("message"):
+            print("           %s" % health["message"])
+    return 0
+
+
+def cmd_grafana_add_datasource(args: argparse.Namespace) -> int:
+    """Create a datasource from a DS_TEMPLATES form spec."""
+    tpl = DS_TEMPLATES.get(args.type)
+    if tpl is None:
+        _err("unknown datasource type %r (known: %s)"
+             % (args.type, ", ".join(sorted(DS_TEMPLATES))))
+        return 2
+    values: Dict[str, str] = {}
+    for spec in getattr(args, "set_values", []) or []:
+        if "=" not in spec:
+            _err("--set expects field=value, got %r" % spec)
+            return 2
+        key, val = spec.split("=", 1)
+        values[key.strip()] = val
+    if sys.stdin.isatty() and not getattr(args, "no_prompt", False):
+        import getpass
+        for field in tpl["fields"]:
+            if field.get("secret") and not values.get(field["name"]):
+                val = getpass.getpass(
+                    "%s (%s, blank to skip): "
+                    % (field.get("label", field["name"]),
+                       field["name"]))
+                if val:
+                    values[field["name"]] = val
+    try:
+        payload = build_datasource_payload(args.type, args.name,
+                                           values)
+    except GrafanaError as e:
+        _err(str(e))
+        print("fields for %s:" % args.type, file=sys.stderr)
+        for field in tpl["fields"]:
+            print("  --set %s=...  %s%s" % (
+                field["name"], field.get("label", ""),
+                " (required)" if field.get("required") else ""),
+                file=sys.stderr)
+        if tpl.get("notes"):
+            print("note: %s" % tpl["notes"], file=sys.stderr)
+        return 2
+    client = _grafana_live(args)
+    try:
+        resp = client.create_datasource(payload)
+    except GrafanaError as e:
+        _err("creating datasource failed: %s (an Admin service-"
+             "account token is required)" % e)
+        return 1
+    created = resp.get("datasource") if isinstance(resp, dict) else None
+    if not isinstance(created, dict):
+        created = resp if isinstance(resp, dict) else {}
+    uid = created.get("uid") or ""
+    health = {"status": "unknown", "message": "no uid returned"}
+    if uid:
+        health = client.datasource_health(uid)
+    print("created datasource %r (type %s, uid %s)"
+          % (args.name, tpl["plugin_id"], uid or "?"))
+    print("health: %s%s"
+          % (health.get("status", "?"),
+             " -- " + health["message"] if health.get("message")
+             else ""))
+    if tpl.get("notes"):
+        print("note: %s" % tpl["notes"], file=sys.stderr)
+    return 1 if health.get("status") == "error" else 0
+
+
+# ---------------------------------------------------------------------------
 # changes subcommands
 # ---------------------------------------------------------------------------
 
@@ -887,6 +1412,110 @@ def main(argv: List[str] = None) -> int:
                         help="package dir(s) or dashboard JSON file(s)")
     add_grafana_args(g_test)
     g_test.set_defaults(func=cmd_grafana_test)
+
+    g_par = gsub.add_parser(
+        "parity",
+        help="compare real data New Relic vs Grafana per panel "
+             "(original NRQL via NerdGraph vs translated query via "
+             "/api/ds/query); exit 1 only on Grafana query errors",
+        epilog="Tip: 'grafana samples' pulls raw rows/log lines from "
+               "both sides so a human can sign off panel by panel.")
+    g_par.add_argument("inputs", nargs="+",
+                       help="package dir(s) or dashboard JSON file(s)")
+    add_grafana_args(g_par)
+    add_nr_args(g_par)
+    g_par.add_argument("--account-id", "-a", action="append",
+                       default=[], dest="account_id",
+                       help="New Relic account id to run NRQL against "
+                            "(repeatable); or set "
+                            "NEW_RELIC_ACCOUNT_ID (comma-separated)")
+    g_par.add_argument("--from", dest="frm", default="now-1h",
+                       help="range start (default: %(default)s)")
+    g_par.add_argument("--to", dest="to", default="now",
+                       help="range end (default: %(default)s)")
+    g_par.set_defaults(func=cmd_grafana_parity)
+
+    g_smp = gsub.add_parser(
+        "samples",
+        help="pull raw data samples from BOTH sides (New Relic "
+             "events/rows via NerdGraph, Grafana log lines/"
+             "datapoints) for human side-by-side sign-off; writes "
+             "samples.json next to each dashboard")
+    g_smp.add_argument("inputs", nargs="+",
+                       help="package dir(s) or dashboard JSON "
+                            "file(s)")
+    add_grafana_args(g_smp)
+    add_nr_args(g_smp)
+    g_smp.add_argument("--account-id", "-a", action="append",
+                       default=[], dest="account_id",
+                       help="New Relic account id to run NRQL "
+                            "against (repeatable); or set "
+                            "NEW_RELIC_ACCOUNT_ID (comma-separated)")
+    g_smp.add_argument("--from", dest="frm", default="now-1h",
+                       help="range start (default: %(default)s)")
+    g_smp.add_argument("--to", dest="to", default="now",
+                       help="range end (default: %(default)s)")
+    g_smp.add_argument("--limit", type=int, default=5,
+                       help="max samples per side per panel "
+                            "(default: %(default)s)")
+    g_smp.set_defaults(func=cmd_grafana_samples)
+
+    g_diag = gsub.add_parser(
+        "diagnose",
+        help="root-cause failing/empty panels (auth, datasources, "
+             "metric/label names, pipeline, config); exit 1 on "
+             "blockers")
+    g_diag.add_argument("inputs", nargs="+",
+                        help="package dir(s) or dashboard JSON "
+                             "file(s)")
+    add_grafana_args(g_diag)
+    add_nr_args(g_diag)
+    g_diag.add_argument("--config", "-c", default="",
+                        help="mapping config JSON used for the "
+                             "conversion (improves suggestions)")
+    g_diag.set_defaults(func=cmd_grafana_diagnose)
+
+    g_heal = gsub.add_parser(
+        "heal",
+        help="auto-heal loop: test -> diagnose -> apply safe fixes "
+             "(high-confidence query edits, config overlays) -> "
+             "re-test")
+    g_heal.add_argument("inputs", nargs="+",
+                        help="package dir(s) or dashboard JSON "
+                             "file(s)")
+    add_grafana_args(g_heal)
+    add_nr_args(g_heal)
+    g_heal.add_argument("--push", action="store_true",
+                        help="push fixed dashboards to Grafana "
+                             "(default: local files only)")
+    g_heal.add_argument("--max-rounds", type=int, default=3,
+                        dest="max_rounds",
+                        help="test/fix rounds (default: %(default)s)")
+    g_heal.set_defaults(func=cmd_grafana_heal)
+
+    g_ds = gsub.add_parser(
+        "datasources",
+        help="list the instance's datasources with live health")
+    add_grafana_args(g_ds)
+    g_ds.set_defaults(func=cmd_grafana_datasources)
+
+    g_add = gsub.add_parser(
+        "add-datasource",
+        help="create a datasource from a guided template "
+             "(prometheus, loki, tempo, cloudwatch, stackdriver, "
+             "azure monitor, new relic)")
+    g_add.add_argument("--type", "-t", required=True,
+                       help="datasource type (one of: %s)"
+                            % ", ".join(sorted(DS_TEMPLATES)))
+    g_add.add_argument("--name", "-n", required=True,
+                       help="datasource name in Grafana")
+    g_add.add_argument("--set", action="append", default=[],
+                       dest="set_values", metavar="FIELD=VALUE",
+                       help="template field value (repeatable); "
+                            "omitted secret fields are prompted for "
+                            "on a terminal")
+    add_grafana_args(g_add)
+    g_add.set_defaults(func=cmd_grafana_add_datasource)
 
     g_imp = gsub.add_parser(
         "import", help="import dashboards into a live Grafana instance")

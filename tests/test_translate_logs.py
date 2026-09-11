@@ -165,11 +165,90 @@ class AggregationTests(unittest.TestCase):
         t = tr("SELECT average(*) FROM Log WHERE service.name = 'x'")
         self.assertEqual(t.confidence, "untranslatable")
 
-    def test_compare_with_noted_as_dropped(self):
+    def test_compare_with_becomes_offset_target(self):
         t = tr("SELECT count(*) FROM Log WHERE service.name = 'x' "
                "TIMESERIES COMPARE WITH 1 day ago")
+        self.assertEqual(
+            t.expr, 'sum(count_over_time({service_name="x"} [$__auto]))')
+        self.assertEqual(len(t.extra), 1)
+        self.assertEqual(
+            t.extra[0].expr,
+            'sum(count_over_time({service_name="x"} [$__auto] offset 1d))')
+        self.assertEqual(t.extra[0].legend, "(1d earlier)")
+        # flagged for review: LogQL offsets need Loki 2.3+
         self.assertEqual(t.confidence, NEEDS_REVIEW)
         self.assertTrue(any("COMPARE WITH" in n for n in t.notes))
+
+    def test_compare_with_on_stream_panel_dropped_with_note(self):
+        t = tr("SELECT * FROM Log WHERE service.name = 'x' "
+               "COMPARE WITH 1 day ago")
+        self.assertEqual(t.expr, '{service_name="x"}')
+        self.assertEqual(t.extra, [])
+        self.assertEqual(t.confidence, NEEDS_REVIEW)
+        self.assertTrue(any("COMPARE WITH" in n for n in t.notes))
+
+
+class FilterIfTests(unittest.TestCase):
+    def test_filter_count_merges_stream_label_cleanly(self):
+        # The embedded WHERE supplies the stream selector; no spurious
+        # "no stream-label filter" scan-all warning may fire.
+        t = tr("SELECT filter(count(*), WHERE service.name = 'x') FROM Log")
+        self.assertEqual(
+            t.expr, 'sum(count_over_time({service_name="x"} [$__range]))')
+        self.assertEqual(t.confidence, EXACT)
+        self.assertFalse(any("no stream-label filter" in n for n in t.notes))
+
+    def test_filter_combines_outer_and_embedded_where(self):
+        t = tr("SELECT filter(count(*), WHERE level = 'error') FROM Log "
+               "WHERE service.name = 'x' TIMESERIES")
+        self.assertEqual(
+            t.expr,
+            'sum(count_over_time({service_name="x", level="error"} '
+            '[$__auto]))')
+
+    def test_filter_supports_unwrap_aggregations(self):
+        t = tr("SELECT filter(average(duration), WHERE level = 'error') "
+               "FROM Log WHERE service.name = 'x' TIMESERIES")
+        self.assertEqual(
+            t.expr,
+            'avg_over_time({service_name="x", level="error"} | json '
+            '| unwrap duration | __error__="" [$__auto]) by ()')
+
+    def test_count_if_becomes_filtered_count(self):
+        t = tr("SELECT count(if(level = 'error', 1)) FROM Log "
+               "WHERE service.name = 'x' TIMESERIES")
+        self.assertEqual(
+            t.expr,
+            'sum(count_over_time({service_name="x", level="error"} '
+            '[$__auto]))')
+        self.assertTrue(any("filtered aggregation" in n for n in t.notes))
+
+    def test_sum_if_one_zero_becomes_filtered_count(self):
+        t = tr("SELECT sum(if(level = 'error', 1, 0)) FROM Log "
+               "WHERE service.name = 'x'")
+        self.assertEqual(
+            t.expr,
+            'sum(count_over_time({service_name="x", level="error"} '
+            '[$__range]))')
+
+    def test_if_with_nontrivial_else_untranslatable(self):
+        t = tr("SELECT average(if(level = 'error', duration, 5)) FROM Log "
+               "WHERE service.name = 'x'")
+        self.assertEqual(t.confidence, "untranslatable")
+        self.assertTrue(any("ELSE value" in n for n in t.notes))
+
+    def test_earliest_becomes_first_over_time(self):
+        t = tr("SELECT earliest(duration) FROM Log "
+               "WHERE service.name = 'x'")
+        self.assertEqual(
+            t.expr,
+            'first_over_time({service_name="x"} | json '
+            '| unwrap duration | __error__="" [$__range]) by ()')
+
+    def test_facet_without_limit_cardinality_note(self):
+        t = tr("SELECT count(*) FROM Log WHERE service.name = 'x' "
+               "FACET level TIMESERIES")
+        self.assertTrue(any("top 10 groups" in n for n in t.notes))
 
 
 if __name__ == "__main__":

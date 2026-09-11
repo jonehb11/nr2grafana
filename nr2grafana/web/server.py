@@ -21,19 +21,32 @@ from __future__ import annotations
 
 import copy
 import importlib
+import io
 import json
 import os
+import re
 import threading
+import time
 import uuid
 import webbrowser
+import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlsplit
 
 SECRET_KEYS = ("nr_api_key", "grafana_token", "anthropic_api_key")
 PREF_KEYS = ("nr_region", "grafana_url", "ai_model", "input_dir",
              "out_dir", "config_path")
 _MAX_JOBS = 50
+
+# Metric-name autocomplete cache: ds uid -> (fetched_at, [names]).
+_METRICS_TTL = 60.0
+_METRICS_CACHE: Dict[str, Tuple[float, List[str]]] = {}
+_METRICS_LOCK = threading.Lock()
+
+# Slugs come from slugify(); anything else is not a store key and must
+# never reach the filesystem (download routes).
+_SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
 def _lazy(name):
@@ -210,6 +223,31 @@ def _find_panel(dash: Dict[str, Any], panel_id: Any) -> Dict[str, Any]:
     raise ApiError("panel id %r not found in dashboard" % panel_id, 404)
 
 
+# Keys that may carry a target's query text: prometheus/loki targets
+# use "expr", tempo (TraceQL) uses "query", the New Relic passthrough
+# plugin uses "queryText".
+_QUERY_KEYS = ("expr", "query", "queryText")
+
+
+def _target_query_key(target: Dict[str, Any]) -> str:
+    """Key holding this target's query text. Prefers the family key for
+    the target's datasource type, falling back to whichever known key
+    currently carries a non-empty string, then to "expr"."""
+    ds_type = ((target.get("datasource") or {}).get("type") or "").lower()
+    if "tempo" in ds_type:
+        key = "query"
+    elif "newrelic" in ds_type:
+        key = "queryText"
+    else:
+        key = "expr"
+    if isinstance(target.get(key), str):
+        return key
+    for k in _QUERY_KEYS:
+        if isinstance(target.get(k), str) and target[k].strip():
+            return k
+    return key
+
+
 def _find_target(panel: Dict[str, Any], ref_id: str) -> Dict[str, Any]:
     targets = panel.get("targets") or []
     if not targets:
@@ -293,12 +331,75 @@ def _single_target_test(live, dash: Dict[str, Any],
     p = copy.deepcopy(panel)
     p.pop("panels", None)
     t = copy.deepcopy(target)
-    t["expr"] = expr
+    t[_target_query_key(t)] = expr
     p["targets"] = [t]
     mini = {"title": dash.get("title", ""), "uid": dash.get("uid", ""),
             "templating": copy.deepcopy(dash.get("templating") or {}),
             "panels": [p]}
     return live.test_dashboard(mini)
+
+
+def _load_cfg() -> Dict[str, Any]:
+    """Session config (or defaults) for parity/diagnose/heal calls."""
+    from ..config import load_config
+    try:
+        return load_config(SESSION.config_path)
+    except Exception:
+        return {}
+
+
+def _account_ids(body: Dict[str, Any],
+                 widget_report: List[Dict[str, Any]]) -> List[int]:
+    """Fallback NR account ids for parity: request body first, then
+    any ids recorded in the widget report."""
+    ids: List[int] = []
+    for v in body.get("account_ids") or []:
+        try:
+            ids.append(int(v))
+        except (TypeError, ValueError):
+            pass
+    if ids:
+        return ids
+    seen = set()
+    for w in widget_report or []:
+        for v in (w.get("account_ids") or w.get("accountIds") or []):
+            try:
+                seen.add(int(v))
+            except (TypeError, ValueError):
+                pass
+    return sorted(seen)
+
+
+def _cached_metric_names(live, uid: str) -> List[str]:
+    """prom_metric_names(uid) with a 60s in-memory cache per ds uid."""
+    now = time.time()
+    with _METRICS_LOCK:
+        entry = _METRICS_CACHE.get(uid)
+        if entry and now - entry[0] < _METRICS_TTL:
+            return entry[1]
+    names = list(live.prom_metric_names(uid) or [])
+    with _METRICS_LOCK:
+        _METRICS_CACHE[uid] = (now, names)
+    return names
+
+
+def _artifact(store, slug: str, kind: str) -> Optional[Dict[str, Any]]:
+    try:
+        return store.get_artifact(slug, kind)
+    except Exception:
+        return None
+
+
+def _reupsert_dashboard(store, slug: str, row: Dict[str, Any],
+                        dash: Dict[str, Any]) -> None:
+    """Persist an in-place-edited dashboard back to the Store."""
+    try:
+        store.upsert_dashboard(slug,
+                               row.get("title", dash.get("title", slug)),
+                               row.get("source", ""),
+                               row.get("nr_guid", ""), dash)
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -543,6 +644,175 @@ def _job_grafana_import(job: _Job, body: Dict[str, Any], store) \
     return {"results": out, "ok": ok, "total": len(slugs)}
 
 
+def _job_parity(job: _Job, body: Dict[str, Any], store) \
+        -> Dict[str, Any]:
+    slug = body.get("slug") or ""
+    if not slug:
+        raise ApiError("missing 'slug'", 400)
+    row = store.get_dashboard(slug)
+    dash = _dash_from_row(slug, row)
+    wr = (_artifact(store, slug, "widget-report") or {}).get(
+        "widgets", [])
+    live = _grafana_live()
+    nr = _nerdgraph()
+    parity_mod = _lazy("parity")
+    frm = body.get("from") or "now-1h"
+    to = body.get("to") or "now"
+    aids = _account_ids(body, wr)
+    if not aids:
+        # Neither the request nor the widget report knows the NR
+        # account -- fall back to every account the key can see so
+        # the user never has to look ids up in New Relic.
+        try:
+            aids = nr.list_account_ids()
+        except Exception as e:
+            job.add("could not list NR accounts: %s" % _errmsg(e))
+        if aids:
+            job.add("No account id recorded; trying the key's %d "
+                    "visible account(s): %s"
+                    % (len(aids), ", ".join(map(str, aids))))
+    job.add("Comparing NR vs Grafana data for %r (%s .. %s)"
+            % (slug, frm, to))
+    report = parity_mod.run_parity(
+        nr, aids, live, dash, wr,
+        ds_map=body.get("ds_map"), frm=frm, to=to, log=job.add)
+    store.save_artifact(slug, "parity", report)
+    SESSION.status["grafana"] = "ok"
+    SESSION.status["newrelic"] = "ok"
+    job.add("Parity score %s -- %s"
+            % (report.get("score"),
+               ", ".join("%d %s" % (v, k) for k, v in
+                         sorted((report.get("summary") or {}).items()))
+               or "no panels compared"))
+    return report
+
+
+def _job_samples(job: _Job, body: Dict[str, Any], store) \
+        -> Dict[str, Any]:
+    slug = body.get("slug") or ""
+    if not slug:
+        raise ApiError("missing 'slug'", 400)
+    dash = _dash_from_row(slug, store.get_dashboard(slug))
+    wr = (_artifact(store, slug, "widget-report") or {}).get(
+        "widgets", [])
+    live = _grafana_live()
+    nr = None
+    if SESSION.nr_api_key:
+        try:
+            nr = _nerdgraph()
+        except ApiError:
+            nr = None
+    samples_mod = _lazy("samples")
+    frm = body.get("from") or "now-1h"
+    to = body.get("to") or "now"
+    try:
+        limit = int(body.get("limit") or 5)
+    except (TypeError, ValueError):
+        limit = 5
+    panel_id = body.get("panel_id")
+    aids = _account_ids(body, wr)
+    if not aids and nr is not None:
+        try:
+            aids = nr.list_account_ids()
+        except Exception as e:
+            job.add("could not list NR accounts: %s" % _errmsg(e))
+    job.add("Pulling raw samples for %r (%s .. %s, %d per side%s)"
+            % (slug, frm, to, limit,
+               ", panel %s" % panel_id if panel_id is not None
+               else ""))
+    report = samples_mod.collect_samples(
+        nr, aids, live, dash, wr, frm=frm, to=to, limit=limit,
+        panel_id=panel_id, log=job.add)
+    pulled = len(report.get("panels") or [])
+    if panel_id is not None:
+        report = samples_mod.merge_samples(
+            _artifact(store, slug, "samples"), report)
+    store.save_artifact(slug, "samples", report)
+    SESSION.status["grafana"] = "ok"
+    job.add("Sampled %d target(s); review them side by side and "
+            "confirm or reject each panel" % pulled)
+    return report
+
+
+def _job_diagnose(job: _Job, body: Dict[str, Any], store) \
+        -> Dict[str, Any]:
+    slug = body.get("slug") or ""
+    if not slug:
+        raise ApiError("missing 'slug'", 400)
+    dash = _dash_from_row(slug, store.get_dashboard(slug))
+    live = _grafana_live()
+    nr = None
+    if SESSION.nr_api_key:
+        try:
+            nr = _nerdgraph()
+        except ApiError:
+            nr = None
+    job.add("Diagnosing %r against %s" % (slug, SESSION.grafana_url))
+    diag = _lazy("diagnose").diagnose(
+        live, nr=nr, dash=dash,
+        requirements=_artifact(store, slug, "requirements"),
+        test_results=(_artifact(store, slug, "datatest")
+                      or {}).get("results"),
+        parity=_artifact(store, slug, "parity"),
+        cfg=_load_cfg(), log=job.add)
+    store.save_artifact(slug, "diagnosis", diag)
+    findings = diag.get("findings") or []
+    job.add("Diagnosis: %d finding(s) -- %s"
+            % (len(findings),
+               ", ".join("%d %s" % (v, k) for k, v in
+                         sorted((diag.get("summary") or {}).items())
+                         if isinstance(v, int))
+               or "all clear"))
+    return diag
+
+
+def _job_heal(job: _Job, body: Dict[str, Any], store) \
+        -> Dict[str, Any]:
+    slug = body.get("slug") or ""
+    if not slug:
+        raise ApiError("missing 'slug'", 400)
+    row = store.get_dashboard(slug)
+    dash = _dash_from_row(slug, row)
+    live = _grafana_live()
+    nr = None
+    if SESSION.nr_api_key:
+        try:
+            nr = _nerdgraph()
+        except ApiError:
+            nr = None
+    wr = (_artifact(store, slug, "widget-report") or {}).get(
+        "widgets", [])
+    reqs = _artifact(store, slug, "requirements") or {}
+    clog = _lazy("changelog").ChangeLog(store)
+    job.add("Auto-heal starting for %r" % slug)
+    result = _lazy("remediate").auto_heal(
+        live, nr, dash, wr, reqs, slug,
+        _package_dir(store, slug), changelog=clog, log=job.add)
+    if result.get("fixed"):
+        _reupsert_dashboard(store, slug, row, dash)
+    try:
+        store.save_artifact(slug, "heal", result)
+    except Exception:
+        pass  # heal summary persistence is best-effort
+    if body.get("push") and result.get("fixed"):
+        job.add("Pushing healed dashboard to Grafana...")
+        res = live.update_dashboard(
+            dash, message="nr2grafana: auto-heal (%d fix(es))"
+            % result.get("fixed", 0))
+        try:
+            clog.record(slug, "dashboard-updated",
+                        "grafana:%s" % SESSION.grafana_url, "",
+                        res.get("url", "updated"),
+                        why="pushed auto-heal fixes", source="auto")
+        except Exception:
+            pass
+        result["push"] = res
+    job.add("Auto-heal done: %d fix(es), %d finding(s) remaining"
+            % (result.get("fixed", 0),
+               len(result.get("remaining_findings") or [])))
+    return result
+
+
 # ---------------------------------------------------------------------------
 # request handler
 # ---------------------------------------------------------------------------
@@ -579,9 +849,32 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
-    def _body(self) -> Dict[str, Any]:
+    def _bytes(self, raw: bytes, ctype: str, filename: str) -> None:
+        """Stream a download with a Content-Disposition attachment."""
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Content-Disposition",
+                         'attachment; filename="%s"' % filename)
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def _read_body_bytes(self) -> bytes:
+        """Read and cache the request body. Runs at the top of every
+        do_* method -- BEFORE the response is written -- because with
+        HTTP/1.1 keep-alive an unread body stays in the socket and
+        corrupts the next request on that connection (browsers then
+        see bogus 501s for requests prefixed with the stray bytes).
+        NOTE: BaseHTTPRequestHandler reuses one handler instance for
+        all requests on a connection, so this must re-read on every
+        call, never trust a cached value from the previous request."""
         length = int(self.headers.get("Content-Length") or 0)
-        raw = self.rfile.read(length) if length else b""
+        self._raw_body = self.rfile.read(length) if length > 0 else b""
+        return self._raw_body
+
+    def _body(self) -> Dict[str, Any]:
+        raw = getattr(self, "_raw_body", b"")
         if not raw:
             return {}
         try:
@@ -606,10 +899,20 @@ class Handler(BaseHTTPRequestHandler):
     # -- routing ---------------------------------------------------------
 
     def do_GET(self) -> None:  # noqa: N802 (stdlib API)
+        self._read_body_bytes()
         self._dispatch(self._get)
 
     def do_POST(self) -> None:  # noqa: N802
+        self._read_body_bytes()  # drain even if the handler ignores it
         self._dispatch(self._post)
+
+    def do_PUT(self) -> None:  # noqa: N802
+        self._read_body_bytes()
+        self._dispatch(self._put)
+
+    def do_DELETE(self) -> None:  # noqa: N802
+        self._read_body_bytes()
+        self._dispatch(self._delete)
 
     def _get(self) -> None:
         parts = urlsplit(self.path)
@@ -632,22 +935,74 @@ class Handler(BaseHTTPRequestHandler):
             self._json(clog.suggest_config(slug))
         elif path == "/api/changes":
             self._json({"changes": self.store.list_changes(slug)})
+        elif path == "/api/grafana/ds-templates":
+            self._json(_lazy("grafana.live").DS_TEMPLATES)
+        elif path == "/api/metrics":
+            self._get_metrics(q)
+        elif path == "/api/labels":
+            self._get_labels(q)
+        elif path == "/api/review":
+            self._get_review(slug)
+        elif path == "/api/readiness":
+            self._get_readiness(slug)
+        elif path.startswith("/download/"):
+            self._get_download(path)
         else:
             raise ApiError("not found: %s" % path, 404)
 
+    def _put(self) -> None:
+        path = urlsplit(self.path).path.rstrip("/")
+        prefix = "/api/grafana/datasource/"
+        if path.startswith(prefix):
+            uid = path[len(prefix):]
+            if uid and "/" not in uid:
+                body = self._body()
+                live = _grafana_live()
+                self._json(live.update_datasource(uid, body))
+                return
+        raise ApiError("not found: %s" % path, 404)
+
+    def _delete(self) -> None:
+        path = urlsplit(self.path).path.rstrip("/")
+        prefix = "/api/grafana/datasource/"
+        if path.startswith(prefix):
+            uid = path[len(prefix):]
+            if uid and "/" not in uid:
+                live = _grafana_live()
+                live.delete_datasource(uid)
+                self._json({"ok": True, "uid": uid})
+                return
+        raise ApiError("not found: %s" % path, 404)
+
     def _post(self) -> None:
         path = urlsplit(self.path).path.rstrip("/")
+        ds_prefix = "/api/grafana/datasource/"
+        if path.startswith(ds_prefix) and path.endswith("/health"):
+            uid = path[len(ds_prefix):-len("/health")]
+            if uid and "/" not in uid:
+                live = _grafana_live()
+                self._json(live.datasource_health(uid))
+                return
         routes = {
             "/api/settings": self._post_settings,
             "/api/nr/list": self._post_nr_list,
             "/api/nr/fetch": self._post_nr_fetch,
+            "/api/nr/test-key": self._post_nr_test_key,
             "/api/convert": self._post_convert,
             "/api/grafana/health": self._post_grafana_health,
+            "/api/grafana/test-token": self._post_grafana_test_token,
             "/api/grafana/datasources": self._post_grafana_datasources,
+            "/api/grafana/datasource": self._post_grafana_datasource,
             "/api/grafana/plugins": self._post_grafana_plugins,
             "/api/grafana/check": self._post_grafana_check,
             "/api/grafana/test": self._post_grafana_test,
             "/api/grafana/import": self._post_grafana_import,
+            "/api/parity": self._post_parity,
+            "/api/samples": self._post_samples,
+            "/api/review": self._post_review,
+            "/api/diagnose": self._post_diagnose,
+            "/api/fix": self._post_fix,
+            "/api/heal": self._post_heal,
             "/api/panel/update": self._post_panel_update,
             "/api/panel/test": self._post_panel_test,
             "/api/ai/suggest": self._post_ai_suggest,
@@ -673,12 +1028,26 @@ class Handler(BaseHTTPRequestHandler):
             from .. import __version__
             ver = str(__version__)
         except Exception:
-            ver = "1.1.0"
+            ver = "1.2.0"
+        features: Dict[str, bool] = {}
+        for name in ("parity", "diagnose", "remediate", "samples"):
+            try:
+                _lazy(name)
+                features[name] = True
+            except Exception:
+                features[name] = False
+        try:
+            features["ds_templates"] = isinstance(
+                getattr(_lazy("grafana.live"), "DS_TEMPLATES", None),
+                dict)
+        except Exception:
+            features["ds_templates"] = False
         self._json({"app": "nr2grafana",
                     "version": ver,
                     "session": SESSION.public(),
                     "status": SESSION.status,
                     "status_detail": SESSION.status_detail,
+                    "features": features,
                     "db": db})
 
     def _get_dashboards(self) -> None:
@@ -714,6 +1083,16 @@ class Handler(BaseHTTPRequestHandler):
                 item["datatest_summary"] = dt.get("summary", {})
             except Exception:
                 item["datatest_summary"] = {}
+            par = _artifact(self.store, slug, "parity") or {}
+            item["parity_score"] = par.get("score")
+            item["parity_summary"] = par.get("summary", {})
+            diag = _artifact(self.store, slug, "diagnosis") or {}
+            item["findings_summary"] = diag.get("summary", {})
+            try:
+                item["review_summary"] = _lazy(
+                    "samples").review_summary(self.store, slug)
+            except Exception:
+                item["review_summary"] = {}
             out.append(item)
         self._json({"dashboards": out})
 
@@ -740,6 +1119,10 @@ class Handler(BaseHTTPRequestHandler):
                                                               []),
             "datatest": art("datatest"),
             "check": art("check"),
+            "parity": art("parity"),
+            "diagnosis": art("diagnosis"),
+            "samples": art("samples"),
+            "review": art("review"),
             "changes": self.store.list_changes(slug),
             "package_dir": _package_dir(self.store, slug),
         })
@@ -750,6 +1133,160 @@ class Handler(BaseHTTPRequestHandler):
         if not job:
             raise ApiError("no such job: %s" % jid, 404)
         self._json(job.to_dict())
+
+    def _get_metrics(self, q: Dict[str, List[str]]) -> None:
+        """Metric-name autocomplete: up to 200 names matching ?q=."""
+        uid = (q.get("uid") or [""])[0]
+        if not uid:
+            raise ApiError("missing 'uid' query parameter", 400)
+        query = (q.get("q") or [""])[0].strip().lower()
+        live = _grafana_live()
+        names = _cached_metric_names(live, uid)
+        if query:
+            names = [n for n in names if query in n.lower()]
+        self._json({"uid": uid, "total": len(names),
+                    "metrics": names[:200]})
+
+    def _get_labels(self, q: Dict[str, List[str]]) -> None:
+        """Label names (or ?label= values) for a prometheus/loki ds."""
+        uid = (q.get("uid") or [""])[0]
+        if not uid:
+            raise ApiError("missing 'uid' query parameter", 400)
+        ds_type = (q.get("type") or ["prometheus"])[0] or "prometheus"
+        label = (q.get("label") or [""])[0]
+        live = _grafana_live()
+        if ds_type == "loki":
+            if label:
+                self._json({"uid": uid, "label": label,
+                            "values": live.loki_label_values(uid,
+                                                             label)})
+            else:
+                self._json({"uid": uid, "labels": live.loki_labels(uid)})
+        elif ds_type == "prometheus":
+            if label:
+                self._json({"uid": uid, "label": label,
+                            "values": live.prom_label_values(uid,
+                                                             label)})
+            else:
+                fn = getattr(live, "prom_labels", None)
+                self._json({"uid": uid,
+                            "labels": list(fn(uid)) if fn else []})
+        else:
+            raise ApiError("type must be prometheus or loki", 400)
+
+    def _get_readiness(self, slug: str) -> None:
+        if not slug:
+            raise ApiError("missing 'slug' query parameter", 400)
+        if not self.store.get_dashboard(slug):
+            raise ApiError("no dashboard with slug %r" % slug, 404)
+        parity_mod = _lazy("parity")
+        res = parity_mod.readiness(
+            _artifact(self.store, slug, "parity"),
+            check_rows=(_artifact(self.store, slug, "check")
+                        or {}).get("items"),
+            test_rows=(_artifact(self.store, slug, "datatest")
+                       or {}).get("results"),
+            review=_artifact(self.store, slug, "review"))
+        try:
+            res["review"] = _lazy("samples").review_summary(
+                self.store, slug)
+        except Exception:
+            pass
+        self._json(res)
+
+    def _get_review(self, slug: str) -> None:
+        if not slug:
+            raise ApiError("missing 'slug' query parameter", 400)
+        if not self.store.get_dashboard(slug):
+            raise ApiError("no dashboard with slug %r" % slug, 404)
+        samples_mod = _lazy("samples")
+        art = _artifact(self.store, slug, "review") or {}
+        self._json({"slug": slug,
+                    "reviews": art.get("reviews") or {},
+                    "summary": samples_mod.review_summary(self.store,
+                                                          slug)})
+
+    # -- downloads -------------------------------------------------------
+
+    def _get_download(self, path: str) -> None:
+        if path == "/download/all.zip":
+            return self._download_all()
+        m = re.match(r"^/download/dashboard/([^/]+)\.json$", path)
+        if m:
+            return self._download_dashboard(m.group(1))
+        m = re.match(r"^/download/package/([^/]+)\.zip$", path)
+        if m:
+            return self._download_package(m.group(1))
+        raise ApiError("not found: %s" % path, 404)
+
+    def _known_slug(self, slug: str) -> Dict[str, Any]:
+        """Validate a download slug against the store -- anything not
+        a stored slug is a 404, so raw paths can never be requested."""
+        row = None
+        if _SLUG_RE.match(slug) and slug not in (".", ".."):
+            row = self.store.get_dashboard(slug)
+        if not row:
+            raise ApiError("no stored dashboard with slug %r" % slug,
+                           404)
+        return row
+
+    def _download_dashboard(self, slug: str) -> None:
+        row = self._known_slug(slug)
+        dash = _dash_from_row(slug, row)
+        raw = (json.dumps(dash, indent=2, ensure_ascii=False)
+               + "\n").encode("utf-8")
+        self._bytes(raw, "application/json; charset=utf-8",
+                    slug + ".json")
+
+    @staticmethod
+    def _zip_dir(zf: "zipfile.ZipFile", root: str, prefix: str) -> None:
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames.sort()
+            for name in sorted(filenames):
+                full = os.path.join(dirpath, name)
+                rel = os.path.relpath(full, root)
+                try:
+                    zf.write(full, prefix + "/" + rel.replace(os.sep,
+                                                              "/"))
+                except OSError:
+                    pass  # unreadable file must not kill the download
+
+    def _download_package(self, slug: str) -> None:
+        self._known_slug(slug)
+        pkg = _package_dir(self.store, slug)
+        if not pkg:
+            raise ApiError("no package directory for %r -- run Convert "
+                           "with packaging first" % slug, 404)
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            self._zip_dir(zf, pkg, slug)
+        self._bytes(buf.getvalue(), "application/zip", slug + ".zip")
+
+    def _download_all(self) -> None:
+        rows = self.store.list_dashboards()
+        if not rows:
+            raise ApiError("no dashboards stored yet -- run Convert "
+                           "first", 404)
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for row in rows:
+                slug = row.get("slug", "")
+                if not slug or not _SLUG_RE.match(slug):
+                    continue
+                pkg = _package_dir(self.store, slug)
+                if pkg and os.path.isdir(pkg):
+                    self._zip_dir(zf, pkg, slug)
+                    continue
+                try:
+                    dash = _dash_from_row(
+                        slug, self.store.get_dashboard(slug))
+                except ApiError:
+                    continue
+                zf.writestr(slug + "/dashboard.json",
+                            json.dumps(dash, indent=2,
+                                       ensure_ascii=False) + "\n")
+        self._bytes(buf.getvalue(), "application/zip",
+                    "nr2grafana-dashboards.zip")
 
     # -- POST handlers ---------------------------------------------------
 
@@ -847,6 +1384,196 @@ class Handler(BaseHTTPRequestHandler):
             "grafana-import",
             lambda job: _job_grafana_import(job, body, store))})
 
+    def _post_nr_test_key(self) -> None:
+        """Minimal read-only NerdGraph actor query to prove the key."""
+        client = _nerdgraph()
+        query = "{ actor { user { name email } accounts { id name } } }"
+        try:
+            data = client._post(query)
+        except Exception as e:
+            SESSION.status["newrelic"] = "error"
+            SESSION.status_detail["newrelic"] = _errmsg(e)
+            raise
+        actor = (data or {}).get("actor") or {}
+        user = actor.get("user") or {}
+        accounts = actor.get("accounts") or []
+        SESSION.status["newrelic"] = "ok"
+        SESSION.status_detail["newrelic"] = (
+            "key valid for %s (%d account(s))"
+            % (user.get("email") or "user", len(accounts)))
+        self._json({"ok": True, "user": user, "accounts": accounts})
+
+    def _post_grafana_test_token(self) -> None:
+        """permissions_report + health for the configured token."""
+        live = _grafana_live()
+        try:
+            report = live.permissions_report()
+        except Exception as e:
+            SESSION.status["grafana"] = "error"
+            SESSION.status_detail["grafana"] = _errmsg(e)
+            raise
+        try:
+            health = live.health()
+        except Exception as e:
+            health = {"error": _errmsg(e)}
+        ok = "error" not in health
+        SESSION.status["grafana"] = "ok" if ok else "error"
+        SESSION.status_detail["grafana"] = (
+            report.get("detail") or report.get("role") or "")
+        self._json({"ok": ok, "permissions": report, "health": health})
+
+    def _post_grafana_datasource(self) -> None:
+        """Create a datasource from a DS_TEMPLATES form and health-
+        check it immediately. values may hold secrets -- never logged."""
+        body = self._body()
+        ds_type = body.get("type") or ""
+        name = body.get("name") or ""
+        values = body.get("values") or {}
+        if not ds_type or not name:
+            raise ApiError("missing 'type' or 'name'", 400)
+        live_mod = _lazy("grafana.live")
+        try:
+            payload = live_mod.build_datasource_payload(ds_type, name,
+                                                        values)
+        except (KeyError, ValueError) as e:
+            raise ApiError("cannot build datasource payload: %s"
+                           % _errmsg(e), 400)
+        live = _grafana_live()
+        created = live.create_datasource(payload)
+        uid = ""
+        if isinstance(created, dict):
+            ds = created.get("datasource")
+            if isinstance(ds, dict):
+                uid = ds.get("uid", "")
+            uid = uid or created.get("uid", "")
+        if uid:
+            health = live.datasource_health(uid)
+        else:
+            health = {"status": "unknown",
+                      "message": "create returned no uid to "
+                                 "health-check"}
+        try:
+            _lazy("changelog").ChangeLog(self.store).record(
+                "", "datasource-created", "%s %s" % (ds_type, name),
+                "", uid or name, why="created from web UI",
+                source="user")
+        except Exception:
+            pass
+        SESSION.status["grafana"] = "ok"
+        self._json({"ok": health.get("status") == "ok", "uid": uid,
+                    "datasource": created, "health": health})
+
+    def _post_parity(self) -> None:
+        body = self._body()
+        _grafana_live()  # fail fast with 400 before starting the job
+        _nerdgraph()
+        store = self.store
+        self._json({"job": _start_job(
+            "parity", lambda job: _job_parity(job, body, store))})
+
+    def _post_samples(self) -> None:
+        body = self._body()
+        _grafana_live()  # fail fast with 400 before starting the job
+        store = self.store
+        self._json({"job": _start_job(
+            "samples", lambda job: _job_samples(job, body, store))})
+
+    def _post_review(self) -> None:
+        """Record a human confirm/reject/unsure verdict for a panel
+        target and return the updated review summary."""
+        body = self._body()
+        slug = body.get("slug") or ""
+        panel_id = body.get("panel_id")
+        verdict = body.get("verdict") or ""
+        if not slug or panel_id in (None, "") or not verdict:
+            raise ApiError("missing 'slug', 'panel_id' or 'verdict'",
+                           400)
+        if not self.store.get_dashboard(slug):
+            raise ApiError("no dashboard with slug %r" % slug, 404)
+        samples_mod = _lazy("samples")
+        try:
+            entry = samples_mod.record_review(
+                self.store, slug, panel_id, body.get("refId") or "",
+                verdict, note=body.get("note") or "",
+                source=body.get("source") or "user")
+        except ValueError as e:
+            raise ApiError(str(e), 400)
+        self._json({"ok": True, "slug": slug, "review": entry,
+                    "summary": samples_mod.review_summary(self.store,
+                                                          slug)})
+
+    def _post_diagnose(self) -> None:
+        body = self._body()
+        _grafana_live()
+        store = self.store
+        self._json({"job": _start_job(
+            "diagnose", lambda job: _job_diagnose(job, body, store))})
+
+    def _post_heal(self) -> None:
+        body = self._body()
+        _grafana_live()
+        store = self.store
+        self._json({"job": _start_job(
+            "heal", lambda job: _job_heal(job, body, store))})
+
+    def _post_fix(self) -> None:
+        """Apply one fix from the stored diagnosis, by finding id."""
+        body = self._body()
+        slug = body.get("slug") or ""
+        fid = body.get("finding_id")
+        if not slug or fid in (None, ""):
+            raise ApiError("missing 'slug' or 'finding_id'", 400)
+        diag = _artifact(self.store, slug, "diagnosis")
+        if not diag:
+            raise ApiError("no diagnosis recorded for %r -- run "
+                           "Diagnose first" % slug, 404)
+        finding = None
+        for f in diag.get("findings") or []:
+            if str(f.get("id")) == str(fid):
+                finding = f
+                break
+        if not finding:
+            raise ApiError("no finding %r in the stored diagnosis for "
+                           "%r -- re-run Diagnose" % (fid, slug), 404)
+        fix = finding.get("fix")
+        if not isinstance(fix, dict):
+            raise ApiError("finding %r carries no fix" % fid, 400)
+        values = body.get("values")
+        if fix.get("kind") == "add-datasource" \
+                and isinstance(values, dict) and values:
+            # The diagnosis action is a template with unfilled
+            # needs_input fields; the UI collects them inline and we
+            # fold them into a real create payload here so the user
+            # never has to leave the Diagnostics view.
+            action = fix.get("action") or {}
+            ds_type = action.get("type") or ""
+            live_mod = _lazy("grafana.live")
+            try:
+                payload = live_mod.build_datasource_payload(
+                    ds_type, action.get("name") or ds_type, values)
+            except Exception as e:
+                raise ApiError("cannot build datasource payload: %s"
+                               % _errmsg(e), 400)
+            fix = dict(fix)
+            fix["action"] = payload
+        row = self.store.get_dashboard(slug)
+        dash = _dash_from_row(slug, row)
+        live = None
+        if SESSION.grafana_url:
+            try:
+                live = _grafana_live()
+            except ApiError:
+                live = None
+        clog = _lazy("changelog").ChangeLog(self.store)
+        result = _lazy("remediate").apply_fix(
+            fix, grafana=live, dash=dash,
+            package_dir=_package_dir(self.store, slug),
+            changelog=clog, slug=slug, push=bool(body.get("push")))
+        if result.get("applied"):
+            _reupsert_dashboard(self.store, slug, row, dash)
+        result.setdefault("finding_id", finding.get("id"))
+        self._json(result)
+
     def _post_panel_update(self) -> None:
         body = self._body()
         slug = body.get("slug") or ""
@@ -858,8 +1585,10 @@ class Handler(BaseHTTPRequestHandler):
         dash = _dash_from_row(slug, row)
         panel = _find_panel(dash, body.get("panel_id"))
         target = _find_target(panel, body.get("refId") or "")
-        before = target.get("expr", "")
-        target["expr"] = expr
+        qkey = _target_query_key(target)
+        before = target.get(qkey) \
+            if isinstance(target.get(qkey), str) else ""
+        target[qkey] = expr
         store.upsert_dashboard(slug, row.get("title",
                                              dash.get("title", slug)),
                                row.get("source", ""),

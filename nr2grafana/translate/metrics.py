@@ -21,8 +21,9 @@ from typing import Any, Dict, List, Optional, Tuple
 from ..nrql.parser import Attr, Func, Lit, NrqlQuery, SelectItem, Star
 from .common import (
     APPROXIMATE, EXACT, NEEDS_REVIEW, UNTRANSLATABLE,
-    Matcher, Translation, Untranslatable, cond_to_matchers, facet_labels,
-    legend_for, map_attr, render_selector, sanitize_label, worst,
+    Matcher, Translation, Untranslatable, cond_text, cond_to_matchers,
+    facet_labels, legend_for, map_attr, render_selector, sanitize_label,
+    worst,
 )
 
 
@@ -337,6 +338,7 @@ class _Ctx:
         self.is_range = q.timeseries is not None
         self.window = "$__rate_interval" if self.is_range else "$__range"
         self.matchers = cond_to_matchers(q.where, cfg, t)
+        self.is_metric_event = bool(q.from_) and q.from_[0].lower() == "metric"
         self.is_span = bool(q.from_) and q.from_[0].lower() in (
             "span", "distributedtrace", "distributedtracesummary")
         self.is_apm_http = bool(q.from_) and q.from_[0].lower() in (
@@ -436,6 +438,11 @@ def _agg_expr(ctx: _Ctx, fn: Func, src: MetricSource,
         if src.mtype in ("histogram",):
             return "sum%s(increase(%s))" % (by, hsel("_count"))
         if src.mtype == "counter":
+            if ctx.is_metric_event:
+                t.note("count() on a Metric counter emitted as the summed "
+                       "increase (event count); NRQL count() strictly counts "
+                       "datapoints — use sum() in NR to compare like for "
+                       "like", APPROXIMATE)
             return "sum%s(increase(%s))" % (by, hsel(""))
         t.note("count(*) of a gauge-backed source counts series, not events",
                NEEDS_REVIEW)
@@ -460,14 +467,27 @@ def _agg_expr(ctx: _Ctx, fn: Func, src: MetricSource,
             float(a.value) for a in fn.args[1:]
             if isinstance(a, Lit) and isinstance(a.value, (int, float))
         ] or [95.0]
-        if src.mtype != "histogram":
-            t.note("percentile() requires a histogram; %r resolved as %s"
-                   % (src.base, src.mtype), NEEDS_REVIEW)
-        t.note("histogram_quantile interpolates within buckets; NR "
-               "percentiles are computed from event data", APPROXIMATE)
-        le_by = "le" + "".join(", " + l for l in ctx.by)
-        exprs = ["histogram_quantile(%s, sum by (%s)(rate(%s)))"
-                 % (_fmt_q(p), le_by, hsel("_bucket")) for p in pcts]
+        if src.mtype == "gauge":
+            # No buckets to interpolate: take the quantile of the raw
+            # sampled values per series over the window instead of
+            # emitting a query against a nonexistent _bucket family.
+            t.note("percentile() of gauge %r mapped to per-series "
+                   "quantile_over_time (averaged across series); NR "
+                   "computes percentiles over all raw events — verify "
+                   "against NR data" % src.base, NEEDS_REVIEW)
+            exprs = []
+            for p in pcts:
+                inner = "quantile_over_time(%s, %s)" % (_fmt_q(p), hsel(""))
+                exprs.append("avg%s(%s)" % (by, inner) if ctx.by else inner)
+        else:
+            if src.mtype != "histogram":
+                t.note("percentile() requires a histogram; %r resolved as %s"
+                       % (src.base, src.mtype), NEEDS_REVIEW)
+            t.note("histogram_quantile interpolates within buckets; NR "
+                   "percentiles are computed from event data", APPROXIMATE)
+            le_by = "le" + "".join(", " + l for l in ctx.by)
+            exprs = ["histogram_quantile(%s, sum by (%s)(rate(%s)))"
+                     % (_fmt_q(p), le_by, hsel("_bucket")) for p in pcts]
         if len(exprs) > 1:
             for p, e in list(zip(pcts, exprs))[1:]:
                 extra_t = Translation(
@@ -498,11 +518,35 @@ def _agg_expr(ctx: _Ctx, fn: Func, src: MetricSource,
             if isinstance(a, Lit) and isinstance(a.value, (int, float)):
                 per_seconds = float(a.value)
         mult = "" if per_seconds == 1 else " * %s" % _fmt_num(per_seconds)
+        if src.mtype == "histogram":
+            raise Untranslatable(
+                "derivative() on a histogram-backed source has no PromQL "
+                "equivalent (only _bucket/_sum/_count series exist)")
         if src.mtype == "counter":
             return "sum%s(rate(%s))%s" % (by, hsel(""), mult)
         t.note("derivative() mapped to deriv() (linear regression)",
                APPROXIMATE)
         inner = "deriv(%s)%s" % (hsel(""), mult)
+        return "avg%s(%s)" % (by, inner) if ctx.by else inner
+
+    if name == "predictlinear":
+        # predictLinear(attr, N units) — parser normalizes the duration
+        # to seconds.
+        horizon = 3600.0
+        for a in fn.args[1:]:
+            if isinstance(a, Lit) and isinstance(a.value, (int, float)):
+                horizon = float(a.value)
+        if src.mtype == "histogram":
+            raise Untranslatable(
+                "predictLinear() on a histogram-backed source has no "
+                "PromQL equivalent")
+        if src.mtype == "counter":
+            t.note("predictLinear() of a counter predicts the raw counter "
+                   "value (resets skew the regression); NR predicts the "
+                   "reported metric", NEEDS_REVIEW)
+        t.note("predictLinear() mapped to predict_linear() (linear "
+               "regression over the query window)", APPROXIMATE)
+        inner = "predict_linear(%s, %s)" % (hsel(""), _fmt_num(horizon))
         return "avg%s(%s)" % (by, inner) if ctx.by else inner
 
     if name in ("uniquecount", "cardinality"):
@@ -532,7 +576,9 @@ def _agg_expr(ctx: _Ctx, fn: Func, src: MetricSource,
                    "computes it over all events in the window", APPROXIMATE)
             inner = "stddev_over_time(%s)" % hsel("")
             return "avg%s(%s)" % (by, inner) if ctx.by else inner
-        raise Untranslatable("stddev() supported only for gauge metrics")
+        raise Untranslatable(
+            "stddev() cannot be derived from %s-backed metrics (needs raw "
+            "values; histograms lack a sum-of-squares series)" % src.mtype)
 
     if name == "apdex":
         thr = 0.5
@@ -547,13 +593,20 @@ def _agg_expr(ctx: _Ctx, fn: Func, src: MetricSource,
                 thr = float(a.value)
         if src.mtype != "histogram":
             raise Untranslatable("apdex() requires a histogram metric")
+        # NRQL apdex thresholds are seconds; a millisecond-unit histogram
+        # needs the bucket bounds scaled or the formula is off by 1000x.
+        if src.unit == "ms":
+            t.note("apdex threshold t=%s s scaled to %s to match the "
+                   "millisecond histogram %r"
+                   % (_fmt_num(thr), _fmt_num(thr * 1000), src.base))
+            thr = thr * 1000.0
         t.note("apdex formula requires histogram bucket bounds at exactly "
                "t=%g and 4t=%g; verify your buckets" % (thr, thr * 4),
                NEEDS_REVIEW)
         le1 = ctx.selector(src.name("_bucket"),
-                           ex + [Matcher("le", "=", _fmt_num(thr))], W)
+                           ex + [_le_matcher(thr)], W)
         le4 = ctx.selector(src.name("_bucket"),
-                           ex + [Matcher("le", "=", _fmt_num(thr * 4))], W)
+                           ex + [_le_matcher(thr * 4)], W)
         cnt = hsel("_count")
         return ("(sum%s(rate(%s)) + sum%s(rate(%s))) / 2 / sum%s(rate(%s))"
                 % (by, le1, by, le4, by, cnt))
@@ -575,7 +628,8 @@ def _agg_expr(ctx: _Ctx, fn: Func, src: MetricSource,
             "funnel() is event-sequence analysis with no metric equivalent")
     if name in ("earliest",):
         raise Untranslatable(
-            "earliest() has no PromQL equivalent in Mimir")
+            "earliest() has no PromQL equivalent (PromQL lacks a "
+            "first_over_time function)")
     if name in ("eventtype", "keyset", "aggregationendtime"):
         raise Untranslatable("%s() is NRDB introspection" % name)
 
@@ -595,9 +649,42 @@ def _fmt_num(n: float) -> str:
     return ("%f" % n).rstrip("0").rstrip(".")
 
 
+def _le_matcher(bound: float) -> Matcher:
+    """Bucket-bound matcher robust to both le-label spellings.
+
+    Prometheus text format renders integral bounds as le="2" while
+    OpenMetrics renders le="2.0"; exact-match on one spelling silently
+    returns no data on stacks using the other.
+    """
+    if bound == int(bound):
+        return Matcher("le", "=~", "%d|%d\\.0" % (int(bound), int(bound)))
+    return Matcher("le", "=", _fmt_num(bound))
+
+
 # ---------------------------------------------------------------------------
 # Source resolution per event type
 # ---------------------------------------------------------------------------
+
+# Unmapped NR event families -> where their data lives in an LGTM stack;
+# used to make 'no metric mapping' failures actionable.
+_BROWSER_HINT = ("browser RUM data; Grafana Faro (frontend observability) "
+                 "is the LGTM equivalent")
+_MOBILE_HINT = "mobile RUM data; Grafana Faro is the LGTM equivalent"
+_SYNTH_HINT = ("synthetic monitoring; blackbox_exporter or Grafana "
+               "Synthetic Monitoring is the LGTM equivalent")
+_NR_ONLY_HINT = ("New Relic account/consumption data; only available via "
+                 "the New Relic datasource plugin")
+_EVENT_EQUIVALENTS = {
+    "pageview": _BROWSER_HINT, "pageaction": _BROWSER_HINT,
+    "browserinteraction": _BROWSER_HINT, "javascripterror": _BROWSER_HINT,
+    "ajaxrequest": _BROWSER_HINT,
+    "mobile": _MOBILE_HINT, "mobilecrash": _MOBILE_HINT,
+    "mobilerequest": _MOBILE_HINT, "mobilerequesterror": _MOBILE_HINT,
+    "syntheticcheck": _SYNTH_HINT, "syntheticrequest": _SYNTH_HINT,
+    "nrconsumption": _NR_ONLY_HINT, "nrusage": _NR_ONLY_HINT,
+    "nrauditevent": _NR_ONLY_HINT,
+}
+
 
 def _source_for(ctx: _Ctx, item: SelectItem) -> MetricSource:
     q = ctx.q
@@ -641,7 +728,11 @@ def _source_for(ctx: _Ctx, item: SelectItem) -> MetricSource:
             return spanmetrics_source(ctx.cfg, "duration")
         return spanmetrics_source(ctx.cfg, "calls")
 
-    raise Untranslatable("no metric mapping for FROM %s" % et)
+    msg = "no metric mapping for FROM %s" % et
+    hint = _EVENT_EQUIVALENTS.get(etl)
+    if hint:
+        msg += " (%s)" % hint
+    raise Untranslatable(msg)
 
 
 def _infra_lookup(ctx: _Ctx, item: SelectItem) -> Optional[Translation]:
@@ -714,8 +805,69 @@ def _finish_infra(ctx: _Ctx, item: SelectItem, expr: str, conf: str,
 # Entry point
 # ---------------------------------------------------------------------------
 
+def _extract_facet_cases(q: NrqlQuery) -> Optional[List[Tuple[Any, Optional[str]]]]:
+    """Pop a sole FACET cases(...) item; return its (cond, alias) list."""
+    if len(q.facet) == 1 and isinstance(q.facet[0].expr, Func) \
+            and q.facet[0].expr.name == "cases" and q.facet[0].expr.cases:
+        specs = list(q.facet[0].expr.cases)
+        q.facet = []
+        return specs
+    return None
+
+
+def _translate_facet_cases(ctx: _Ctx,
+                           items: List[SelectItem],
+                           case_specs: List[Tuple[Any, Optional[str]]]
+                           ) -> Optional[Translation]:
+    """FACET cases(WHERE c1 AS a, WHERE c2 ...) -> one filtered query per
+    case (each case IS trivially a filter). Returns None when any case
+    condition cannot become label matchers; the caller then degrades to
+    the dropped-grouping note."""
+    t = ctx.t
+    funcs = [i for i in items if isinstance(i.expr, Func)]
+    if not funcs:
+        return None
+    fn = funcs[0].expr
+    assert isinstance(fn, Func)
+    for cond, _alias in case_specs:
+        if not cond_to_matchers(cond, ctx.cfg, Translation()):
+            return None
+    t.note("FACET cases(...) became one filtered query per case; NR's "
+           "implicit 'Other' bucket is not emitted", APPROXIMATE)
+    for idx, (cond, alias) in enumerate(case_specs):
+        label = alias or cond_text(cond)
+        if idx == 0:
+            t.expr = _translate_item(ctx, fn, extra=_embedded_matchers(
+                ctx, cond))
+            t.legend = label
+            continue
+        sub = Translation(datasource="prometheus", query_type=t.query_type)
+        saved = ctx.t
+        ctx.t = sub
+        try:
+            sub.expr = _translate_item(ctx, fn, extra=_embedded_matchers(
+                ctx, cond))
+        except Untranslatable as e:
+            t.note("case %r could not be translated: %s" % (label, e),
+                   NEEDS_REVIEW)
+            continue
+        finally:
+            ctx.t = saved
+        sub.legend = label
+        t.extra.append(sub)
+    if len(items) > 1:
+        t.note("only the first SELECT item was translated with FACET "
+               "cases(...); add the others as separate panels", NEEDS_REVIEW)
+    if ctx.q.compare_with:
+        t.note("COMPARE WITH combined with FACET cases(...) is not "
+               "supported; the comparison series was dropped", NEEDS_REVIEW)
+    t.group_by = []
+    return t
+
+
 def translate_to_promql(q: NrqlQuery, cfg: Dict[str, Any]) -> Translation:
     t = Translation(datasource="prometheus")
+    case_specs = _extract_facet_cases(q)
     ctx = _Ctx(q, cfg, t)
     t.query_type = "range" if ctx.is_range else "instant"
 
@@ -732,12 +884,23 @@ def translate_to_promql(q: NrqlQuery, cfg: Dict[str, Any]) -> Translation:
 
     infra = _infra_lookup(ctx, items[0])
     if infra is not None:
+        if case_specs:
+            infra.note("FACET cases(...) has no label equivalent on "
+                       "infra-event mappings; grouping dropped", NEEDS_REVIEW)
         if len(items) > 1:
             infra.note("only the first SELECT item of this infra query was "
                        "translated; add the others as separate panels",
                        NEEDS_REVIEW)
         _apply_compare_with(ctx, infra)
         return infra
+
+    if case_specs:
+        out = _translate_facet_cases(ctx, items, case_specs)
+        if out is not None:
+            return out
+        t.note("FACET cases(...) conditions could not become label "
+               "matchers; grouping dropped — split the cases into "
+               "separate filtered panels manually", NEEDS_REVIEW)
 
     primary_expr: Optional[str] = None
     primary_legend = ""
@@ -797,17 +960,87 @@ def _unit_note(t: Translation, agg: str, src: MetricSource) -> None:
         t.notes.append("unit:%s" % src.unit)
 
 
-def _translate_item(ctx: _Ctx, fn: Func) -> str:
+def _embedded_matchers(ctx: _Ctx, cond: Any) -> List[Matcher]:
+    """Convert an embedded WHERE (filter()/percentage()/if()) into extra
+    matchers, applying the same event-type fixups as the outer WHERE."""
+    extra = cond_to_matchers(cond, ctx.cfg, ctx.t)
+    if ctx.is_span:
+        extra = _span_fixups(extra, ctx.cfg)
+    elif ctx.is_apm_http:
+        extra = _http_fixups(extra, ctx.t, ctx.cfg)
+    return extra
+
+
+def _is_lit(v: Any, *values: float) -> bool:
+    return isinstance(v, Lit) and isinstance(v.value, (int, float)) \
+        and not isinstance(v.value, bool) and float(v.value) in values
+
+
+def _rewrite_if(ctx: _Ctx, fn: Func) -> Tuple[Func, Optional[List[Matcher]]]:
+    """agg(if(cond, x[, else])) -> filtered aggregation when the if() is
+    trivially a filter; raise Untranslatable (with a precise reason)
+    otherwise.
+
+    Sound because NRQL aggregations skip NULL: agg(if(cond, x)) aggregates
+    x only over rows matching cond == filter(agg(x), WHERE cond). A
+    non-trivial ELSE value changes every row's contribution and has no
+    selector equivalent.
+    """
+    if not (fn.args and isinstance(fn.args[0], Func)
+            and fn.args[0].name == "if"):
+        return fn, None
+    branch = fn.args[0]
+    if branch.where is None:
+        raise Untranslatable(
+            "the if() condition could not be parsed as a predicate; "
+            "rewrite the query as filter(%s(...), WHERE ...)" % fn.name)
+    vals = branch.args  # then [, else] — condition lives in branch.where
+    then = vals[0] if vals else None
+    els = vals[1] if len(vals) > 1 else None
+    zero_else = els is None or _is_lit(els, 0)
+    if fn.name == "count" and els is None:
+        new = Func("count", args=[Star()])
+    elif fn.name == "sum" and _is_lit(then, 1) and zero_else:
+        # sum(if(cond, 1, 0)) is a row count over cond.
+        new = Func("count", args=[Star()])
+    elif zero_else and then is not None and (els is None or fn.name == "sum"):
+        # ELSE 0 is only neutral for sum(); for other aggregations the
+        # zeros would enter the population.
+        new = Func(fn.name, args=[then] + list(fn.args[1:]))
+    else:
+        raise Untranslatable(
+            "%s(if(cond, x, y)): the ELSE value enters the aggregation for "
+            "every non-matching row, which has no PromQL equivalent — "
+            "split into separate filtered queries" % fn.name)
+    ctx.t.note("if(%s, ...) translated as a filtered aggregation "
+               "(the condition became label matchers)"
+               % cond_text(branch.where), APPROXIMATE)
+    return new, _embedded_matchers(ctx, branch.where)
+
+
+def _translate_item(ctx: _Ctx, fn: Func,
+                    extra: Optional[List[Matcher]] = None) -> str:
     t = ctx.t
+    extra = list(extra or [])
+    if fn.name == "if":
+        raise Untranslatable(
+            "bare if() in SELECT has no metric equivalent; wrap it in an "
+            "aggregation or split into filtered queries")
+    if fn.name == "funnel":
+        # Raise before source resolution so the explanation is the same
+        # for every event type (PageView etc. have no metric mapping).
+        raise Untranslatable(
+            "funnel() is event-sequence analysis (per-user step "
+            "conversion) with no metric equivalent; keep this widget in "
+            "New Relic or rebuild it from Faro/frontend events")
     if fn.name == "filter":
         inner = fn.args[0] if fn.args else None
         if not isinstance(inner, Func):
             raise Untranslatable("filter() needs an inner aggregation")
-        extra = cond_to_matchers(fn.where, ctx.cfg, t)
-        if ctx.is_span:
-            extra = _span_fixups(extra, ctx.cfg)
-        elif ctx.is_apm_http:
-            extra = _http_fixups(extra, t, ctx.cfg)
+        extra = extra + _embedded_matchers(ctx, fn.where)
+        inner, if_extra = _rewrite_if(ctx, inner)
+        if if_extra:
+            extra = extra + if_extra
         src = _source_for(ctx, SelectItem(expr=inner))
         t.confidence = worst(t.confidence, src.confidence)
         if src.note:
@@ -819,26 +1052,25 @@ def _translate_item(ctx: _Ctx, fn: Func) -> str:
         inner = fn.args[0] if fn.args else None
         if not isinstance(inner, Func):
             raise Untranslatable("percentage() needs an inner aggregation")
-        extra = cond_to_matchers(fn.where, ctx.cfg, t)
-        if ctx.is_span:
-            extra = _span_fixups(extra, ctx.cfg)
-        elif ctx.is_apm_http:
-            extra = _http_fixups(extra, t, ctx.cfg)
+        num_extra = extra + _embedded_matchers(ctx, fn.where)
         src = _source_for(ctx, SelectItem(expr=inner))
         t.confidence = worst(t.confidence, src.confidence)
         if src.note:
             t.note(src.note)
-        num = _agg_expr(ctx, inner, src, extra=extra)
-        den = _agg_expr(ctx, inner, src)
+        num = _agg_expr(ctx, inner, src, extra=num_extra)
+        den = _agg_expr(ctx, inner, src, extra=extra)
         t.notes.append("unit:percent")
         return "100 * (%s) / (%s)" % (num, den)
 
+    fn, if_extra = _rewrite_if(ctx, fn)
+    if if_extra:
+        extra = extra + if_extra
     src = _source_for(ctx, SelectItem(expr=fn))
     t.confidence = worst(t.confidence, src.confidence)
     if src.note:
         t.note(src.note)
     _unit_note(t, fn.name, src)
-    return _agg_expr(ctx, fn, src)
+    return _agg_expr(ctx, fn, src, extra=extra)
 
 
 def _apply_compare_with(ctx: _Ctx, t: Translation) -> None:

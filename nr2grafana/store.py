@@ -34,9 +34,10 @@ DEFAULT_DIR = os.path.expanduser("~/.nr2grafana")
 DEFAULT_DB = os.path.join(DEFAULT_DIR, "nr2grafana.db")
 
 # Documented artifact kinds. save_artifact accepts other kinds too (the
-# schema does not care), but these four get "has_*" flags in
+# schema does not care), but these get "has_*" flags in
 # list_dashboards().
-ARTIFACT_KINDS = ("requirements", "widget-report", "datatest", "check")
+ARTIFACT_KINDS = ("requirements", "widget-report", "datatest", "check",
+                  "parity", "diagnosis", "heal", "samples", "review")
 
 CHANGE_SOURCES = ("user", "ai", "auto")
 

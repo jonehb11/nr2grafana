@@ -7,6 +7,7 @@ grafana.live) are replaced with deterministic stubs in sys.modules so
 these tests are independent of their implementations.
 """
 
+import io
 import json
 import os
 import sys
@@ -17,6 +18,7 @@ import types
 import unittest
 import urllib.error
 import urllib.request
+import zipfile
 from unittest import mock
 
 from nr2grafana.web import server as websrv
@@ -215,6 +217,18 @@ def _stub_ai():
 
 class FakeGrafanaLive:
     instances = []
+    created_payloads = []
+    updated = []
+    deleted_uids = []
+    metric_calls = []
+
+    @classmethod
+    def reset(cls):
+        cls.instances = []
+        cls.created_payloads = []
+        cls.updated = []
+        cls.deleted_uids = []
+        cls.metric_calls = []
 
     def __init__(self, url, token="", **kwargs):
         self.url = url
@@ -260,10 +274,222 @@ class FakeGrafanaLive:
         return {"status": "success",
                 "url": "/d/" + (dash.get("uid") or "x")}
 
+    # 1.2 datasource management additions
+    def permissions_report(self):
+        return {"user": "sa-migrator", "role": "Admin",
+                "can_admin_datasources": True,
+                "can_edit_dashboards": True, "detail": "full access"}
+
+    def create_datasource(self, payload):
+        FakeGrafanaLive.created_payloads.append(payload)
+        return {"datasource": {"uid": "new-ds",
+                               "name": payload.get("name")},
+                "message": "Datasource added"}
+
+    def update_datasource(self, uid, payload):
+        FakeGrafanaLive.updated.append((uid, payload))
+        return {"datasource": {"uid": uid}, "message": "updated"}
+
+    def delete_datasource(self, uid):
+        FakeGrafanaLive.deleted_uids.append(uid)
+
+    def datasource_health(self, uid):
+        return {"status": "ok", "message": "healthy: " + uid}
+
+    def prom_metric_names(self, uid):
+        FakeGrafanaLive.metric_calls.append(uid)
+        return ["up", "http_requests_total",
+                "node_cpu_seconds_total"]
+
+    def prom_label_values(self, uid, label, match=""):
+        return ["api", "web"]
+
+    def prom_series(self, uid, match, frm="now-1h"):
+        return [{"__name__": "up"}]
+
+    def loki_labels(self, uid):
+        return ["job", "namespace"]
+
+    def loki_label_values(self, uid, label):
+        return ["default"]
+
+    # 1.2 sample-review additions
+    def resolve_ds_map(self, dash):
+        return {}
+
+    def ds_query(self, ds_uid, ds_type, target, frm="now-1h",
+                 to="now"):
+        ref = target.get("refId") or "A"
+        if ds_type == "loki":
+            frame = {"schema": {"refId": ref, "fields": [
+                        {"name": "Time", "type": "time"},
+                        {"name": "Line", "type": "string"}]},
+                     "data": {"values": [
+                         [1000000000000, 1000000060000],
+                         ["log line one", "log line two"]]}}
+        else:
+            frame = {"schema": {"refId": ref, "fields": [
+                        {"name": "Time", "type": "time"},
+                        {"name": "Value", "type": "number",
+                         "labels": {"job": "api"}}]},
+                     "data": {"values": [
+                         [1000000000000, 1000000060000],
+                         [1.0, 2.0]]}}
+        return {"results": {ref: {"status": 200,
+                                  "frames": [frame]}}}
+
+
+FAKE_DS_TEMPLATES = {
+    "prometheus": {
+        "label": "Prometheus / Mimir", "plugin_id": "prometheus",
+        "core": True,
+        "fields": [{"name": "url", "label": "URL", "required": True,
+                    "secret": False,
+                    "placeholder": "http://mimir:9009/prometheus",
+                    "help": "", "path": "url"}],
+        "notes": "stub template"},
+}
+
 
 def _stub_live():
     m = types.ModuleType("nr2grafana.grafana.live")
     m.GrafanaLive = FakeGrafanaLive
+    m.DS_TEMPLATES = FAKE_DS_TEMPLATES
+
+    def build_datasource_payload(ds_type, name, values):
+        if ds_type not in FAKE_DS_TEMPLATES:
+            raise ValueError("unknown datasource type %r" % ds_type)
+        return {"name": name, "type": ds_type,
+                "url": values.get("url", ""), "access": "proxy",
+                "jsonData": {}, "secureJsonData": {}}
+
+    m.build_datasource_payload = build_datasource_payload
+    return m
+
+
+def _stub_nerdgraph():
+    m = types.ModuleType("nr2grafana.nerdgraph")
+
+    class NerdGraphError(Exception):
+        pass
+
+    class NerdGraphClient:
+        def __init__(self, api_key, region="US", **kwargs):
+            self.api_key = api_key
+            self.region = region
+
+        def _post(self, query, variables=None, retries=3):
+            return {"actor": {
+                "user": {"name": "Jon", "email": "jon@example.com"},
+                "accounts": [{"id": 1, "name": "Main"}]}}
+
+        def run_nrql(self, account_id, nrql):
+            return {"results": [{"count": 1}], "metadata": {}}
+
+        def list_account_ids(self):
+            return [1]
+
+    m.NerdGraphError = NerdGraphError
+    m.NerdGraphClient = NerdGraphClient
+    return m
+
+
+def _stub_parity():
+    m = types.ModuleType("nr2grafana.parity")
+
+    def run_parity(nr, account_ids, grafana, dash, widget_report,
+                   ds_map=None, frm="now-1h", to="now", log=None):
+        if log:
+            log("parity stub running")
+        return {"schema": "nr2grafana/parity/v1",
+                "dashboard": dash.get("title", ""),
+                "generated_at": "2026-01-01T00:00:00Z",
+                "range": {"from": frm, "to": to},
+                "panels": [{"panel_id": 1, "panel_title": "P1",
+                            "refId": "A", "nrql": "", "expr": "uup",
+                            "datasource": "prometheus",
+                            "verdict": "match", "detail": "", "ratio":
+                            1.0, "nr_summary": {}, "gf_summary": {}}],
+                "score": 100, "summary": {"match": 1}}
+
+    def readiness(parity, check_rows=None, test_rows=None,
+                  review=None):
+        rows = []
+        if isinstance(review, dict):
+            rows = list((review.get("reviews") or {}).values())
+        if any(r.get("verdict") == "rejected" for r in rows):
+            return {"score": 0, "grade": "blocked",
+                    "reasons": ["rejected in human review"]}
+        if parity:
+            return {"score": 100, "grade": "ready", "reasons": []}
+        return {"score": 0, "grade": "blocked",
+                "reasons": ["no parity run yet"]}
+
+    m.run_parity = run_parity
+    m.readiness = readiness
+    return m
+
+
+def _stub_diagnose():
+    m = types.ModuleType("nr2grafana.diagnose")
+
+    def diagnose(grafana, nr=None, dash=None, requirements=None,
+                 test_results=None, parity=None, cfg=None, log=None):
+        if log:
+            log("diagnose stub running")
+        return {"schema": "nr2grafana/diagnosis/v1",
+                "generated_at": "2026-01-01T00:00:00Z",
+                "findings": [{
+                    "id": "f1", "severity": "warn", "area": "panel",
+                    "panel_id": 1,
+                    "problem": "metric 'uup' not found",
+                    "evidence": "did you mean 'up'?",
+                    "fix": {"description": "rename uup -> up",
+                            "kind": "edit-query",
+                            "action": {"panel_id": 1, "refId": "A",
+                                       "new_expr": "up"}}}],
+                "summary": {"blocker": 0, "warn": 1, "info": 0,
+                            "by_area": {"panel": 1}, "panels": [1]}}
+
+    m.diagnose = diagnose
+    return m
+
+
+def _stub_remediate():
+    m = types.ModuleType("nr2grafana.remediate")
+    m.apply_calls = []
+    m.heal_calls = []
+
+    def apply_fix(fix, grafana=None, dash=None, package_dir="",
+                  changelog=None, slug="", push=False):
+        m.apply_calls.append({"fix": fix, "slug": slug, "push": push,
+                              "package_dir": package_dir})
+        if fix.get("kind") == "edit-query" and isinstance(dash, dict):
+            action = fix.get("action") or {}
+            for p in dash.get("panels") or []:
+                if p.get("id") == action.get("panel_id"):
+                    for t in p.get("targets") or []:
+                        if t.get("refId") == action.get("refId"):
+                            t["expr"] = action.get("new_expr", "")
+        return {"applied": True, "kind": fix.get("kind", ""),
+                "detail": "stub applied", "verify": None}
+
+    def auto_heal(grafana, nr, dash, widget_report, requirements,
+                  slug, package_dir, changelog=None, max_rounds=3,
+                  log=None):
+        m.heal_calls.append({"slug": slug,
+                             "package_dir": package_dir})
+        if log:
+            log("heal round 1")
+        for p in dash.get("panels") or []:
+            for t in p.get("targets") or []:
+                if t.get("expr") == "uup":
+                    t["expr"] = "up"
+        return {"rounds": [{"round": 1, "fixed": 1}], "fixed": 1,
+                "remaining_findings": []}
+
+    m.apply_fix = apply_fix
+    m.auto_heal = auto_heal
     return m
 
 
@@ -273,6 +499,10 @@ STUBS = {
     "nr2grafana.changelog": _stub_changelog(),
     "nr2grafana.ai": _stub_ai(),
     "nr2grafana.grafana.live": _stub_live(),
+    "nr2grafana.nerdgraph": _stub_nerdgraph(),
+    "nr2grafana.parity": _stub_parity(),
+    "nr2grafana.diagnose": _stub_diagnose(),
+    "nr2grafana.remediate": _stub_remediate(),
 }
 
 
@@ -301,6 +531,16 @@ def http(base, method, path, body=None, raw=None):
             return e.code, json.loads(text or "{}")
         except json.JSONDecodeError:
             return e.code, text
+
+
+def http_bin(base, path):
+    """GET returning (status, headers dict, raw bytes) -- downloads."""
+    req = urllib.request.Request(base + path)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return resp.status, dict(resp.headers), resp.read()
+    except urllib.error.HTTPError as e:
+        return e.code, dict(e.headers), e.read()
 
 
 def poll_job(base, jid, timeout=20.0):
@@ -617,6 +857,31 @@ class GrafanaRouteTests(WebServerTestCase):
         self.assertEqual(code, 200)
         self.assertTrue(data["changes"])
 
+    def test_panel_update_tempo_target_writes_query_key(self):
+        """Tempo targets carry TraceQL in "query", not "expr" -- a
+        manual edit must land in the key Grafana actually reads."""
+        slug = "tempo-edit-dash"
+        dash = {"title": "T", "uid": slug, "templating": {"list": []},
+                "panels": [{"id": 7, "title": "Traces",
+                            "type": "table",
+                            "targets": [{"refId": "A",
+                                         "queryType": "traceql",
+                                         "query": "{ status = error }",
+                                         "datasource": {
+                                             "type": "tempo",
+                                             "uid": "tempo"}}]}]}
+        self.store.upsert_dashboard(slug, "T", "seed", "", dash)
+        code, body = self.api(
+            "POST", "/api/panel/update",
+            {"slug": slug, "panel_id": 7, "refId": "A",
+             "expr": "{ duration > 1s }"})
+        self.assertEqual(code, 200)
+        self.assertEqual(body["before"], "{ status = error }")
+        tgt = self.store.get_dashboard(
+            slug)["data"]["panels"][0]["targets"][0]
+        self.assertEqual(tgt["query"], "{ duration > 1s }")
+        self.assertNotIn("expr", tgt)
+
     def test_panel_update_missing_panel_is_404(self):
         code, body = self.api(
             "POST", "/api/panel/update",
@@ -624,6 +889,39 @@ class GrafanaRouteTests(WebServerTestCase):
              "expr": "x"})
         self.assertEqual(code, 404)
         self.assertIn("error", body)
+
+    def test_keepalive_connection_survives_bodyless_handler(self):
+        """Handlers that ignore their POST body (health, datasources,
+        nr/list ...) must still drain it, or the unread bytes corrupt
+        the next request on the same keep-alive connection (browsers
+        reuse connections; curl does not)."""
+        import http.client
+        conn = http.client.HTTPConnection("127.0.0.1", self.port,
+                                          timeout=10)
+        try:
+            # A body-less GET first: the handler INSTANCE is reused
+            # for every request on this connection, so a stale cached
+            # "empty body" from this request must not stop the next
+            # request's body from being drained.
+            conn.request("GET", "/api/state")
+            first = conn.getresponse()
+            first.read()
+            self.assertEqual(first.status, 200)
+            conn.request("POST", "/api/grafana/health", body=b"{}",
+                         headers={"Content-Type":
+                                  "application/json"})
+            resp = conn.getresponse()
+            resp.read()
+            self.assertEqual(resp.status, 200)
+            # Third request on the SAME socket must not see stray
+            # bytes from the POST's unread body ("{}GET ..." -> 501).
+            conn.request("GET", "/api/state")
+            resp2 = conn.getresponse()
+            body2 = resp2.read()
+            self.assertEqual(resp2.status, 200)
+            self.assertIn(b"nr2grafana", body2)
+        finally:
+            conn.close()
 
     def test_suggest_config_route(self):
         code, body = self.api(
@@ -657,6 +955,636 @@ class AIRouteTests(WebServerTestCase):
 
     def test_chat_requires_messages(self):
         code, body = self.api("POST", "/api/ai/chat", {})
+        self.assertEqual(code, 400)
+        self.assertIn("error", body)
+
+
+def _seed_dash(store, slug, expr="uup"):
+    """Store a one-panel dashboard whose target expr is ``expr``."""
+    dash = {"title": "T " + slug, "uid": slug,
+            "templating": {"list": []},
+            "panels": [{"id": 1, "title": "P1", "type": "timeseries",
+                        "targets": [{"refId": "A", "expr": expr,
+                                     "datasource": {
+                                         "type": "prometheus",
+                                         "uid": "mimir"}}]}]}
+    store.upsert_dashboard(slug, "T " + slug, "seed", "", dash)
+    return dash
+
+
+class ConnectTestTests(WebServerTestCase):
+    """POST /api/nr/test-key and /api/grafana/test-token."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        websrv.SESSION.nr_api_key = "NRAK-TEST"
+        websrv.SESSION.grafana_url = "http://gf.local:3000"
+        websrv.SESSION.grafana_token = "tok"
+
+    def test_nr_test_key(self):
+        code, body = self.api("POST", "/api/nr/test-key", {})
+        self.assertEqual(code, 200)
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["user"]["email"], "jon@example.com")
+        self.assertEqual(len(body["accounts"]), 1)
+        self.assertEqual(websrv.SESSION.status["newrelic"], "ok")
+
+    def test_nr_test_key_requires_key(self):
+        websrv.SESSION.nr_api_key = ""
+        try:
+            code, body = self.api("POST", "/api/nr/test-key", {})
+            self.assertEqual(code, 400)
+            self.assertIn("error", body)
+        finally:
+            websrv.SESSION.nr_api_key = "NRAK-TEST"
+
+    def test_grafana_test_token(self):
+        code, body = self.api("POST", "/api/grafana/test-token", {})
+        self.assertEqual(code, 200)
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["permissions"]["role"], "Admin")
+        self.assertTrue(body["permissions"]["can_admin_datasources"])
+        self.assertEqual(body["health"]["version"], "11.0.0")
+
+    def test_state_has_feature_flags(self):
+        code, st = self.api("GET", "/api/state")
+        self.assertEqual(code, 200)
+        feats = st["features"]
+        for name in ("parity", "diagnose", "remediate", "samples",
+                     "ds_templates"):
+            self.assertTrue(feats.get(name), name)
+
+
+class DatasourceRouteTests(WebServerTestCase):
+    """DS_TEMPLATES passthrough and datasource CRUD + health."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        websrv.SESSION.grafana_url = "http://gf.local:3000"
+        websrv.SESSION.grafana_token = "tok"
+        FakeGrafanaLive.reset()
+
+    def test_ds_templates_passthrough(self):
+        code, body = self.api("GET", "/api/grafana/ds-templates")
+        self.assertEqual(code, 200)
+        self.assertEqual(body, FAKE_DS_TEMPLATES)
+
+    def test_create_datasource_with_health(self):
+        code, body = self.api(
+            "POST", "/api/grafana/datasource",
+            {"type": "prometheus", "name": "Mimir2",
+             "values": {"url": "http://mimir:9009/prometheus"}})
+        self.assertEqual(code, 200)
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["uid"], "new-ds")
+        self.assertEqual(body["health"]["status"], "ok")
+        payload = FakeGrafanaLive.created_payloads[-1]
+        self.assertEqual(payload["name"], "Mimir2")
+        self.assertEqual(payload["url"],
+                         "http://mimir:9009/prometheus")
+        self.assertTrue(any(c["action"] == "datasource-created"
+                            for c in self.store.list_changes()))
+
+    def test_create_datasource_unknown_type_400(self):
+        code, body = self.api(
+            "POST", "/api/grafana/datasource",
+            {"type": "no-such-type", "name": "X", "values": {}})
+        self.assertEqual(code, 400)
+        self.assertIn("error", body)
+
+    def test_create_datasource_missing_name_400(self):
+        code, body = self.api("POST", "/api/grafana/datasource",
+                              {"type": "prometheus"})
+        self.assertEqual(code, 400)
+        self.assertIn("error", body)
+
+    def test_update_datasource(self):
+        code, body = self.api("PUT", "/api/grafana/datasource/mimir",
+                              {"name": "Mimir", "url": "http://new"})
+        self.assertEqual(code, 200)
+        self.assertEqual(body["datasource"]["uid"], "mimir")
+        self.assertEqual(FakeGrafanaLive.updated[-1][0], "mimir")
+
+    def test_delete_datasource(self):
+        code, body = self.api("DELETE",
+                              "/api/grafana/datasource/old-ds")
+        self.assertEqual(code, 200)
+        self.assertTrue(body["ok"])
+        self.assertIn("old-ds", FakeGrafanaLive.deleted_uids)
+
+    def test_datasource_health_route(self):
+        code, body = self.api(
+            "POST", "/api/grafana/datasource/mimir/health", {})
+        self.assertEqual(code, 200)
+        self.assertEqual(body["status"], "ok")
+
+    def test_put_without_uid_404(self):
+        code, body = self.api("PUT", "/api/grafana/datasource/", {})
+        self.assertEqual(code, 404)
+        self.assertIn("error", body)
+
+
+class ParityDiagnoseFixTests(WebServerTestCase):
+    """Parity + diagnose job flow, /api/fix dispatch, /api/heal."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        websrv.SESSION.grafana_url = "http://gf.local:3000"
+        websrv.SESSION.grafana_token = "tok"
+        websrv.SESSION.nr_api_key = "NRAK-TEST"
+
+    def test_parity_job_persists_artifact(self):
+        slug = "parity-dash"
+        _seed_dash(self.store, slug)
+        self.store.save_artifact(slug, "widget-report",
+                                 {"widgets": [{"panel_id": 1,
+                                               "accountIds": [1]}]})
+        code, resp = self.api("POST", "/api/parity",
+                              {"slug": slug, "from": "now-6h"})
+        self.assertEqual(code, 200)
+        job = poll_job(self.base, resp["job"])
+        self.assertEqual(job["status"], "done")
+        self.assertTrue(any("parity stub running" in ln
+                            for ln in job["log"]))
+        art = self.store.get_artifact(slug, "parity")
+        self.assertIsNotNone(art)
+        self.assertEqual(art["schema"], "nr2grafana/parity/v1")
+        self.assertEqual(art["score"], 100)
+        self.assertEqual(art["range"]["from"], "now-6h")
+
+    def test_parity_requires_slug(self):
+        code, resp = self.api("POST", "/api/parity", {})
+        self.assertEqual(code, 200)  # job starts, then errors
+        job = poll_job(self.base, resp["job"])
+        self.assertEqual(job["status"], "error")
+        self.assertIn("slug", job["error"])
+
+    def test_parity_requires_nr_key(self):
+        websrv.SESSION.nr_api_key = ""
+        try:
+            code, body = self.api("POST", "/api/parity",
+                                  {"slug": "x"})
+            self.assertEqual(code, 400)
+            self.assertIn("New Relic API key", body["error"])
+        finally:
+            websrv.SESSION.nr_api_key = "NRAK-TEST"
+
+    def test_diagnose_job_persists_artifact(self):
+        slug = "diag-dash"
+        _seed_dash(self.store, slug)
+        code, resp = self.api("POST", "/api/diagnose", {"slug": slug})
+        self.assertEqual(code, 200)
+        job = poll_job(self.base, resp["job"])
+        self.assertEqual(job["status"], "done")
+        self.assertTrue(any("diagnose stub running" in ln
+                            for ln in job["log"]))
+        art = self.store.get_artifact(slug, "diagnosis")
+        self.assertIsNotNone(art)
+        self.assertEqual(art["schema"], "nr2grafana/diagnosis/v1")
+        self.assertEqual(art["findings"][0]["id"], "f1")
+
+    def test_fix_dispatches_and_updates_store(self):
+        slug = "fix-dash"
+        _seed_dash(self.store, slug, expr="uup")
+        self.store.save_artifact(
+            slug, "diagnosis",
+            STUBS["nr2grafana.diagnose"].diagnose(None))
+        code, body = self.api("POST", "/api/fix",
+                              {"slug": slug, "finding_id": "f1"})
+        self.assertEqual(code, 200)
+        self.assertTrue(body["applied"])
+        self.assertEqual(body["kind"], "edit-query")
+        self.assertEqual(body["finding_id"], "f1")
+        call = STUBS["nr2grafana.remediate"].apply_calls[-1]
+        self.assertEqual(call["slug"], slug)
+        self.assertEqual(call["fix"]["kind"], "edit-query")
+        row = self.store.get_dashboard(slug)
+        self.assertEqual(
+            row["data"]["panels"][0]["targets"][0]["expr"], "up")
+
+    def test_fix_add_datasource_with_inline_values(self):
+        """/api/fix accepts "values" that complete an add-datasource
+        action's needs_input fields via build_datasource_payload, so
+        the datasource can be created from the Diagnostics view."""
+        slug = "fix-ds-dash"
+        _seed_dash(self.store, slug)
+        self.store.save_artifact(slug, "diagnosis", {
+            "schema": "nr2grafana/diagnosis/v1",
+            "findings": [{
+                "id": "ds1", "severity": "blocker",
+                "area": "datasource",
+                "problem": "prometheus datasource missing",
+                "fix": {"description": "create it",
+                        "kind": "add-datasource",
+                        "action": {"name": "Prometheus",
+                                   "type": "prometheus",
+                                   "access": "proxy", "url": "",
+                                   "needs_input": ["url"]}}}],
+            "summary": {"blocker": 1}})
+        code, body = self.api(
+            "POST", "/api/fix",
+            {"slug": slug, "finding_id": "ds1",
+             "values": {"url": "http://mimir:9009/prometheus"}})
+        self.assertEqual(code, 200)
+        call = STUBS["nr2grafana.remediate"].apply_calls[-1]
+        action = call["fix"]["action"]
+        self.assertEqual(action["url"],
+                         "http://mimir:9009/prometheus")
+        self.assertNotIn("needs_input", action)
+
+    def test_fix_add_datasource_bad_type_with_values_400(self):
+        slug = "fix-ds-dash-2"
+        _seed_dash(self.store, slug)
+        self.store.save_artifact(slug, "diagnosis", {
+            "findings": [{
+                "id": "ds2", "severity": "blocker",
+                "area": "datasource", "problem": "x",
+                "fix": {"kind": "add-datasource",
+                        "action": {"type": "no-such-type",
+                                   "needs_input": ["url"]}}}]})
+        code, body = self.api(
+            "POST", "/api/fix",
+            {"slug": slug, "finding_id": "ds2",
+             "values": {"url": "http://x"}})
+        self.assertEqual(code, 400)
+        self.assertIn("error", body)
+
+    def test_fix_unknown_finding_404(self):
+        slug = "fix-dash-2"
+        _seed_dash(self.store, slug)
+        self.store.save_artifact(
+            slug, "diagnosis",
+            STUBS["nr2grafana.diagnose"].diagnose(None))
+        code, body = self.api("POST", "/api/fix",
+                              {"slug": slug,
+                               "finding_id": "nope"})
+        self.assertEqual(code, 404)
+        self.assertIn("error", body)
+
+    def test_fix_without_diagnosis_404(self):
+        slug = "fix-dash-3"
+        _seed_dash(self.store, slug)
+        code, body = self.api("POST", "/api/fix",
+                              {"slug": slug, "finding_id": "f1"})
+        self.assertEqual(code, 404)
+        self.assertIn("Diagnose", body["error"])
+
+    def test_heal_job_persists_and_fixes(self):
+        slug = "heal-dash"
+        _seed_dash(self.store, slug, expr="uup")
+        code, resp = self.api("POST", "/api/heal",
+                              {"slug": slug, "push": True})
+        self.assertEqual(code, 200)
+        job = poll_job(self.base, resp["job"])
+        self.assertEqual(job["status"], "done")
+        self.assertTrue(any("heal round 1" in ln
+                            for ln in job["log"]))
+        self.assertEqual(job["result"]["fixed"], 1)
+        self.assertIn("push", job["result"])
+        row = self.store.get_dashboard(slug)
+        self.assertEqual(
+            row["data"]["panels"][0]["targets"][0]["expr"], "up")
+        self.assertIsNotNone(self.store.get_artifact(slug, "heal"))
+
+    def test_readiness_route(self):
+        slug = "ready-dash"
+        _seed_dash(self.store, slug)
+        code, body = self.api("GET", "/api/readiness?slug=" + slug)
+        self.assertEqual(code, 200)
+        self.assertEqual(body["grade"], "blocked")  # no parity yet
+        self.store.save_artifact(slug, "parity",
+                                 {"score": 100, "summary": {}})
+        code, body = self.api("GET", "/api/readiness?slug=" + slug)
+        self.assertEqual(code, 200)
+        self.assertEqual(body["grade"], "ready")
+
+    def test_readiness_requires_slug(self):
+        code, body = self.api("GET", "/api/readiness")
+        self.assertEqual(code, 400)
+        self.assertIn("error", body)
+
+    def test_readiness_unknown_slug_404(self):
+        code, body = self.api("GET", "/api/readiness?slug=zzz")
+        self.assertEqual(code, 404)
+        self.assertIn("error", body)
+
+
+class SamplesReviewTests(WebServerTestCase):
+    """/api/samples job, /api/review roundtrip, readiness folding.
+
+    Uses the REAL nr2grafana.samples module (it has no stubbed
+    dependencies) against the fake GrafanaLive/NerdGraph, so the
+    whole route -> collect -> persist path is exercised."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        websrv.SESSION.grafana_url = "http://gf.local:3000"
+        websrv.SESSION.grafana_token = "tok"
+        websrv.SESSION.nr_api_key = "NRAK-TEST"
+        cls.slug = "samples-dash"
+        dash = {"title": "S", "uid": cls.slug,
+                "templating": {"list": []},
+                "panels": [
+                    {"id": 1, "title": "P1", "type": "timeseries",
+                     "targets": [{"refId": "A", "expr": "up",
+                                  "datasource": {
+                                      "type": "prometheus",
+                                      "uid": "mimir"}}]},
+                    {"id": 2, "title": "Logs", "type": "logs",
+                     "targets": [{
+                         "refId": "A",
+                         "expr": '{service_name="checkout"} | json',
+                         "datasource": {"type": "loki",
+                                        "uid": "loki1"}}]}]}
+        cls.store.upsert_dashboard(cls.slug, "S", "seed", "", dash)
+        cls.store.save_artifact(cls.slug, "widget-report", {
+            "widgets": [
+                {"panel_id": 1, "account_ids": [1],
+                 "nrql": ["SELECT count(*) FROM Transaction"],
+                 "queries": [{"expr": "up"}]},
+                {"panel_id": 2, "account_ids": [1],
+                 "nrql": ["SELECT count(*) FROM Log "
+                          "WHERE service = 'checkout'"],
+                 "queries": [{"expr": "x"}]}]})
+
+    def test_samples_job_and_panel_merge(self):
+        code, resp = self.api("POST", "/api/samples",
+                              {"slug": self.slug, "limit": 3})
+        self.assertEqual(code, 200)
+        job = poll_job(self.base, resp["job"])
+        self.assertEqual(job["status"], "done")
+        art = self.store.get_artifact(self.slug, "samples")
+        self.assertIsNotNone(art)
+        self.assertEqual(art["schema"], "nr2grafana/samples/v1")
+        rows = {r["panel_id"]: r for r in art["panels"]}
+        self.assertEqual(sorted(rows), [1, 2])
+        # prometheus side: datapoints from the fake frames
+        gf1 = rows[1]["grafana"]
+        self.assertEqual(gf1["kind"], "points")
+        self.assertEqual(gf1["samples"][0]["points"][-1][1], 2.0)
+        # loki side: raw log lines with timestamps
+        gf2 = rows[2]["grafana"]
+        self.assertEqual(gf2["kind"], "logs")
+        self.assertEqual([s["line"] for s in gf2["samples"]],
+                         ["log line one", "log line two"])
+        self.assertTrue(gf2["samples"][0]["ts"])
+        # NR side: aggregate rows for metrics, derived SELECT * for
+        # the log panel
+        self.assertEqual(rows[1]["nr"]["kind"], "rows")
+        self.assertEqual(rows[1]["nr"]["samples"], [{"count": 1}])
+        self.assertEqual(rows[2]["nr"]["kind"], "events")
+        self.assertIn("SELECT * FROM Log", rows[2]["nr"]["nrql"])
+        self.assertIn("LIMIT 3", rows[2]["nr"]["nrql"])
+        # panel-scoped re-pull merges into the stored artifact
+        code, resp = self.api("POST", "/api/samples",
+                              {"slug": self.slug, "panel_id": 2})
+        self.assertEqual(code, 200)
+        job = poll_job(self.base, resp["job"])
+        self.assertEqual(job["status"], "done")
+        art = self.store.get_artifact(self.slug, "samples")
+        self.assertEqual(sorted(r["panel_id"]
+                                for r in art["panels"]), [1, 2])
+
+    def test_samples_missing_slug_job_errors(self):
+        code, resp = self.api("POST", "/api/samples", {})
+        self.assertEqual(code, 200)  # job starts, then errors
+        job = poll_job(self.base, resp["job"])
+        self.assertEqual(job["status"], "error")
+        self.assertIn("slug", job["error"])
+
+    def test_review_roundtrip(self):
+        slug = "review-dash"
+        _seed_dash(self.store, slug)
+        code, body = self.api(
+            "POST", "/api/review",
+            {"slug": slug, "panel_id": 1, "refId": "A",
+             "verdict": "confirmed", "note": "looks right"})
+        self.assertEqual(code, 200)
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["review"]["verdict"], "confirmed")
+        self.assertEqual(body["summary"]["confirmed"], 1)
+        self.assertEqual(body["summary"]["unreviewed"], 0)
+        code, got = self.api("GET", "/api/review?slug=" + slug)
+        self.assertEqual(code, 200)
+        self.assertEqual(got["reviews"]["1:A"]["note"],
+                         "looks right")
+        self.assertEqual(got["summary"]["confirmed"], 1)
+        changes = self.store.list_changes(slug)
+        self.assertTrue(any(c["action"] == "panel-review"
+                            for c in changes))
+        # verdicts merge: rejecting the same target replaces it
+        code, body = self.api(
+            "POST", "/api/review",
+            {"slug": slug, "panel_id": 1, "refId": "A",
+             "verdict": "rejected", "note": "wrong stream"})
+        self.assertEqual(code, 200)
+        self.assertEqual(body["summary"]["rejected"], 1)
+        self.assertEqual(body["summary"]["confirmed"], 0)
+
+    def test_review_invalid_verdict_400(self):
+        slug = "review-dash-bad"
+        _seed_dash(self.store, slug)
+        code, body = self.api(
+            "POST", "/api/review",
+            {"slug": slug, "panel_id": 1, "refId": "A",
+             "verdict": "maybe"})
+        self.assertEqual(code, 400)
+        self.assertIn("verdict", body["error"])
+
+    def test_review_unknown_slug_404(self):
+        code, body = self.api(
+            "POST", "/api/review",
+            {"slug": "zzz-none", "panel_id": 1, "refId": "A",
+             "verdict": "confirmed"})
+        self.assertEqual(code, 404)
+        self.assertIn("error", body)
+        code, body = self.api("GET", "/api/review?slug=zzz-none")
+        self.assertEqual(code, 404)
+
+    def test_readiness_folds_in_review(self):
+        slug = "review-ready-dash"
+        _seed_dash(self.store, slug)
+        self.store.save_artifact(slug, "parity",
+                                 {"score": 100, "summary": {}})
+        code, body = self.api("GET", "/api/readiness?slug=" + slug)
+        self.assertEqual(code, 200)
+        self.assertEqual(body["grade"], "ready")
+        self.api("POST", "/api/review",
+                 {"slug": slug, "panel_id": 1, "refId": "A",
+                  "verdict": "rejected", "note": "not my logs"})
+        code, body = self.api("GET", "/api/readiness?slug=" + slug)
+        self.assertEqual(code, 200)
+        self.assertEqual(body["grade"], "blocked")
+        self.assertEqual(body["review"]["rejected"], 1)
+
+    def test_detail_and_listing_include_review(self):
+        slug = "review-detail-dash"
+        _seed_dash(self.store, slug)
+        self.api("POST", "/api/review",
+                 {"slug": slug, "panel_id": 1, "refId": "A",
+                  "verdict": "confirmed"})
+        code, det = self.api("GET", "/api/dashboards/" + slug)
+        self.assertEqual(code, 200)
+        self.assertIn("samples", det)
+        self.assertIn("1:A", (det["review"] or {})["reviews"])
+        code, data = self.api("GET", "/api/dashboards")
+        self.assertEqual(code, 200)
+        row = next(d for d in data["dashboards"]
+                   if d["slug"] == slug)
+        self.assertEqual(row["review_summary"]["confirmed"], 1)
+
+
+class DownloadTests(WebServerTestCase):
+    """Downloads stream attachments; slugs validated via the store."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.slug = "dl-dash"
+        cls.dash = _seed_dash(cls.store, cls.slug, expr="up")
+        cls.pkg = os.path.join(cls.tmp.name, "pkgs", cls.slug)
+        os.makedirs(cls.pkg)
+        with open(os.path.join(cls.pkg, "dashboard.json"), "w",
+                  encoding="utf-8") as f:
+            json.dump(cls.dash, f)
+        with open(os.path.join(cls.pkg, "README.md"), "w",
+                  encoding="utf-8") as f:
+            f.write("# readme\n")
+        cls.store.set_setting("package_dir." + cls.slug, cls.pkg)
+
+    def test_download_dashboard_json(self):
+        code, headers, raw = http_bin(
+            self.base, "/download/dashboard/%s.json" % self.slug)
+        self.assertEqual(code, 200)
+        self.assertIn("attachment",
+                      headers.get("Content-Disposition", ""))
+        self.assertIn(self.slug + ".json",
+                      headers.get("Content-Disposition", ""))
+        dash = json.loads(raw.decode("utf-8"))
+        self.assertEqual(dash["uid"], self.slug)
+        self.assertIn("panels", dash)
+
+    def test_download_package_zip_is_valid_zip(self):
+        code, headers, raw = http_bin(
+            self.base, "/download/package/%s.zip" % self.slug)
+        self.assertEqual(code, 200)
+        self.assertEqual(headers.get("Content-Type"),
+                         "application/zip")
+        self.assertIn("attachment",
+                      headers.get("Content-Disposition", ""))
+        zf = zipfile.ZipFile(io.BytesIO(raw))
+        self.assertIsNone(zf.testzip())
+        names = zf.namelist()
+        self.assertIn(self.slug + "/dashboard.json", names)
+        self.assertIn(self.slug + "/README.md", names)
+        inner = json.loads(zf.read(self.slug + "/dashboard.json"))
+        self.assertEqual(inner["uid"], self.slug)
+
+    def test_download_all_zip(self):
+        code, headers, raw = http_bin(self.base, "/download/all.zip")
+        self.assertEqual(code, 200)
+        zf = zipfile.ZipFile(io.BytesIO(raw))
+        self.assertIsNone(zf.testzip())
+        self.assertIn(self.slug + "/dashboard.json", zf.namelist())
+
+    def test_download_unknown_slug_404(self):
+        for path in ("/download/dashboard/no-such.json",
+                     "/download/package/no-such.zip"):
+            code, headers, raw = http_bin(self.base, path)
+            self.assertEqual(code, 404, path)
+            self.assertIn("error",
+                          json.loads(raw.decode("utf-8")))
+
+    def test_download_traversal_is_404(self):
+        for path in ("/download/dashboard/..%2f..%2fetc%2fpasswd.json",
+                     "/download/package/..%2f..%2fsecret.zip",
+                     "/download/dashboard/../../etc/passwd.json"):
+            code, headers, raw = http_bin(self.base, path)
+            self.assertEqual(code, 404, path)
+
+    def test_download_package_missing_dir_404(self):
+        slug = "no-pkg-dash"
+        _seed_dash(self.store, slug)
+        code, headers, raw = http_bin(
+            self.base, "/download/package/%s.zip" % slug)
+        self.assertEqual(code, 404)
+
+
+class MetricsAndLabelsTests(WebServerTestCase):
+    """/api/metrics autocomplete (with 60s cache) and /api/labels."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        websrv.SESSION.grafana_url = "http://gf.local:3000"
+        websrv.SESSION.grafana_token = "tok"
+
+    def setUp(self):
+        with websrv._METRICS_LOCK:
+            websrv._METRICS_CACHE.clear()
+        FakeGrafanaLive.metric_calls = []
+
+    def test_metrics_fetch_filter_and_cache(self):
+        code, body = self.api("GET", "/api/metrics?uid=mimir")
+        self.assertEqual(code, 200)
+        self.assertEqual(body["total"], 3)
+        self.assertIn("up", body["metrics"])
+        # second call with a filter must be served from the cache
+        code, body = self.api("GET", "/api/metrics?uid=mimir&q=total")
+        self.assertEqual(code, 200)
+        self.assertEqual(sorted(body["metrics"]),
+                         ["http_requests_total",
+                          "node_cpu_seconds_total"])
+        self.assertEqual(FakeGrafanaLive.metric_calls, ["mimir"])
+
+    def test_metrics_cache_expires(self):
+        with websrv._METRICS_LOCK:
+            websrv._METRICS_CACHE["mimir"] = (
+                time.time() - websrv._METRICS_TTL - 1,
+                ["stale_metric"])
+        code, body = self.api("GET", "/api/metrics?uid=mimir")
+        self.assertEqual(code, 200)
+        self.assertNotIn("stale_metric", body["metrics"])
+        self.assertEqual(FakeGrafanaLive.metric_calls, ["mimir"])
+
+    def test_metrics_capped_at_200(self):
+        with websrv._METRICS_LOCK:
+            websrv._METRICS_CACHE["big"] = (
+                time.time(), ["m%03d" % i for i in range(300)])
+        code, body = self.api("GET", "/api/metrics?uid=big")
+        self.assertEqual(code, 200)
+        self.assertEqual(body["total"], 300)
+        self.assertEqual(len(body["metrics"]), 200)
+        self.assertEqual(FakeGrafanaLive.metric_calls, [])
+
+    def test_metrics_requires_uid(self):
+        code, body = self.api("GET", "/api/metrics")
+        self.assertEqual(code, 400)
+        self.assertIn("error", body)
+
+    def test_labels_prometheus_values(self):
+        code, body = self.api(
+            "GET", "/api/labels?uid=mimir&type=prometheus&label=job")
+        self.assertEqual(code, 200)
+        self.assertEqual(body["values"], ["api", "web"])
+
+    def test_labels_loki(self):
+        code, body = self.api("GET",
+                              "/api/labels?uid=loki1&type=loki")
+        self.assertEqual(code, 200)
+        self.assertEqual(body["labels"], ["job", "namespace"])
+        code, body = self.api(
+            "GET", "/api/labels?uid=loki1&type=loki&label=namespace")
+        self.assertEqual(code, 200)
+        self.assertEqual(body["values"], ["default"])
+
+    def test_labels_bad_type_400(self):
+        code, body = self.api("GET",
+                              "/api/labels?uid=x&type=graphite")
         self.assertEqual(code, 400)
         self.assertIn("error", body)
 

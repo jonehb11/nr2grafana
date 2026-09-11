@@ -17,6 +17,7 @@ from unittest import mock
 import nr2grafana
 from nr2grafana import cli
 from nr2grafana.config import DEFAULT_CONFIG
+from nr2grafana.grafana.client import GrafanaError
 from nr2grafana.store import Store
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -209,7 +210,7 @@ class NoCommandTests(unittest.TestCase):
 
 class VersionTests(unittest.TestCase):
     def test_package_version(self):
-        self.assertEqual(nr2grafana.__version__, "1.1.0")
+        self.assertEqual(nr2grafana.__version__, "1.2.0")
 
 
 class _TempDbMixin:
@@ -556,6 +557,443 @@ class GrafanaImportCommandTests(_TempDbMixin, unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("check", out)
         self.assertIn("import", out)
+
+
+def _fake_parity_report(summary, score=90):
+    panels = []
+    n = 0
+    for verdict in sorted(summary):
+        for _ in range(summary[verdict]):
+            n += 1
+            panels.append({
+                "panel_id": n, "panel_title": "Panel %d" % n,
+                "refId": "A", "nrql": "SELECT count(*) FROM Txn",
+                "expr": "up", "datasource": "prom1",
+                "verdict": verdict, "detail": "detail %d" % n,
+                "ratio": None, "nr_summary": {}, "gf_summary": {}})
+    return {"schema": "nr2grafana/parity/v1", "dashboard": "Checkout",
+            "generated_at": "2026-01-01T00:00:00Z",
+            "range": {"from": "now-1h", "to": "now"},
+            "panels": panels, "score": score, "summary": summary}
+
+
+class _PackageMixin(_TempDbMixin):
+    """A minimal on-disk package dir for parity/diagnose/heal tests."""
+
+    def setUp(self):
+        super().setUp()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.pkg = os.path.join(self.tmp.name, "checkout")
+        os.makedirs(self.pkg)
+        self.dash = {"title": "Checkout", "uid": "u1",
+                     "panels": [{"id": 1, "type": "timeseries",
+                                 "title": "Panel 1",
+                                 "targets": [{"refId": "A",
+                                              "expr": "up"}]}]}
+        with open(os.path.join(self.pkg, "dashboard.json"), "w",
+                  encoding="utf-8") as f:
+            json.dump(self.dash, f)
+        with open(os.path.join(self.pkg, "widget-report.json"), "w",
+                  encoding="utf-8") as f:
+            json.dump([{"panel_id": 1, "widget": "w",
+                        "confidence": "exact",
+                        "nrql": ["SELECT count(*) FROM Txn"],
+                        "account_ids": [1234], "queries": [],
+                        "notes": []}], f)
+        with open(os.path.join(self.pkg, "requirements.json"), "w",
+                  encoding="utf-8") as f:
+            json.dump({"schema": "nr2grafana/requirements/v1",
+                       "dashboard": "Checkout",
+                       "datasources": []}, f)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+        super().tearDown()
+
+
+class GrafanaParityTests(_PackageMixin, unittest.TestCase):
+    def _run(self, report, extra=()):
+        fake = _fake_live(check_rows=[])
+        env = {"NEW_RELIC_ACCOUNT_ID": ""}
+        with mock.patch.object(cli, "GrafanaLive",
+                               return_value=fake) as live_ctor, \
+                mock.patch.object(cli, "NerdGraphClient") as nr_ctor, \
+                mock.patch.object(cli, "run_parity",
+                                  return_value=report) as rp, \
+                mock.patch.dict(os.environ, env):
+            code, out, err = run_cli(
+                ["grafana", "parity", self.pkg,
+                 "--url", "http://gr:3000", "--token", "tok",
+                 "--api-key", "NRAK-x"] + list(extra))
+        return code, out, err, fake, live_ctor, nr_ctor, rp
+
+    def test_match_exits_zero_and_writes_results(self):
+        report = _fake_parity_report({"match": 2, "close": 1})
+        code, out, err, fake, live_ctor, nr_ctor, rp = \
+            self._run(report)
+        self.assertEqual(code, 0)
+        live_ctor.assert_called_once_with("http://gr:3000",
+                                          token="tok", insecure=False)
+        nr_ctor.assert_called_once_with("NRAK-x", region="US")
+        res = os.path.join(self.pkg, "parity-results.json")
+        self.assertTrue(os.path.isfile(res))
+        with open(res, encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["score"], 90)
+        self.assertIn("match", out)
+        self.assertIn("score 90/100", out)
+        self.assertIn("readiness: ready", out)
+
+    def test_account_ids_from_widget_report(self):
+        report = _fake_parity_report({"match": 1})
+        _, _, _, _, _, nr_ctor, rp = self._run(report)
+        args, kwargs = rp.call_args
+        self.assertIs(args[0], nr_ctor.return_value)
+        self.assertEqual(args[1], [1234])
+        self.assertEqual(args[3]["title"], "Checkout")
+        self.assertEqual(kwargs["frm"], "now-1h")
+        self.assertEqual(kwargs["to"], "now")
+
+    def test_account_id_flag_wins(self):
+        report = _fake_parity_report({"match": 1})
+        _, _, _, _, _, _, rp = self._run(
+            report, extra=["--account-id", "777",
+                           "--from", "now-6h", "--to", "now-1h"])
+        args, kwargs = rp.call_args
+        self.assertEqual(args[1], [777])
+        self.assertEqual(kwargs["frm"], "now-6h")
+        self.assertEqual(kwargs["to"], "now-1h")
+
+    def test_gf_error_exits_one(self):
+        report = _fake_parity_report({"match": 1, "gf-error": 1},
+                                     score=45)
+        code, out, _, _, _, _, _ = self._run(report)
+        self.assertEqual(code, 1)
+
+    def test_value_mismatch_is_not_failure(self):
+        report = _fake_parity_report({"value-mismatch": 1}, score=25)
+        code, out, _, _, _, _, _ = self._run(report)
+        self.assertEqual(code, 0)
+        self.assertIn("readiness: blocked", out)
+
+    def test_persisted_to_store(self):
+        self._run(_fake_parity_report({"match": 1}))
+        with Store(self.db_path) as store:
+            art = store.get_artifact("checkout", "parity")
+        self.assertEqual(art["schema"], "nr2grafana/parity/v1")
+
+    def test_missing_api_key_exits_two(self):
+        env = dict(os.environ)
+        env.pop("NEW_RELIC_API_KEY", None)
+        with mock.patch.dict(os.environ, env, clear=True):
+            with self.assertRaises(SystemExit) as ctx:
+                run_cli(["grafana", "parity", self.pkg,
+                         "--url", "http://gr:3000", "--token", "t"])
+        self.assertEqual(ctx.exception.code, 2)
+
+
+def _fake_diagnosis(blockers=0, warns=0):
+    findings = []
+    for i in range(blockers):
+        findings.append({
+            "id": "b%d" % i, "severity": "blocker",
+            "area": "datasource", "problem": "no loki datasource",
+            "evidence": "0 of type loki",
+            "fix": {"description": "Add a Loki datasource",
+                    "kind": "add-datasource", "action": {}}})
+    for i in range(warns):
+        findings.append({
+            "id": "w%d" % i, "severity": "warn", "area": "panel",
+            "panel_id": 1, "problem": "metric absent",
+            "evidence": "",
+            "fix": {"description": "rename the metric",
+                    "kind": "edit-query", "action": {}}})
+    return {"schema": "nr2grafana/diagnosis/v1",
+            "generated_at": "2026-01-01T00:00:00Z",
+            "findings": findings,
+            "summary": {"findings": len(findings),
+                        "blocker": blockers, "warn": warns,
+                        "info": 0, "by_area": {}, "panels": []}}
+
+
+class GrafanaDiagnoseTests(_PackageMixin, unittest.TestCase):
+    def _run(self, diagnosis):
+        fake = _fake_live()
+        env = {"NEW_RELIC_API_KEY": ""}
+        with mock.patch.object(cli, "GrafanaLive",
+                               return_value=fake) as live_ctor, \
+                mock.patch.object(cli, "diagnose",
+                                  return_value=diagnosis) as dg, \
+                mock.patch.dict(os.environ, env):
+            code, out, err = run_cli(
+                ["grafana", "diagnose", self.pkg,
+                 "--url", "http://gr:3000", "--token", "tok"])
+        return code, out, err, fake, live_ctor, dg
+
+    def test_clean_run_exits_zero(self):
+        code, out, err, fake, live_ctor, dg = self._run(
+            _fake_diagnosis())
+        self.assertEqual(code, 0)
+        live_ctor.assert_called_once_with("http://gr:3000",
+                                          token="tok", insecure=False)
+        self.assertIn("no problems found", out)
+        self.assertTrue(os.path.isfile(
+            os.path.join(self.pkg, "diagnosis.json")))
+
+    def test_diagnose_inputs_wired(self):
+        _, _, _, fake, _, dg = self._run(_fake_diagnosis())
+        args, kwargs = dg.call_args
+        self.assertIs(args[0], fake)
+        self.assertIsNone(kwargs["nr"])  # no NR key configured
+        self.assertEqual(kwargs["dash"]["title"], "Checkout")
+        self.assertEqual(kwargs["requirements"]["schema"],
+                         "nr2grafana/requirements/v1")
+
+    def test_blockers_exit_one_and_print_fix(self):
+        code, out, err, _, _, _ = self._run(
+            _fake_diagnosis(blockers=1, warns=1))
+        self.assertEqual(code, 1)
+        self.assertIn("no loki datasource", out)
+        self.assertIn("Add a Loki datasource", out)
+        self.assertIn("blocker", out)
+        self.assertIn("1 blocker(s)", err)
+
+    def test_persisted_to_store(self):
+        self._run(_fake_diagnosis(warns=1))
+        with Store(self.db_path) as store:
+            art = store.get_artifact("checkout", "diagnosis")
+        self.assertEqual(art["schema"], "nr2grafana/diagnosis/v1")
+
+
+class GrafanaHealTests(_PackageMixin, unittest.TestCase):
+    def _run(self, result, extra=()):
+        fake = _fake_live()
+        env = {"NEW_RELIC_API_KEY": ""}
+        with mock.patch.object(cli, "GrafanaLive",
+                               return_value=fake) as live_ctor, \
+                mock.patch.object(cli, "auto_heal",
+                                  return_value=result) as ah, \
+                mock.patch.dict(os.environ, env):
+            code, out, err = run_cli(
+                ["grafana", "heal", self.pkg,
+                 "--url", "http://gr:3000", "--token", "tok"]
+                + list(extra))
+        return code, out, err, fake, live_ctor, ah
+
+    @staticmethod
+    def _result(fixed=1, error=""):
+        out = {"rounds": [{"round": 1, "tests": {"data": 1,
+                                                 "no-data": 1},
+                           "findings": 2, "applied": [],
+                           "fixed": fixed}],
+               "fixed": fixed, "remaining_findings": [],
+               "converged": True}
+        if error:
+            out["error"] = error
+        return out
+
+    def test_heal_prints_round_summary(self):
+        code, out, err, fake, _, ah = self._run(self._result())
+        self.assertEqual(code, 0)
+        self.assertIn("round 1:", out)
+        self.assertIn("1 data", out)
+        self.assertIn("2 finding(s), 1 fixed", out)
+        self.assertIn("1 fix(es) applied, 0 finding(s) remaining",
+                      out)
+        self.assertIn("(converged)", out)
+
+    def test_auto_heal_wiring(self):
+        _, _, _, fake, _, ah = self._run(self._result())
+        args, kwargs = ah.call_args
+        self.assertIs(args[0], fake)
+        self.assertIsNone(args[1])  # no NR key
+        self.assertEqual(args[2]["title"], "Checkout")
+        self.assertEqual(args[3][0]["panel_id"], 1)  # widget report
+        self.assertEqual(args[5], "checkout")  # slug
+        self.assertEqual(os.path.realpath(args[6]),
+                         os.path.realpath(self.pkg))
+        self.assertFalse(kwargs["push"])
+        self.assertEqual(kwargs["max_rounds"], 3)
+
+    def test_push_flag_forwarded(self):
+        _, _, _, _, _, ah = self._run(self._result(),
+                                      extra=["--push"])
+        self.assertTrue(ah.call_args[1]["push"])
+
+    def test_error_exits_one(self):
+        code, _, err, _, _, _ = self._run(
+            self._result(fixed=0, error="cannot test dashboard"))
+        self.assertEqual(code, 1)
+        self.assertIn("cannot test dashboard", err)
+
+    def test_heal_result_persisted(self):
+        self._run(self._result())
+        with Store(self.db_path) as store:
+            art = store.get_artifact("checkout", "heal")
+        self.assertEqual(art["fixed"], 1)
+
+
+class GrafanaDatasourcesTests(unittest.TestCase):
+    def test_list_with_health(self):
+        fake = _fake_live()
+        fake.datasources.return_value = [
+            {"uid": "p1", "name": "Mimir", "type": "prometheus",
+             "isDefault": True},
+            {"uid": "l1", "name": "Loki", "type": "loki"}]
+        fake.datasource_health.side_effect = [
+            {"status": "ok", "message": "OK"},
+            {"status": "error", "message": "connection refused"}]
+        with mock.patch.object(cli, "GrafanaLive",
+                               return_value=fake) as ctor:
+            code, out, err = run_cli(
+                ["grafana", "datasources",
+                 "--url", "http://gr:3000", "--token", "tok"])
+        self.assertEqual(code, 0)
+        ctor.assert_called_once_with("http://gr:3000", token="tok",
+                                     insecure=False)
+        self.assertIn("Mimir", out)
+        self.assertIn("Loki", out)
+        self.assertIn("ok", out)
+        self.assertIn("connection refused", out)
+
+    def test_connection_error_exits_one(self):
+        fake = _fake_live()
+        fake.datasources.side_effect = GrafanaError("401 unauthorized")
+        with mock.patch.object(cli, "GrafanaLive", return_value=fake):
+            code, out, err = run_cli(
+                ["grafana", "datasources",
+                 "--url", "http://gr:3000", "--token", "bad"])
+        self.assertEqual(code, 1)
+        self.assertIn("401", err)
+
+    def test_empty_list_ok(self):
+        fake = _fake_live()
+        fake.datasources.return_value = []
+        with mock.patch.object(cli, "GrafanaLive", return_value=fake):
+            code, out, err = run_cli(
+                ["grafana", "datasources",
+                 "--url", "http://gr:3000", "--token", "tok"])
+        self.assertEqual(code, 0)
+        self.assertIn("no datasources", err)
+
+
+class GrafanaAddDatasourceTests(unittest.TestCase):
+    def _run(self, argv, fake=None):
+        fake = fake or _fake_live()
+        fake.create_datasource.return_value = {
+            "datasource": {"uid": "new1"}}
+        fake.datasource_health.return_value = {"status": "ok",
+                                               "message": ""}
+        with mock.patch.object(cli, "GrafanaLive",
+                               return_value=fake) as ctor:
+            code, out, err = run_cli(argv)
+        return code, out, err, fake, ctor
+
+    def test_create_prometheus(self):
+        code, out, err, fake, ctor = self._run(
+            ["grafana", "add-datasource", "--type", "prometheus",
+             "--name", "Mimir", "--set",
+             "url=http://mimir:9009/prometheus",
+             "--url", "http://gr:3000", "--token", "tok"])
+        self.assertEqual(code, 0)
+        ctor.assert_called_once_with("http://gr:3000", token="tok",
+                                     insecure=False)
+        payload = fake.create_datasource.call_args[0][0]
+        self.assertEqual(payload, {
+            "name": "Mimir", "type": "prometheus",
+            "access": "proxy",
+            "url": "http://mimir:9009/prometheus"})
+        fake.datasource_health.assert_called_once_with("new1")
+        self.assertIn("new1", out)
+        self.assertIn("ok", out)
+
+    def test_unknown_type_exits_two(self):
+        code, out, err, _, _ = self._run(
+            ["grafana", "add-datasource", "--type", "influxdb",
+             "--name", "X",
+             "--url", "http://gr:3000", "--token", "tok"])
+        self.assertEqual(code, 2)
+        self.assertIn("unknown datasource type", err)
+        self.assertIn("prometheus", err)  # known types listed
+
+    def test_missing_required_field_exits_two(self):
+        code, out, err, _, _ = self._run(
+            ["grafana", "add-datasource", "--type", "tempo",
+             "--name", "Tempo",
+             "--url", "http://gr:3000", "--token", "tok"])
+        self.assertEqual(code, 2)
+        self.assertIn("url", err)
+        self.assertIn("--set url=", err)
+
+    def test_bad_set_syntax_exits_two(self):
+        code, out, err, _, _ = self._run(
+            ["grafana", "add-datasource", "--type", "tempo",
+             "--name", "Tempo", "--set", "nonsense",
+             "--url", "http://gr:3000", "--token", "tok"])
+        self.assertEqual(code, 2)
+        self.assertIn("field=value", err)
+
+    def test_secret_fields_prompted_on_tty(self):
+        fake = _fake_live()
+        fake.create_datasource.return_value = {
+            "datasource": {"uid": "cw1"}}
+        fake.datasource_health.return_value = {"status": "ok",
+                                               "message": ""}
+        with mock.patch.object(cli, "GrafanaLive",
+                               return_value=fake), \
+                mock.patch.object(cli.sys.stdin, "isatty",
+                                  return_value=True), \
+                mock.patch("getpass.getpass",
+                           side_effect=["AKID", "SECRET"]):
+            code, out, err = run_cli(
+                ["grafana", "add-datasource", "--type", "cloudwatch",
+                 "--name", "CW",
+                 "--set", "authType=keys",
+                 "--set", "defaultRegion=us-east-1",
+                 "--url", "http://gr:3000", "--token", "tok"])
+        self.assertEqual(code, 0)
+        payload = fake.create_datasource.call_args[0][0]
+        self.assertEqual(payload["secureJsonData"],
+                         {"accessKey": "AKID", "secretKey": "SECRET"})
+        self.assertEqual(payload["jsonData"]["authType"], "keys")
+        # secrets never echoed
+        self.assertNotIn("SECRET", out)
+        self.assertNotIn("SECRET", err)
+
+    def test_health_error_exits_one(self):
+        fake = _fake_live()
+        fake.create_datasource.return_value = {
+            "datasource": {"uid": "new1"}}
+        fake.datasource_health.return_value = {
+            "status": "error", "message": "unreachable"}
+        with mock.patch.object(cli, "GrafanaLive",
+                               return_value=fake):
+            code, out, err = run_cli(
+                ["grafana", "add-datasource", "--type", "tempo",
+                 "--name", "Tempo", "--set", "url=http://tempo:3200",
+                 "--url", "http://gr:3000", "--token", "tok"])
+        self.assertEqual(code, 1)
+        self.assertIn("unreachable", out)
+
+    def test_create_failure_exits_one(self):
+        fake = _fake_live()
+        fake.create_datasource.side_effect = GrafanaError("403")
+        with mock.patch.object(cli, "GrafanaLive",
+                               return_value=fake):
+            code, out, err = run_cli(
+                ["grafana", "add-datasource", "--type", "tempo",
+                 "--name", "Tempo", "--set", "url=http://tempo:3200",
+                 "--url", "http://gr:3000", "--token", "tok"])
+        self.assertEqual(code, 1)
+        self.assertIn("Admin", err)
+
+
+class NewGrafanaCommandsListedTests(unittest.TestCase):
+    def test_grafana_help_lists_new_commands(self):
+        code, out, err = run_cli(["grafana"])
+        self.assertEqual(code, 2)
+        for name in ("parity", "diagnose", "heal", "datasources",
+                     "add-datasource"):
+            self.assertIn(name, out)
 
 
 class ChangesCommandTests(_TempDbMixin, unittest.TestCase):

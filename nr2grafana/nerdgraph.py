@@ -79,6 +79,23 @@ query($guid: EntityGuid!) {
 """
 
 
+_NRQL_QUERY = """
+query($id: Int!, $q: Nrql!) {
+  actor {
+    account(id: $id) {
+      nrql(query: $q, timeout: 30) {
+        results
+        metadata {
+          facets
+          timeWindow { begin end }
+        }
+      }
+    }
+  }
+}
+"""
+
+
 class NerdGraphError(Exception):
     pass
 
@@ -89,7 +106,12 @@ class NerdGraphClient:
         region = region.upper()
         if region not in ENDPOINTS:
             raise NerdGraphError("region must be US or EU, got %r" % region)
-        self.endpoint = ENDPOINTS[region]
+        # N2G_NERDGRAPH_URL overrides the region endpoint -- lets the CLI,
+        # wizard and web UI run against tools/mock_stack.py (offline demo)
+        # or a corporate NerdGraph proxy without code changes.
+        import os
+        self.endpoint = (os.environ.get("N2G_NERDGRAPH_URL")
+                         or ENDPOINTS[region])
         self.api_key = api_key
         self.timeout = timeout
         self._ctx = ssl._create_unverified_context() if insecure else None
@@ -167,6 +189,55 @@ class NerdGraphClient:
             raise NerdGraphError(
                 "No dashboard found for guid %s (or key lacks access)" % guid)
         return entity
+
+    def run_nrql(self, account_id: int, nrql: str) -> Dict[str, Any]:
+        """Run a read-only NRQL query and return its raw results.
+
+        Returns ``{"results": [...], "metadata": {...}}`` where metadata
+        carries ``facets`` and ``timeWindow`` when NerdGraph provides
+        them. Raises :class:`NerdGraphError` with actionable text on
+        GraphQL errors (bad key, inaccessible account, NRQL syntax).
+        """
+        try:
+            data = self._post(_NRQL_QUERY,
+                              {"id": int(account_id), "q": nrql})
+        except NerdGraphError as e:
+            msg = str(e)
+            low = msg.lower()
+            hint = ""
+            if "syntax" in low or ("nrql" in low and "error" in low):
+                hint = " Check the NRQL syntax of: %s" % nrql[:200]
+            elif ("not found" in low or "denied" in low
+                    or "access" in low or "authoriz" in low):
+                hint = (" Check that the API key can access account %s."
+                        % account_id)
+            raise NerdGraphError(
+                "NRQL query failed for account %s: %s%s"
+                % (account_id, msg, hint))
+        account = ((data.get("actor") or {}).get("account")) or {}
+        payload = account.get("nrql")
+        if payload is None:
+            raise NerdGraphError(
+                "NerdGraph returned no NRQL result for account %s. Check "
+                "that the account id is correct and the key (NRAK-...) "
+                "has access to it." % account_id)
+        return {"results": payload.get("results") or [],
+                "metadata": payload.get("metadata") or {}}
+
+    def list_account_ids(self) -> List[int]:
+        """Account ids visible to this key (read-only actor query).
+
+        Used as a last-resort fallback when neither the caller nor the
+        widget report knows which account to run NRQL against.
+        """
+        data = self._post("{ actor { accounts { id } } }")
+        out: List[int] = []
+        for acct in ((data.get("actor") or {}).get("accounts")) or []:
+            try:
+                out.append(int(acct.get("id")))
+            except (TypeError, ValueError):
+                pass
+        return sorted(set(out))
 
     def export_all(self, log=lambda msg: print(msg, file=sys.stderr)) \
             -> Iterable[Dict[str, Any]]:

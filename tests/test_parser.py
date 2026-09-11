@@ -150,6 +150,51 @@ class SelectTests(unittest.TestCase):
         raw = "SELECT count(*) FROM T"
         self.assertEqual(parse_nrql("  " + raw + "  ").raw, raw)
 
+    def test_trailing_multiplier(self):
+        q = parse_nrql("SELECT average(duration) * 1000 FROM T")
+        self.assertEqual(q.select[0].multiplier, 1000.0)
+        self.assertEqual(q.select[0].expr.name, "average")
+
+    def test_prefix_multiplier(self):
+        q = parse_nrql("SELECT 1000 * average(duration) FROM T")
+        self.assertEqual(q.select[0].multiplier, 1000.0)
+        self.assertIsInstance(q.select[0].expr, Func)
+        self.assertEqual(q.select[0].expr.name, "average")
+
+    def test_prefix_and_trailing_multiplier_combine(self):
+        q = parse_nrql("SELECT 2 * average(duration) * 3 FROM T")
+        self.assertEqual(q.select[0].multiplier, 6.0)
+
+    def test_prefix_multiplier_with_division(self):
+        q = parse_nrql("SELECT 100 * sum(x) / 60 FROM Metric")
+        self.assertEqual(q.select[0].multiplier, 100.0 / 60.0)
+
+    def test_if_embedded_condition_and_then_value(self):
+        q = parse_nrql("SELECT count(if(error IS TRUE, 1)) FROM T")
+        outer = q.select[0].expr
+        self.assertEqual(outer.name, "count")
+        branch = outer.args[0]
+        self.assertIsInstance(branch, Func)
+        self.assertEqual(branch.name, "if")
+        self.assertEqual(branch.where, Cmp(Attr("error"), "=", Lit(True)))
+        self.assertEqual(branch.args, [Lit(1)])
+
+    def test_if_with_else_value(self):
+        q = parse_nrql("SELECT sum(if(a = 1, 1, 0)) FROM T")
+        branch = q.select[0].expr.args[0]
+        self.assertEqual(branch.args, [Lit(1), Lit(0)])
+        self.assertEqual(branch.where, Cmp(Attr("a"), "=", Lit(1)))
+
+    def test_cases_collects_conditions_and_aliases(self):
+        q = parse_nrql("SELECT count(*) FROM T FACET cases("
+                       "WHERE a = 1 AS one, WHERE b = 2 AS 'two')")
+        fn = q.facet[0].expr
+        self.assertEqual(fn.name, "cases")
+        self.assertEqual(fn.cases, [
+            (Cmp(Attr("a"), "=", Lit(1)), "one"),
+            (Cmp(Attr("b"), "=", Lit(2)), "two"),
+        ])
+
 
 class WhereTests(unittest.TestCase):
     def _where(self, cond_text):

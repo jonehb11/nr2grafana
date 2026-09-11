@@ -52,11 +52,15 @@ class Star:
 class Func:
     """Function call, e.g. average(duration) or percentile(duration, 95).
 
-    ``where`` holds the embedded predicate for filter(...)/percentage(...).
+    ``where`` holds the embedded predicate for filter(...)/percentage(...)
+    and the condition argument of if(...). ``cases`` collects every
+    embedded ``WHERE <cond> [AS <alias>]`` for cases(...); for functions
+    with a single embedded WHERE it holds one entry mirroring ``where``.
     """
     name: str  # lowercased
     args: List[Any] = field(default_factory=list)
     where: Optional["Cond"] = None
+    cases: List[Tuple[Any, Optional[str]]] = field(default_factory=list)
 
 
 @dataclass
@@ -162,6 +166,7 @@ _TOKEN_RE = re.compile(
   | (?P<rparen>\))
   | (?P<comma>,)
   | (?P<star>\*)
+  | (?P<slash>/)
   | (?P<percent>%)
   | (?P<ident>[A-Za-z_][A-Za-z0-9_.\-/:$%{}\[\]]*)
     """,
@@ -383,7 +388,16 @@ class _Parser:
     def parse_select_item(self) -> SelectItem:
         expr = self.parse_expr()
         multiplier: Optional[float] = None
-        # agg(x) * 1000 style unit-conversion arithmetic.
+        # 1000 * agg(x) — leading unit-conversion factor (the mirror image
+        # of the far more common agg(x) * 1000 form).
+        if isinstance(expr, Lit) and isinstance(expr.value, (int, float)) \
+                and not isinstance(expr.value, bool):
+            tok = self.peek()
+            if tok is not None and tok.kind == "star":
+                self.next()
+                multiplier = float(expr.value)
+                expr = self.parse_expr()
+        # agg(x) * 1000 / agg(x) / 60 style unit-conversion arithmetic.
         while True:
             tok = self.peek()
             nxt = self.peek(1)
@@ -392,6 +406,24 @@ class _Parser:
                 self.next()
                 factor = float(self.next().text)
                 multiplier = (multiplier or 1.0) * factor
+                continue
+            if tok is not None and tok.kind == "slash" and nxt is not None \
+                    and nxt.kind == "number":
+                self.next()
+                factor = float(self.next().text)
+                if factor != 0:
+                    multiplier = (multiplier or 1.0) / factor
+                continue
+            if tok is not None and tok.kind == "slash" and nxt is not None \
+                    and nxt.kind == "ident" and isinstance(expr, Func) \
+                    and self.peek(2) is not None \
+                    and self.peek(2).kind == "lparen":
+                # agg(x) / agg(y) — a ratio of two aggregations (the
+                # classic error-rate shape); modeled as the pseudo-
+                # function _ratio for the translators.
+                self.next()
+                right = self.parse_func()
+                expr = Func("_ratio", args=[expr, right])
                 continue
             break
         alias = None
@@ -449,6 +481,18 @@ class _Parser:
         if self.peek() is not None and self.peek().kind == "rparen":  # type: ignore[union-attr]
             self.next()
             return fn
+        # if(condition, then[, else]) — the first argument is a predicate,
+        # not a value expression; try it as a condition with backtracking
+        # (if(error, ...) with a bare truthy attribute falls through).
+        if fn.name == "if":
+            save = self.i
+            try:
+                fn.where = self.parse_condition()
+                fn.cases.append((fn.where, None))
+            except NrqlParseError:
+                self.i = save
+                fn.where = None
+                del fn.cases[:]
         while True:
             tok = self.peek()
             if tok is None:
@@ -462,7 +506,15 @@ class _Parser:
                 continue
             if self.at_kw("WHERE"):
                 self.next()
-                fn.where = self.parse_condition()
+                cond = self.parse_condition()
+                alias: Optional[str] = None
+                if self.eat_kw("AS"):
+                    a_tok = self.next()
+                    alias = _unquote_string(a_tok.text) \
+                        if a_tok.kind == "string" else a_tok.text.strip("`")
+                if fn.where is None:
+                    fn.where = cond
+                fn.cases.append((cond, alias))
                 continue
             arg = self.parse_func_arg(fn)
             if arg is not None:
