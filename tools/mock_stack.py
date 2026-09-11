@@ -18,16 +18,30 @@ real Grafana or New Relic:
 
 Determinism rules for query data:
 
-* a PromQL expr returns a small flat timeseries when it references the
-  metric ``up`` or any metric in the inventory; unknown metrics return
-  an empty frame; anything containing ``syntax_error`` returns a query
-  error. ``by (<label>)`` grouping yields one series per configured
-  facet value (``histogram_quantile`` collapses back to one series).
+* a PromQL expr returns a realistic multi-point timeseries (>= 30
+  points) when it references the metric ``up`` or any metric in the
+  inventory; unknown metrics return an empty frame; anything containing
+  ``syntax_error`` returns a query error. ``by (<label>)`` grouping
+  yields one series per configured facet value, each with a distinct
+  phase so the lines differ (``histogram_quantile`` collapses back to
+  one series).
+* the timeseries values follow a gentle, deterministic curve centered
+  on the metric's baseline value - a slow ~1h wave keyed on absolute
+  time (identical on both fake backends, so a faithful translation
+  compares as "match") plus a tiny per-expression wiggle so distinct
+  metrics draw distinct shapes. Metrics listed in
+  ``MockState.diverge_metrics`` instead follow a strong ramp that does
+  *not* track the New Relic side, so the comparison view has believable
+  value-mismatches to show next to the matches.
 * a LogQL expr returns data when its stream-selector labels exist in
   the Loki inventory; aggregations yield a timeseries, bare selectors
-  yield log lines.
-* NRQL returns the same constant value (per-facet / per-bucket) so a
-  faithful translation compares as "match".
+  yield log lines. Loki-backed panels therefore read as gf-empty until
+  a Loki datasource is created, then flow real log lines - the
+  "add a datasource and watch it light up" loop.
+* NRQL aggregates return the same baseline curve (per-facet /
+  per-bucket TIMESERIES) so a faithful translation compares as "match";
+  plain ``SELECT count(*)`` scalars return the flat baseline and
+  ``SELECT *`` event queries return log-style rows.
 
 Auth is enforced: the fake Grafana wants ``Authorization: Bearer
 <token>`` (except on /api/health, which is public like the real one)
@@ -50,7 +64,9 @@ Importable::
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import math
 import os
 import re
 import sys
@@ -79,6 +95,16 @@ DEFAULT_METRICS = [
     "node_cpu_seconds_total",
     "kube_pod_container_status_restarts_total",
     "checkout_orders_completed",
+]
+
+# Metrics whose fake Grafana data intentionally diverges from the fake
+# New Relic side, giving the comparison view a couple of honest
+# value-mismatches to draw. Chosen to hit non-critical demo panels
+# (host CPU, container restarts) so the golden-signal panels still
+# match.
+DEFAULT_DIVERGE_METRICS = [
+    "node_cpu_seconds_total",
+    "kube_pod_container_status_restarts_total",
 ]
 
 DEFAULT_PROM_LABELS = {
@@ -148,6 +174,11 @@ class MockState(object):
             (k, list(v)) for k, v in DEFAULT_LOKI_LABELS.items())
         self.facet_values: List[str] = ["a", "b"]
         self.default_value: float = DEFAULT_VALUE
+        # Metrics whose fake Grafana series intentionally DISAGREE with
+        # the New Relic side (a strong ramp instead of the shared
+        # baseline curve), so the comparison view shows real
+        # value-mismatches alongside the matches. Tests may edit this.
+        self.diverge_metrics = set(DEFAULT_DIVERGE_METRICS)
         self.plugins: List[str] = list(DEFAULT_PLUGINS)
         self.nr_accounts = set([1234567, 7654321])
         self.fixtures: List[Dict[str, Any]] = fixtures or []
@@ -241,16 +272,90 @@ def load_fixtures(directory: str = "") -> List[Dict[str, Any]]:
 # deterministic frames
 # ---------------------------------------------------------------------------
 
-def _time_frame(ref_id: str, labels: Dict[str, str], frm_ms: int,
-                to_ms: int, value: float) -> Dict[str, Any]:
-    step = max(60000, (to_ms - frm_ms) // 30)
+def _hash01(*parts: Any) -> float:
+    """Deterministic float in ``[0, 1)`` from the given parts.
+
+    Uses hashlib rather than the builtin ``hash`` (which is salted per
+    process for strings) so the fake data is byte-for-byte reproducible
+    across runs and processes - a hard requirement for the two fake
+    backends to agree.
+    """
+    raw = "|".join(str(p) for p in parts).encode()
+    return int(hashlib.md5(raw).hexdigest()[:8], 16) / float(0x100000000)
+
+
+def _facet_phase(facet_value: str) -> float:
+    """Stable phase offset (radians) for one series of a grouped query.
+
+    Keyed on the facet *value* string, which survives translation
+    unchanged, so the fake Grafana and fake NerdGraph give matching
+    series a matching phase (still "match") while distinct facets draw
+    visibly distinct lines.
+    """
+    if not facet_value:
+        return 0.0
+    return _hash01("facet", facet_value) * 2.0 * math.pi
+
+
+def _wave(t_s: float, phase: float = 0.0) -> float:
+    """Gentle deterministic multiplier centered on 1.0.
+
+    A pure function of absolute time (epoch seconds) and a per-series
+    phase, so both fake backends sample the *same* underlying curve and
+    a faithful translation lands on "match". The ~1h period keeps it
+    slowly varying, so the coarser NRQL TIMESERIES buckets still line up
+    with the finer Grafana frames when parity aligns them by timestamp.
+    """
+    x = t_s / 600.0
+    return (1.0 + 0.06 * math.sin(x + phase)
+            + 0.02 * math.sin(2.7 * x + 1.3 * phase))
+
+
+def _jitter(expr: str, i: int) -> float:
+    """Tiny per-expression wiggle so distinct metrics draw distinct
+    shapes on the Grafana side.
+
+    Index-seeded (a hash of the expression and the bucket index), never
+    a live RNG, so repeated queries return identical data. Kept small
+    (+/-2%) so a metric that should match the New Relic side - which
+    carries no jitter - stays inside parity's match tolerance.
+    """
+    return (_hash01(expr, i) - 0.5) * 2.0 * 0.02
+
+
+def _bucket_times(frm_ms: int, to_ms: int, cap: int = 200) \
+        -> List[int]:
+    """Epoch-ms tick marks for a frame: >= 30 points over a 1h range."""
+    step = max(15000, (to_ms - frm_ms) // 45)
     times: List[int] = []
-    vals: List[float] = []
     t = frm_ms
-    while t <= to_ms and len(times) < 200:
+    while t <= to_ms and len(times) < cap:
         times.append(int(t))
-        vals.append(float(value))
         t += step
+    return times
+
+
+def _time_frame(ref_id: str, labels: Dict[str, str], frm_ms: int,
+                to_ms: int, value: float, phase: float = 0.0,
+                expr: str = "", diverge: bool = False) -> Dict[str, Any]:
+    """A realistic multi-point timeseries frame.
+
+    ``value`` is the series baseline; the shape is the shared time wave
+    (so it matches the New Relic side) plus a small per-expr wiggle,
+    unless ``diverge`` is set, in which case the series follows a strong
+    ramp that deliberately does not track New Relic.
+    """
+    times = _bucket_times(frm_ms, to_ms)
+    n = len(times)
+    vals: List[float] = []
+    for i, tm in enumerate(times):
+        t_s = tm / 1000.0
+        if diverge:
+            frac = (i / float(n - 1)) if n > 1 else 0.5
+            v = value * (0.35 + 1.7 * frac) * _wave(t_s, phase)
+        else:
+            v = value * _wave(t_s, phase) * (1.0 + _jitter(expr, i))
+        vals.append(round(float(v), 4))
     return {"schema": {"refId": ref_id,
                        "fields": [
                            {"name": "Time", "type": "time"},
@@ -268,8 +373,20 @@ def _empty_frame(ref_id: str) -> Dict[str, Any]:
 
 
 def _log_frame(ref_id: str, frm_ms: int, to_ms: int) -> Dict[str, Any]:
-    lines = ["level=error msg=\"mock payment failed\" attempt=%d" % i
-             for i in range(1, 4)]
+    # Payment-error lines are interleaved so a "mock payment failed"
+    # line leads whether a consumer takes the first N lines or the most
+    # recent N (``samples._log_lines`` surfaces ``entries[-limit:]``):
+    # the log panel then lines up with the NR ``SELECT *`` side, whose
+    # first row is also a payment failure. The warn/info lines add
+    # believable variety for the chart.
+    lines = [
+        "level=error msg=\"mock payment failed\" attempt=1",
+        "level=info msg=\"checkout completed\" order=1005 amount=42.00",
+        "level=error msg=\"mock payment failed\" attempt=2 order=1002",
+        "level=warn msg=\"retrying charge\" gateway=stripe order=1003",
+        "level=error msg=\"mock payment failed\" attempt=3 order=1004",
+        "level=warn msg=\"slow downstream\" dep=inventory latency_ms=812",
+    ]
     step = max(1, (to_ms - frm_ms) // (len(lines) + 1))
     times = [int(frm_ms + step * (i + 1)) for i in range(len(lines))]
     return {"schema": {"refId": ref_id,
@@ -305,13 +422,17 @@ def _prom_result(state: MockState, ref_id: str, expr: str,
     known = [m for m in state.metric_names() if m in tokens]
     if not known:
         return {"status": 200, "frames": [_empty_frame(ref_id)]}
-    value = state.value_for(known[0])
+    metric = known[0]
+    value = state.value_for(metric)
+    diverge = metric in state.diverge_metrics
     group = _group_label(expr)
     if group:
-        frames = [_time_frame(ref_id, {group: fv}, frm_ms, to_ms, value)
+        frames = [_time_frame(ref_id, {group: fv}, frm_ms, to_ms, value,
+                              _facet_phase(fv), expr, diverge)
                   for fv in state.facet_values]
     else:
-        frames = [_time_frame(ref_id, {}, frm_ms, to_ms, value)]
+        frames = [_time_frame(ref_id, {}, frm_ms, to_ms, value, 0.0,
+                              expr, diverge)]
     return {"status": 200, "frames": frames}
 
 
@@ -343,10 +464,12 @@ def _loki_result(state: MockState, ref_id: str, expr: str,
     value = state.default_value
     group = _group_label(expr)
     if group:
-        frames = [_time_frame(ref_id, {group: fv}, frm_ms, to_ms, value)
+        frames = [_time_frame(ref_id, {group: fv}, frm_ms, to_ms, value,
+                              _facet_phase(fv), expr)
                   for fv in state.facet_values]
     else:
-        frames = [_time_frame(ref_id, {}, frm_ms, to_ms, value)]
+        frames = [_time_frame(ref_id, {}, frm_ms, to_ms, value, 0.0,
+                              expr)]
     return {"status": 200, "frames": frames}
 
 
@@ -372,12 +495,20 @@ def _nrql_rows(state: MockState, nrql: str,
     facets = state.facet_values if _FACET_RE.search(nrql) else [None]
     rows: List[Dict[str, Any]] = []
     if _TIMESERIES_RE.search(nrql):
+        # Per-bucket values follow the SAME shared time wave the fake
+        # Grafana samples (keyed on absolute time, per-facet phase), so
+        # the coarse NRQL buckets line up bucket-for-bucket with the
+        # finer Grafana frames and a faithful translation charts as a
+        # believable "match" - not a dead-flat line next to a wavy one.
         for i in range(6):
             begin = now - 3600 + i * 600
+            mid = begin + 300
             for fv in facets:
+                phase = _facet_phase(fv) if fv is not None else 0.0
+                bucket_val = round(value * _wave(mid, phase), 4)
                 row: Dict[str, Any] = {"beginTimeSeconds": begin,
                                        "endTimeSeconds": begin + 600,
-                                       "result": value}
+                                       "result": bucket_val}
                 if fv is not None:
                     row["facet"] = fv
                 rows.append(row)

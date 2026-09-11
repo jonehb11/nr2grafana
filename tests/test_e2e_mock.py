@@ -505,6 +505,141 @@ class FullLoopTest(MockStackBase):
         self.assertIn(row["verdict"], ("value-mismatch", "close"))
 
 
+class CompareViewTest(MockStackBase):
+    """The side-by-side comparison model (compare.build_comparison) and
+    the "add a datasource and watch it flow" loop
+    (compare.datasource_flow) run end to end over the fixture against the
+    two fake backends and produce believable, chartable data."""
+
+    def setUp(self):
+        super(CompareViewTest, self).setUp()
+        self.tmp = tempfile.mkdtemp(prefix="nr2g-cmp-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def _convert_fixture(self):
+        """Fetch + convert the Checkout fixture; return
+        ``(ng, entity, dash, report)``."""
+        (model, config_mod, builder) = _import_or_skip(
+            self, "nr2grafana.model", "nr2grafana.config",
+            "nr2grafana.grafana.builder")
+        ng = self.nerdgraph()
+        guid = next(e["guid"] for e in ng.list_dashboards()
+                    if e["name"] == "Checkout Service Overview")
+        entity = ng.get_dashboard(guid)
+        cfg = config_mod.load_config("")
+        nr_dash = model.parse_nr_dashboard(entity)
+        _fname, dash, report = builder.build_dashboards(nr_dash, cfg)[0]
+        return ng, entity, dash, report
+
+    def _all_datasources(self):
+        self.make_datasource("prometheus", "Mimir",
+                             "http://mimir:9009/prometheus")
+        self.make_datasource("loki", "Loki", "http://loki:3100")
+        self.make_datasource("tempo", "Tempo", "http://tempo:3200")
+
+    def test_build_comparison_charts_both_sides_with_verdicts(self):
+        """Every panel gets real render data on both sides; the fake
+        backends agree on the golden signals (>= 1 match) and disagree on
+        the diverge metrics (>= 1 value-mismatch)."""
+        (compare,) = _import_or_skip(self, "nr2grafana.compare")
+        ng, entity, dash, report = self._convert_fixture()
+        g = self.grafana()
+        self._all_datasources()
+
+        cmp = compare.build_comparison(ng, [1234567], g, entity, dash,
+                                       report, frm="now-1h", to="now")
+        self.assertEqual(cmp["schema"], "nr2grafana/comparison/v1")
+        self.assertTrue(cmp["panels"])
+        self.assertTrue(0 <= cmp["score"] <= 100)
+
+        # Grid + row layout is preserved so the UI can align both sides.
+        self.assertTrue(cmp["layout"]["nr_pages"])
+        for p in cmp["panels"]:
+            self.assertIn("grid", p)
+            self.assertIn(p["verdict"], (
+                "match", "close", "value-mismatch", "shape-mismatch",
+                "nr-empty", "gf-empty", "both-empty", "nr-error",
+                "gf-error"))
+
+        # At least one timeseries panel draws a real multi-point series
+        # on BOTH sides (this is what the flagship chart renders).
+        charted = []
+        for p in cmp["panels"]:
+            if p["viz"] != "timeseries":
+                continue
+            nr_pts = [s for s in (p["nr"].get("series") or [])
+                      if len(s.get("points") or []) >= 2]
+            gf_pts = [s for s in (p["grafana"].get("series") or [])
+                      if len(s.get("points") or []) >= 2]
+            if nr_pts and gf_pts:
+                charted.append(p)
+        self.assertTrue(charted,
+                        "no timeseries panel produced chartable series "
+                        "on both sides")
+        # Grafana series really are multi-point (>= 30 raw before caps).
+        sample = charted[0]["grafana"]["series"][0]["points"]
+        self.assertGreaterEqual(len(sample), 20)
+
+        verdicts = set(p["verdict"] for p in cmp["panels"])
+        self.assertIn("match", verdicts,
+                      "expected >= 1 matching panel; verdicts=%s"
+                      % sorted(verdicts))
+        self.assertIn("value-mismatch", verdicts,
+                      "expected >= 1 mismatching panel (diverge "
+                      "metrics); verdicts=%s" % sorted(verdicts))
+        self.assertGreaterEqual(cmp["summary"].get("match", 0), 1)
+        self.assertGreaterEqual(cmp["summary"].get("value-mismatch", 0),
+                                1)
+
+        # A value-mismatch panel carries the diverging metric's expr and
+        # a ratio away from 1.0 (the honest "these disagree" story).
+        mm = next(p for p in cmp["panels"]
+                  if p["verdict"] == "value-mismatch")
+        self.assertTrue(mm["expr"])
+
+        def _has_data(side):
+            return bool(side.get("series") or side.get("lines")
+                        or side.get("rows")) or side.get("scalar") is not None
+        self.assertTrue(_has_data(mm["nr"]))
+        self.assertTrue(_has_data(mm["grafana"]))
+
+    def test_datasource_flow_before_and_after_creating_loki(self):
+        """Loki-backed log panels read empty until a Loki datasource
+        exists, then flow real log lines the instant it is created."""
+        (compare,) = _import_or_skip(self, "nr2grafana.compare")
+        _ng, _entity, dash, report = self._convert_fixture()
+        g = self.grafana()
+        # Prometheus + tempo present, but deliberately NO Loki yet.
+        self.make_datasource("prometheus", "Mimir",
+                             "http://mimir:9009/prometheus")
+        self.make_datasource("tempo", "Tempo", "http://tempo:3200")
+
+        before = compare.datasource_flow(g, None, dash, report)
+        loki_before = next((f for f in before["families"]
+                            if f["family"] == "loki"), None)
+        self.assertIsNotNone(loki_before,
+                             "dashboard has no loki family: %s"
+                             % [f["family"] for f in before["families"]])
+        self.assertGreater(loki_before["panels_total"], 0)
+        self.assertEqual(loki_before["panels_with_data"], 0)
+        self.assertEqual(loki_before["newly_flowing"], [])
+
+        # Create the Loki datasource -> data flows immediately.
+        loki_uid = self.make_datasource("loki", "Loki",
+                                        "http://loki:3100")
+        after = compare.datasource_flow(g, None, dash, report,
+                                        ds_uid=loki_uid)
+        loki_after = next(f for f in after["families"]
+                          if f["family"] == "loki")
+        self.assertGreater(loki_after["panels_with_data"], 0)
+        self.assertTrue(loki_after["newly_flowing"],
+                        "no loki panel lit up after creating the "
+                        "datasource")
+        self.assertEqual(loki_after["health"].get("status"), "ok")
+        # A real sample series/log frame proves the flow to the UI.
+        self.assertTrue(loki_after["sample_series"])
+
+
 class FixtureLoadingTest(unittest.TestCase):
     """load_fixtures serves only well-formed dashboards."""
 
