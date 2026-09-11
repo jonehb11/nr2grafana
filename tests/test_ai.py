@@ -1,16 +1,27 @@
-"""Tests for nr2grafana.ai (Claude API assistance)."""
+"""Tests for nr2grafana.ai (Claude API + local console assistance)."""
 
 import io
 import json
+import shlex
 import socket
+import sys
 import unittest
 import urllib.error
 from unittest import mock
 
-from nr2grafana.ai import (AIAssist, AIError, DEFAULT_MODEL, _parse_fix,
+from nr2grafana.ai import (AIAssist, AIError, DEFAULT_MODEL, LocalAgent,
+                           get_assistant, _parse_fix, _parse_fix_loose,
+                           _render_prompt, _strip_ansi, _strip_echo,
                            _strip_fences)
 
 FAKE_KEY = "sk-ant-test-key-do-not-log"
+
+PY = shlex.quote(sys.executable)
+
+
+def cli(code):
+    """Command string running ``code`` as a fake console AI agent."""
+    return "%s -c %s" % (PY, shlex.quote(code))
 
 
 def api_response(text):
@@ -260,6 +271,228 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(out["actions"], [])
         self.assertEqual(out["confidence"], "medium")
         self.assertEqual(out["fixed_expr"], "up")
+
+    def test_parse_fix_loose_extracts_json_from_prose(self):
+        raw = "Sure! Here you go:\n%s\nHope that helps." \
+            % json.dumps(FIX_JSON)
+        self.assertEqual(_parse_fix_loose(raw), FIX_JSON)
+
+    def test_parse_fix_loose_plain_prose_falls_back(self):
+        out = _parse_fix_loose("no json here at all")
+        self.assertEqual(out["explanation"], "no json here at all")
+        self.assertEqual(out["confidence"], "low")
+
+    def test_strip_ansi(self):
+        self.assertEqual(
+            _strip_ansi("\x1b[1;31mred\x1b[0m \x1b]0;title\x07ok"),
+            "red ok")
+
+    def test_strip_echo_whole_lines_only(self):
+        self.assertEqual(_strip_echo("ping\nANSWER", "ping"),
+                         "ANSWER")
+        self.assertEqual(_strip_echo("ANSWER\nping", "ping"),
+                         "ANSWER")
+        # an echo embedded in a line is NOT trivially detectable
+        self.assertEqual(_strip_echo("ARGV:two words", "two words"),
+                         "ARGV:two words")
+
+    def test_render_prompt_single_user_turn_verbatim(self):
+        self.assertEqual(
+            _render_prompt([{"role": "user", "content": "hi"}]),
+            "hi")
+        self.assertEqual(
+            _render_prompt([{"role": "user", "content": "hi"}],
+                           system="SYS"),
+            "SYS\n\nhi")
+
+    def test_render_prompt_labels_multi_turn(self):
+        out = _render_prompt(
+            [{"role": "user", "content": "q1"},
+             {"role": "assistant", "content": "a1"},
+             {"role": "user", "content": "q2"}])
+        self.assertIn("User: q1", out)
+        self.assertIn("Assistant: a1", out)
+        self.assertIn("User: q2", out)
+        self.assertTrue(out.endswith("Assistant:"))
+
+
+class LocalAgentRunTests(unittest.TestCase):
+    """LocalAgent subprocess plumbing against real tiny CLIs."""
+
+    def test_available(self):
+        self.assertTrue(LocalAgent("some-cli").available)
+        self.assertFalse(LocalAgent("").available)
+        self.assertFalse(LocalAgent("   ").available)
+
+    def test_prompt_substituted_as_single_argv_element(self):
+        cmd = cli("import sys; print('ARGV:' + sys.argv[1])") \
+            + " {prompt}"
+        out = LocalAgent(cmd, timeout=30).chat(
+            [{"role": "user", "content": "two words"}])
+        self.assertEqual(out, "ARGV:two words")
+
+    def test_stdin_mode_without_placeholder(self):
+        cmd = cli("import sys;"
+                  " print('STDIN:' + sys.stdin.read().strip())")
+        out = LocalAgent(cmd, timeout=30).chat(
+            [{"role": "user", "content": "hello"}])
+        self.assertEqual(out, "STDIN:hello")
+
+    def test_system_prompt_reaches_command(self):
+        cmd = cli("import sys; print(sys.stdin.read())")
+        out = LocalAgent(cmd, timeout=30).chat(
+            [{"role": "user", "content": "question"}],
+            system="SYSTEM RULES")
+        self.assertIn("SYSTEM RULES", out)
+        self.assertIn("question", out)
+
+    def test_ansi_stripped_from_output(self):
+        cmd = cli("import sys;"
+                  " sys.stdout.write('\\x1b[31manswer\\x1b[0m\\n')")
+        out = LocalAgent(cmd, timeout=30).chat(
+            [{"role": "user", "content": "q"}])
+        self.assertEqual(out, "answer")
+
+    def test_leading_prompt_echo_stripped(self):
+        cmd = cli("import sys; d = sys.stdin.read().strip();"
+                  " print(d); print('ANSWER')")
+        out = LocalAgent(cmd, timeout=30).chat(
+            [{"role": "user", "content": "ping"}])
+        self.assertEqual(out, "ANSWER")
+
+    def test_output_capped(self):
+        cmd = cli("print('x' * 300000)")
+        out = LocalAgent(cmd, timeout=30).chat(
+            [{"role": "user", "content": "q"}])
+        self.assertLessEqual(len(out), 200 * 1024)
+        self.assertGreater(len(out), 100 * 1024)
+
+    def test_nonzero_exit_raises_actionable_error(self):
+        cmd = cli("import sys; sys.stderr.write('kaboom details');"
+                  " sys.exit(3)")
+        with self.assertRaises(AIError) as cm:
+            LocalAgent(cmd, timeout=30).chat(
+                [{"role": "user", "content": "q"}])
+        msg = str(cm.exception)
+        self.assertIn("code 3", msg)
+        self.assertIn("kaboom details", msg)
+        self.assertIn("PATH", msg)
+
+    def test_missing_binary_raises_actionable_error(self):
+        agent = LocalAgent("definitely-not-a-real-cli-98765")
+        with self.assertRaises(AIError) as cm:
+            agent.chat([{"role": "user", "content": "q"}])
+        msg = str(cm.exception)
+        self.assertIn("definitely-not-a-real-cli-98765", msg)
+        self.assertIn("PATH", msg)
+
+    def test_timeout_raises_actionable_error(self):
+        cmd = cli("import time; time.sleep(10)")
+        with self.assertRaises(AIError) as cm:
+            LocalAgent(cmd, timeout=1).chat(
+                [{"role": "user", "content": "q"}])
+        msg = str(cm.exception)
+        self.assertIn("timed out", msg)
+        self.assertIn("1 second", msg)
+        self.assertIn(sys.executable, msg)
+
+    def test_empty_command_raises(self):
+        with self.assertRaises(AIError) as cm:
+            LocalAgent("").chat([{"role": "user", "content": "q"}])
+        self.assertIn("command", str(cm.exception))
+
+
+class LocalAgentSuggestFixTests(unittest.TestCase):
+    CONTEXT = {"panel": "Error rate", "expr": "uup",
+               "error": "unknown metric", "datasource": "prometheus"}
+
+    def _agent_printing(self, text):
+        code = "import sys; sys.stdin.read(); print(%r)" % text
+        return LocalAgent(cli(code), timeout=30)
+
+    def test_plain_json_reply(self):
+        out = self._agent_printing(
+            json.dumps(FIX_JSON)).suggest_fix(self.CONTEXT)
+        self.assertEqual(out, FIX_JSON)
+
+    def test_fenced_json_reply(self):
+        text = "```json\n%s\n```" % json.dumps(FIX_JSON)
+        out = self._agent_printing(text).suggest_fix(self.CONTEXT)
+        self.assertEqual(out, FIX_JSON)
+
+    def test_json_wrapped_in_prose(self):
+        text = "Here is my analysis:\n%s\nGood luck!" \
+            % json.dumps(FIX_JSON)
+        out = self._agent_printing(text).suggest_fix(self.CONTEXT)
+        self.assertEqual(out, FIX_JSON)
+
+    def test_non_json_falls_back(self):
+        text = "The metric name looks wrong to me."
+        out = self._agent_printing(text).suggest_fix(self.CONTEXT)
+        self.assertEqual(out["explanation"], text)
+        self.assertIsNone(out["fixed_expr"])
+        self.assertEqual(out["confidence"], "low")
+
+
+class LocalAgentTestProbeTests(unittest.TestCase):
+    def test_probe_ok(self):
+        res = LocalAgent(cli("import sys; sys.stdin.read();"
+                             " print('OK')"), timeout=30).test()
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["reply_excerpt"], "OK")
+        self.assertIsInstance(res["latency_ms"], int)
+        self.assertGreaterEqual(res["latency_ms"], 0)
+        self.assertNotIn("error", res)
+
+    def test_probe_failure_never_raises(self):
+        res = LocalAgent(cli("import sys; sys.exit(9)"),
+                         timeout=30).test()
+        self.assertFalse(res["ok"])
+        self.assertIn("code 9", res["error"])
+        self.assertEqual(res["reply_excerpt"], "")
+
+    def test_probe_wrong_reply_not_ok(self):
+        res = LocalAgent(cli("import sys; sys.stdin.read();"
+                             " print('nope')"), timeout=30).test()
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["reply_excerpt"], "nope")
+        self.assertIn("stdout", res["error"])
+
+
+class GetAssistantTests(unittest.TestCase):
+    def test_none_when_nothing_configured(self):
+        with mock.patch.dict("os.environ", {}, clear=True):
+            self.assertIsNone(get_assistant())
+
+    def test_api_key_arg_wins(self):
+        with mock.patch.dict("os.environ", {}, clear=True):
+            ai = get_assistant(api_key=FAKE_KEY, command="my-cli")
+        self.assertIsInstance(ai, AIAssist)
+        self.assertTrue(ai.available)
+
+    def test_env_key_wins_over_command(self):
+        with mock.patch.dict("os.environ",
+                             {"ANTHROPIC_API_KEY": FAKE_KEY},
+                             clear=True):
+            ai = get_assistant(command="my-cli")
+        self.assertIsInstance(ai, AIAssist)
+
+    def test_command_only_gives_local_agent(self):
+        with mock.patch.dict("os.environ", {}, clear=True):
+            ai = get_assistant(command="claude -p {prompt}")
+        self.assertIsInstance(ai, LocalAgent)
+        self.assertEqual(ai.command, "claude -p {prompt}")
+        self.assertTrue(ai.available)
+
+    def test_blank_command_gives_none(self):
+        with mock.patch.dict("os.environ", {}, clear=True):
+            self.assertIsNone(get_assistant(command="   "))
+
+    def test_model_passed_through(self):
+        with mock.patch.dict("os.environ", {}, clear=True):
+            ai = get_assistant(api_key=FAKE_KEY,
+                               model="claude-haiku-4-5")
+        self.assertEqual(ai.model, "claude-haiku-4-5")
 
 
 if __name__ == "__main__":

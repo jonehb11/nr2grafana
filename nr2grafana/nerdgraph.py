@@ -7,6 +7,7 @@ Stdlib-only (urllib). Auth: a New Relic USER API key (NRAK-...), passed via
 from __future__ import annotations
 
 import json
+import re
 import ssl
 import sys
 import time
@@ -118,6 +119,13 @@ class NerdGraphClient:
 
     def _post(self, query: str, variables: Optional[Dict[str, Any]] = None,
               retries: int = 3) -> Dict[str, Any]:
+        # Hard read-only guarantee: nr2grafana never modifies anything in
+        # New Relic. Every request is a GraphQL query; a mutation reaching
+        # this client is a bug, and we refuse to send it.
+        if re.search(r"\bmutation\b", query):
+            raise NerdGraphError(
+                "refusing to send a GraphQL mutation: nr2grafana is "
+                "strictly read-only against New Relic")
         payload = json.dumps({"query": query, "variables": variables or {}}).encode()
         last_err: Optional[Exception] = None
         for attempt in range(retries):

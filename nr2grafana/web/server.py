@@ -5,8 +5,8 @@ Design notes:
 * Secrets (New Relic / Grafana / Anthropic keys) live ONLY in the
   module-level :class:`Session` object -- process memory. They are never
   written to the Store, to disk, or to logs. Non-secret preferences
-  (urls, directories, region, model) are mirrored into Store settings so
-  they survive restarts.
+  (urls, directories, region, model, local AI agent command) are
+  mirrored into Store settings so they survive restarts.
 * Sibling 1.1 modules (store, requirements, artifacts, grafana.live,
   changelog, ai) are imported lazily inside handlers so this module
   imports cleanly even mid-build; the contract guarantees their APIs.
@@ -35,8 +35,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlsplit
 
 SECRET_KEYS = ("nr_api_key", "grafana_token", "anthropic_api_key")
-PREF_KEYS = ("nr_region", "grafana_url", "ai_model", "input_dir",
-             "out_dir", "config_path")
+PREF_KEYS = ("nr_region", "grafana_url", "ai_model", "ai_command",
+             "input_dir", "out_dir", "config_path")
 _MAX_JOBS = 50
 
 # Metric-name autocomplete cache: ds uid -> (fetched_at, [names]).
@@ -74,6 +74,10 @@ class Session:
         self.grafana_token = os.environ.get("GRAFANA_TOKEN", "")
         self.anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY", "")
         self.ai_model = ""
+        # Local console AI agent command (e.g. "claude -p {prompt}").
+        # NOT a secret: it persists via Store settings like other
+        # prefs. The Anthropic key wins over it when both are set.
+        self.ai_command = ""
         self.input_dir = "./newrelic-dashboards"
         self.out_dir = "./grafana-dashboards"
         self.config_path = ""
@@ -81,6 +85,14 @@ class Session:
         self.status = {"newrelic": "unset", "grafana": "unset",
                        "ai": "unset"}
         self.status_detail = {"newrelic": "", "grafana": "", "ai": ""}
+
+    def ai_backend(self) -> str:
+        """Which AI backend is active: "api" | "local" | "none"."""
+        if self.anthropic_api_key:
+            return "api"
+        if self.ai_command:
+            return "local"
+        return "none"
 
     def public(self) -> Dict[str, Any]:
         """State safe to send to the browser -- no secret values."""
@@ -91,6 +103,9 @@ class Session:
             "grafana_token_set": bool(self.grafana_token),
             "anthropic_key_set": bool(self.anthropic_api_key),
             "ai_model": self.ai_model,
+            "ai_command": self.ai_command,  # non-secret by design
+            "ai_command_set": bool(self.ai_command),
+            "ai_backend": self.ai_backend(),
             "input_dir": self.input_dir,
             "out_dir": self.out_dir,
             "config_path": self.config_path,
@@ -179,10 +194,20 @@ def _nerdgraph():
 
 
 def _ai():
-    ai = _lazy("ai").AIAssist(SESSION.anthropic_api_key,
-                              SESSION.ai_model)
-    if not ai.available:
-        raise ApiError("no Anthropic API key configured -- add one in "
+    """Resolve the AI backend: Anthropic API key wins, then a local
+    console agent command, else an actionable 400."""
+    ai_mod = _lazy("ai")
+    get = getattr(ai_mod, "get_assistant", None)
+    if get is not None:
+        ai = get(api_key=SESSION.anthropic_api_key,
+                 model=SESSION.ai_model,
+                 command=SESSION.ai_command)
+    else:  # older ai module mid-build: API-only fallback
+        ai = ai_mod.AIAssist(SESSION.anthropic_api_key,
+                             SESSION.ai_model)
+    if ai is None or not ai.available:
+        raise ApiError("no AI backend configured -- add an Anthropic "
+                       "API key or a local console agent command in "
                        "Setup to use AI assistance", 400)
     return ai
 
@@ -1007,6 +1032,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/panel/test": self._post_panel_test,
             "/api/ai/suggest": self._post_ai_suggest,
             "/api/ai/chat": self._post_ai_chat,
+            "/api/ai/test": self._post_ai_test,
         }
         fn = routes.get(path)
         if not fn:
@@ -1042,6 +1068,10 @@ class Handler(BaseHTTPRequestHandler):
                 dict)
         except Exception:
             features["ds_templates"] = False
+        try:
+            features["ai_local"] = hasattr(_lazy("ai"), "LocalAgent")
+        except Exception:
+            features["ai_local"] = False
         self._json({"app": "nr2grafana",
                     "version": ver,
                     "session": SESSION.public(),
@@ -1313,9 +1343,9 @@ class Handler(BaseHTTPRequestHandler):
         if ("grafana_token" in body or "grafana_url" in body) \
                 and not SESSION.grafana_url:
             SESSION.status["grafana"] = "unset"
-        if "anthropic_api_key" in body:
-            SESSION.status["ai"] = "ok" if SESSION.anthropic_api_key \
-                else "unset"
+        if "anthropic_api_key" in body or "ai_command" in body:
+            SESSION.status["ai"] = "unset" \
+                if SESSION.ai_backend() == "none" else "ok"
         self._json({"ok": True, "session": SESSION.public()})
 
     def _post_nr_list(self) -> None:
@@ -1751,6 +1781,46 @@ class Handler(BaseHTTPRequestHandler):
         SESSION.status["ai"] = "ok"
         self._json({"reply": reply})
 
+    def _post_ai_test(self) -> None:
+        """Probe the configured AI backend.
+
+        Local mode runs LocalAgent.test() (a trivial "reply OK"
+        prompt through the user's console agent); API mode sends the
+        same cheap one-line prompt through the Messages API. Returns
+        {"ok", "backend", "reply_excerpt", "latency_ms"[, "error"]}
+        and never 500s on a failing probe -- the failure is the
+        result.
+        """
+        backend = SESSION.ai_backend()
+        ai = _ai()  # 400 with an actionable message when backend none
+        if backend == "local" and hasattr(ai, "test"):
+            res = ai.test()
+        else:
+            start = time.time()
+            try:
+                reply = ai.chat([{"role": "user",
+                                  "content": "Reply with exactly: "
+                                             "OK"}])
+                res = {"ok": True,
+                       "reply_excerpt": reply.strip()[:200],
+                       "latency_ms": int((time.time() - start)
+                                         * 1000)}
+            except Exception as e:
+                res = {"ok": False, "reply_excerpt": "",
+                       "latency_ms": int((time.time() - start)
+                                         * 1000),
+                       "error": _errmsg(e)}
+        res["backend"] = backend
+        if res.get("ok"):
+            SESSION.status["ai"] = "ok"
+            SESSION.status_detail["ai"] = (
+                "%s backend ok (%d ms)"
+                % (backend, res.get("latency_ms", 0)))
+        else:
+            SESSION.status["ai"] = "error"
+            SESSION.status_detail["ai"] = res.get("error", "")
+        self._json(res)
+
 
 # ---------------------------------------------------------------------------
 # entrypoints
@@ -1765,7 +1835,7 @@ def _load_prefs(store) -> None:
             return
         if val:
             setattr(SESSION, key, val)
-    if SESSION.anthropic_api_key:
+    if SESSION.ai_backend() != "none":
         SESSION.status["ai"] = "ok"
 
 
