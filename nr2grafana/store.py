@@ -37,7 +37,8 @@ DEFAULT_DB = os.path.join(DEFAULT_DIR, "nr2grafana.db")
 # schema does not care), but these get "has_*" flags in
 # list_dashboards().
 ARTIFACT_KINDS = ("requirements", "widget-report", "datatest", "check",
-                  "parity", "diagnosis", "heal", "samples", "review")
+                  "parity", "diagnosis", "heal", "samples", "review",
+                  "comparison", "nr-source")
 
 CHANGE_SOURCES = ("user", "ai", "auto")
 

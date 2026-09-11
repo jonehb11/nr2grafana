@@ -522,6 +522,63 @@ def _stub_remediate():
     return m
 
 
+def _stub_compare():
+    m = types.ModuleType("nr2grafana.compare")
+
+    def build_comparison(nr, account_ids, grafana, nr_dashboard_raw,
+                         dash, widget_report, ds_map=None, frm="now-1h",
+                         to="now", limit_points=100, log=None):
+        if log:
+            log("compare stub building")
+        panels = []
+        for p in dash.get("panels") or []:
+            expr = ""
+            for t in p.get("targets") or []:
+                expr = t.get("expr", "")
+                break
+            side = {"kind": "series",
+                    "series": [{"name": "s",
+                                "points": [[1000, 1.0], [1060, 2.0]]}],
+                    "scalar": None, "rows": None, "lines": None,
+                    "unit": "", "error": ""}
+            panels.append({
+                "panel_id": p.get("id"), "title": p.get("title", ""),
+                "row": "", "grid": p.get("gridPos",
+                                         {"x": 0, "y": 0, "w": 12,
+                                          "h": 8}),
+                "viz": p.get("type", "timeseries"),
+                "nr": dict(side), "grafana": dict(side),
+                "verdict": "match", "detail": "", "ratio": 1.0,
+                "nrql": "", "expr": expr, "datasource": "prometheus"})
+        return {"schema": "nr2grafana/comparison/v1",
+                "dashboard": dash.get("title", ""),
+                "uid": dash.get("uid", ""),
+                "generated_at": "2026-01-01T00:00:00Z",
+                "range": {"from": frm, "to": to},
+                "panels": panels,
+                "summary": {"match": len(panels)},
+                "score": 100 if panels else 0,
+                "layout": {"nr_pages": []},
+                "nr_source_present": isinstance(nr_dashboard_raw, dict),
+                "account_ids": list(account_ids or [])}
+
+    def datasource_flow(grafana, requirements, dash, widget_report,
+                        ds_uid=None, ds_map=None, log=None):
+        if log:
+            log("flow stub")
+        return {"family": "prometheus", "uid": ds_uid or "",
+                "health": {"status": "ok"},
+                "panels_total": 2, "panels_with_data": 2,
+                "panels_no_data": 0, "panels_error": 0,
+                "sample_series": [{"name": "up",
+                                   "points": [[1000, 1.0]]}],
+                "newly_flowing": [1]}
+
+    m.build_comparison = build_comparison
+    m.datasource_flow = datasource_flow
+    return m
+
+
 STUBS = {
     "nr2grafana.requirements": _stub_requirements(),
     "nr2grafana.artifacts": _stub_artifacts(),
@@ -532,6 +589,7 @@ STUBS = {
     "nr2grafana.parity": _stub_parity(),
     "nr2grafana.diagnose": _stub_diagnose(),
     "nr2grafana.remediate": _stub_remediate(),
+    "nr2grafana.compare": _stub_compare(),
 }
 
 
@@ -784,6 +842,15 @@ class ConvertJobTests(WebServerTestCase):
         code, body = self.api("GET", "/api/dashboards/no-such-slug")
         self.assertEqual(code, 404)
         self.assertIn("error", body)
+
+    def test_nr_source_saved_on_convert(self):
+        """Convert additionally persists the original New Relic
+        dashboard json as the "nr-source" artifact so Compare has the
+        NR side offline."""
+        slug = self.job["result"]["dashboards"][0]["slug"]
+        nr_src = self.store.get_artifact(slug, "nr-source")
+        self.assertIsInstance(nr_src, dict)
+        self.assertTrue(nr_src)  # non-empty raw NR json
 
     def test_convert_job_error_is_reported_not_raised(self):
         code, resp = self.api("POST", "/api/convert",
@@ -1726,6 +1793,190 @@ class MetricsAndLabelsTests(WebServerTestCase):
                               "/api/labels?uid=x&type=graphite")
         self.assertEqual(code, 400)
         self.assertIn("error", body)
+
+
+class CompareRouteTests(WebServerTestCase):
+    """1.4 comparison + live datasource-flow routes."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        websrv.SESSION.grafana_url = "http://gf.local:3000"
+        websrv.SESSION.grafana_token = "tok"
+        websrv.SESSION.nr_api_key = "NRAK-TEST"
+        cls.slug = "compare-dash"
+        cls.dash = {"title": "Cmp", "uid": cls.slug,
+                    "templating": {"list": []},
+                    "panels": [
+                        {"id": 1, "title": "Throughput",
+                         "type": "timeseries",
+                         "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+                         "targets": [{"refId": "A", "expr": "up",
+                                      "datasource": {
+                                          "type": "prometheus",
+                                          "uid": "mimir"}}]},
+                        {"id": 2, "title": "Errors",
+                         "type": "stat",
+                         "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8},
+                         "targets": [{"refId": "A",
+                                      "expr": "errors_total",
+                                      "datasource": {
+                                          "type": "prometheus",
+                                          "uid": "mimir"}}]}]}
+        cls.store.upsert_dashboard(cls.slug, "Cmp", "seed", "", cls.dash)
+        cls.store.save_artifact(cls.slug, "widget-report", {
+            "widgets": [{"panel_id": 1, "account_ids": [1]},
+                        {"panel_id": 2, "account_ids": [1]}]})
+        cls.store.save_artifact(cls.slug, "nr-source",
+                                {"name": "Cmp", "pages": [{"widgets": []}]})
+        cls.store.save_artifact(
+            cls.slug, "requirements",
+            STUBS["nr2grafana.requirements"].analyze_dashboard(
+                None, cls.dash, [], {}))
+
+    def test_compare_job_persists_artifact_and_returns_panels(self):
+        code, resp = self.api("POST", "/api/compare",
+                              {"slug": self.slug, "from": "now-6h"})
+        self.assertEqual(code, 200)
+        job = poll_job(self.base, resp["job"])
+        self.assertEqual(job["status"], "done")
+        self.assertTrue(any("compare stub building" in ln
+                            for ln in job["log"]))
+        result = job["result"]
+        self.assertEqual(result["schema"], "nr2grafana/comparison/v1")
+        self.assertEqual(result["range"]["from"], "now-6h")
+        self.assertEqual([p["panel_id"] for p in result["panels"]],
+                         [1, 2])
+        # NR source json was threaded through from the stored artifact
+        self.assertTrue(result["nr_source_present"])
+        # account ids came from the widget report
+        self.assertEqual(result["account_ids"], [1])
+        art = self.store.get_artifact(self.slug, "comparison")
+        self.assertIsNotNone(art)
+        self.assertEqual(art["score"], 100)
+
+    def test_compare_dash_only_when_no_nr_source(self):
+        slug = "compare-nosrc"
+        _seed_dash(self.store, slug, expr="up")
+        code, resp = self.api("POST", "/api/compare", {"slug": slug})
+        self.assertEqual(code, 200)
+        job = poll_job(self.base, resp["job"])
+        self.assertEqual(job["status"], "done")
+        self.assertFalse(job["result"]["nr_source_present"])
+
+    def test_compare_missing_slug_job_errors(self):
+        code, resp = self.api("POST", "/api/compare", {})
+        self.assertEqual(code, 200)  # job starts, then errors
+        job = poll_job(self.base, resp["job"])
+        self.assertEqual(job["status"], "error")
+        self.assertIn("slug", job["error"])
+
+    def test_compare_requires_grafana_url(self):
+        websrv.SESSION.grafana_url = ""
+        try:
+            code, body = self.api("POST", "/api/compare",
+                                  {"slug": self.slug})
+            self.assertEqual(code, 400)
+            self.assertIn("Grafana URL", body["error"])
+        finally:
+            websrv.SESSION.grafana_url = "http://gf.local:3000"
+
+    def test_verify_flow_counts(self):
+        code, body = self.api(
+            "POST", "/api/datasource/new-ds/verify-flow",
+            {"slug": self.slug})
+        self.assertEqual(code, 200)
+        self.assertEqual(body["uid"], "new-ds")
+        flow = body["flow"]
+        self.assertEqual(flow["panels_with_data"], 2)
+        self.assertEqual(flow["panels_total"], 2)
+        self.assertEqual(flow["uid"], "new-ds")
+        self.assertEqual(flow["newly_flowing"], [1])
+
+    def test_verify_flow_bad_slug_404(self):
+        code, body = self.api(
+            "POST", "/api/datasource/new-ds/verify-flow",
+            {"slug": "no-such-slug"})
+        self.assertEqual(code, 404)
+        self.assertIn("error", body)
+
+    def test_verify_flow_requires_slug(self):
+        code, body = self.api(
+            "POST", "/api/datasource/new-ds/verify-flow", {})
+        self.assertEqual(code, 400)
+        self.assertIn("slug", body["error"])
+
+    def test_create_datasource_includes_flow_block(self):
+        code, body = self.api(
+            "POST", "/api/grafana/datasource",
+            {"type": "prometheus", "name": "Mimir3",
+             "values": {"url": "http://mimir:9009/prometheus"},
+             "slug": self.slug})
+        self.assertEqual(code, 200)
+        self.assertEqual(body["uid"], "new-ds")
+        self.assertIn("flow", body)
+        self.assertEqual(body["flow"]["panels_with_data"], 2)
+        self.assertEqual(body["flow"]["uid"], "new-ds")
+
+    def test_create_datasource_without_slug_has_no_flow(self):
+        code, body = self.api(
+            "POST", "/api/grafana/datasource",
+            {"type": "prometheus", "name": "Mimir4",
+             "values": {"url": "http://mimir:9009/prometheus"}})
+        self.assertEqual(code, 200)
+        self.assertNotIn("flow", body)
+
+    def test_panel_data_one_side(self):
+        code, body = self.api(
+            "GET", "/api/panel-data?slug=%s&panel_id=1&side=grafana"
+            % self.slug)
+        self.assertEqual(code, 200)
+        self.assertEqual(body["panel_id"], 1)
+        self.assertEqual(body["side"], "grafana")
+        self.assertEqual(body["viz"], "timeseries")
+        self.assertEqual(body["data"]["kind"], "series")
+        self.assertEqual(body["data"]["series"][0]["points"][-1],
+                         [1060, 2.0])
+
+    def test_panel_data_nr_side(self):
+        code, body = self.api(
+            "GET", "/api/panel-data?slug=%s&panel_id=2&side=nr"
+            % self.slug)
+        self.assertEqual(code, 200)
+        self.assertEqual(body["panel_id"], 2)
+        self.assertEqual(body["side"], "nr")
+
+    def test_panel_data_bad_side_400(self):
+        code, body = self.api(
+            "GET", "/api/panel-data?slug=%s&panel_id=1&side=middle"
+            % self.slug)
+        self.assertEqual(code, 400)
+        self.assertIn("error", body)
+
+    def test_panel_data_unknown_panel_404(self):
+        code, body = self.api(
+            "GET", "/api/panel-data?slug=%s&panel_id=999&side=nr"
+            % self.slug)
+        self.assertEqual(code, 404)
+        self.assertIn("error", body)
+
+    def test_panel_data_bad_slug_404(self):
+        code, body = self.api(
+            "GET", "/api/panel-data?slug=zzz&panel_id=1&side=nr")
+        self.assertEqual(code, 404)
+        self.assertIn("error", body)
+
+    def test_panel_data_requires_slug_and_panel(self):
+        code, body = self.api("GET", "/api/panel-data?panel_id=1")
+        self.assertEqual(code, 400)
+        code, body = self.api("GET",
+                              "/api/panel-data?slug=" + self.slug)
+        self.assertEqual(code, 400)
+
+    def test_state_features_include_compare(self):
+        code, st = self.api("GET", "/api/state")
+        self.assertEqual(code, 200)
+        self.assertTrue(st["features"].get("compare"))
 
 
 class JobInternalsTests(unittest.TestCase):

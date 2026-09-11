@@ -70,6 +70,15 @@ What it does:
 - **Web UI** (`web`): the whole flow in a browser — stepper workflow,
   per-panel NR-vs-Grafana comparison, one-click fixes, downloads of
   the validated JSON.
+- **Side-by-side compare** (web UI **Compare**): your New Relic
+  dashboard and the migrated Grafana dashboard drawn next to each
+  other with **real data**, panel-by-panel, each pair badged
+  match/close/mismatch/no-data — plus a score ring, time-range picker,
+  sync-hover, and a "show only disagreements" filter. See
+  [docs/compare-view.md](docs/compare-view.md).
+- **Add a datasource and watch it flow**: create a datasource from the
+  guided form and immediately see a before/after — "0 panels had data
+  → N flowing now" — with a live sample chart proving data is arriving.
 - **Change tracking**: every fix is logged locally and can be codified
   back into the mapping config.
 - **Optional AI assistance**: Claude diagnoses and fixes failing panels

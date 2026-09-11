@@ -328,10 +328,18 @@ def _collect_json_files(input_dir: str) -> List[str]:
 def _persist_dashboard(store, slug: str, title: str, source: str,
                        nr_guid: str, dash: Dict[str, Any],
                        report: List[Dict[str, Any]],
-                       reqs: Dict[str, Any], pkg_dir: str) -> None:
+                       reqs: Dict[str, Any], pkg_dir: str,
+                       nr_raw: Optional[Dict[str, Any]] = None) -> None:
     store.upsert_dashboard(slug, title, source, nr_guid, dash)
     store.save_artifact(slug, "widget-report", {"widgets": report})
     store.save_artifact(slug, "requirements", reqs)
+    if isinstance(nr_raw, dict) and nr_raw:
+        # The original New Relic dashboard json, kept so Compare can
+        # render the NR side offline (best-effort: never break convert).
+        try:
+            store.save_artifact(slug, "nr-source", nr_raw)
+        except Exception:
+            pass
     if pkg_dir:
         try:
             store.set_setting("package_dir." + slug, pkg_dir)
@@ -425,6 +433,27 @@ def _reupsert_dashboard(store, slug: str, row: Dict[str, Any],
                                row.get("nr_guid", ""), dash)
     except Exception:
         pass
+
+
+def _comparison_inputs(store, slug: str):
+    """Resolve the inputs compare.build_comparison needs for ``slug``:
+    the converted dashboard, its widget report, the stored New Relic
+    source json (or None -> NR side is best-effort), a GrafanaLive
+    client, and a NerdGraphClient when a key is set (else None).
+    Raises ApiError(404) when the slug is unknown."""
+    dash = _dash_from_row(slug, store.get_dashboard(slug))
+    wr = (_artifact(store, slug, "widget-report") or {}).get(
+        "widgets", [])
+    nr_src = _artifact(store, slug, "nr-source")
+    nr_raw = nr_src if isinstance(nr_src, dict) else None
+    live = _grafana_live()
+    nr = None
+    if SESSION.nr_api_key:
+        try:
+            nr = _nerdgraph()
+        except ApiError:
+            nr = None
+    return dash, wr, nr_raw, live, nr
 
 
 # ---------------------------------------------------------------------------
@@ -552,7 +581,9 @@ def _job_convert(job: _Job, body: Dict[str, Any], store) \
                     f.write("\n")
             _persist_dashboard(store, slug, dash.get("title", slug),
                                path, getattr(nr, "guid", "") or "",
-                               dash, report, reqs, pkg_dir)
+                               dash, report, reqs, pkg_dir,
+                               nr_raw=data if isinstance(data, dict)
+                               else None)
             counts = _confidence_counts(report)
             families = [d.get("family", "")
                         for d in reqs.get("datasources", [])]
@@ -705,6 +736,38 @@ def _job_parity(job: _Job, body: Dict[str, Any], store) \
     SESSION.status["grafana"] = "ok"
     SESSION.status["newrelic"] = "ok"
     job.add("Parity score %s -- %s"
+            % (report.get("score"),
+               ", ".join("%d %s" % (v, k) for k, v in
+                         sorted((report.get("summary") or {}).items()))
+               or "no panels compared"))
+    return report
+
+
+def _job_compare(job: _Job, body: Dict[str, Any], store) \
+        -> Dict[str, Any]:
+    slug = body.get("slug") or ""
+    if not slug:
+        raise ApiError("missing 'slug'", 400)
+    dash, wr, nr_raw, live, nr = _comparison_inputs(store, slug)
+    compare_mod = _lazy("compare")
+    frm = body.get("from") or "now-1h"
+    to = body.get("to") or "now"
+    aids = _account_ids(body, wr)
+    if not aids and nr is not None:
+        try:
+            aids = nr.list_account_ids()
+        except Exception as e:
+            job.add("could not list NR accounts: %s" % _errmsg(e))
+    job.add("Building side-by-side comparison for %r (%s .. %s)"
+            % (slug, frm, to))
+    report = compare_mod.build_comparison(
+        nr, aids, live, nr_raw, dash, wr,
+        ds_map=body.get("ds_map"), frm=frm, to=to, log=job.add)
+    store.save_artifact(slug, "comparison", report)
+    SESSION.status["grafana"] = "ok"
+    if nr is not None:
+        SESSION.status["newrelic"] = "ok"
+    job.add("Comparison score %s -- %s"
             % (report.get("score"),
                ", ".join("%d %s" % (v, k) for k, v in
                          sorted((report.get("summary") or {}).items()))
@@ -968,6 +1031,8 @@ class Handler(BaseHTTPRequestHandler):
             self._get_labels(q)
         elif path == "/api/review":
             self._get_review(slug)
+        elif path == "/api/panel-data":
+            self._get_panel_data(q)
         elif path == "/api/readiness":
             self._get_readiness(slug)
         elif path.startswith("/download/"):
@@ -1008,7 +1073,14 @@ class Handler(BaseHTTPRequestHandler):
                 live = _grafana_live()
                 self._json(live.datasource_health(uid))
                 return
+        vf_prefix = "/api/datasource/"
+        if path.startswith(vf_prefix) and path.endswith("/verify-flow"):
+            uid = path[len(vf_prefix):-len("/verify-flow")]
+            if uid and "/" not in uid:
+                self._post_verify_flow(uid)
+                return
         routes = {
+            "/api/compare": self._post_compare,
             "/api/settings": self._post_settings,
             "/api/nr/list": self._post_nr_list,
             "/api/nr/fetch": self._post_nr_fetch,
@@ -1056,7 +1128,8 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             ver = "1.2.0"
         features: Dict[str, bool] = {}
-        for name in ("parity", "diagnose", "remediate", "samples"):
+        for name in ("parity", "diagnose", "remediate", "samples",
+                     "compare"):
             try:
                 _lazy(name)
                 features[name] = True
@@ -1235,6 +1308,46 @@ class Handler(BaseHTTPRequestHandler):
                     "reviews": art.get("reviews") or {},
                     "summary": samples_mod.review_summary(self.store,
                                                           slug)})
+
+    def _get_panel_data(self, q: Dict[str, List[str]]) -> None:
+        """Re-fetch one panel's render data for one side (nr|grafana)
+        without a full compare job -- per-panel refresh in the Compare
+        view. Reuses compare.build_comparison and returns just the
+        requested panel/side."""
+        slug = (q.get("slug") or [""])[0]
+        if not slug:
+            raise ApiError("missing 'slug' query parameter", 400)
+        side = (q.get("side") or ["grafana"])[0] or "grafana"
+        if side not in ("nr", "grafana"):
+            raise ApiError("side must be 'nr' or 'grafana'", 400)
+        pid_raw = (q.get("panel_id") or [""])[0]
+        if pid_raw == "":
+            raise ApiError("missing 'panel_id' query parameter", 400)
+        dash, wr, nr_raw, live, nr = _comparison_inputs(self.store, slug)
+        aids = _account_ids({}, wr)
+        if not aids and nr is not None:
+            try:
+                aids = nr.list_account_ids()
+            except Exception:
+                aids = []
+        frm = (q.get("from") or ["now-1h"])[0] or "now-1h"
+        to = (q.get("to") or ["now"])[0] or "now"
+        report = _lazy("compare").build_comparison(
+            nr, aids, live, nr_raw, dash, wr, frm=frm, to=to, log=None)
+        match = None
+        for p in report.get("panels") or []:
+            if str(p.get("panel_id")) == str(pid_raw):
+                match = p
+                break
+        if match is None:
+            raise ApiError("panel id %r not in comparison for %r"
+                           % (pid_raw, slug), 404)
+        self._json({"slug": slug, "panel_id": match.get("panel_id"),
+                    "side": side, "title": match.get("title"),
+                    "viz": match.get("viz"),
+                    "verdict": match.get("verdict"),
+                    "range": {"from": frm, "to": to},
+                    "data": match.get(side)})
 
     # -- downloads -------------------------------------------------------
 
@@ -1490,8 +1603,53 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             pass
         SESSION.status["grafana"] = "ok"
-        self._json({"ok": health.get("status") == "ok", "uid": uid,
-                    "datasource": created, "health": health})
+        resp: Dict[str, Any] = {"ok": health.get("status") == "ok",
+                                "uid": uid, "datasource": created,
+                                "health": health}
+        # When the request names the currently-open dashboard, probe
+        # whether data now flows through the new datasource so the UI
+        # can show it lighting up the instant it is created.
+        slug = body.get("slug") or ""
+        if slug and uid:
+            try:
+                row = self.store.get_dashboard(slug)
+                if row:
+                    dash = _dash_from_row(slug, row)
+                    wr = (_artifact(self.store, slug, "widget-report")
+                          or {}).get("widgets", [])
+                    reqs = _artifact(self.store, slug,
+                                     "requirements") or {}
+                    resp["flow"] = _lazy("compare").datasource_flow(
+                        live, reqs, dash, wr, ds_uid=uid, ds_map=None)
+            except Exception as e:  # flow is a bonus; never fail create
+                resp["flow_error"] = _errmsg(e)
+        self._json(resp)
+
+    def _post_compare(self) -> None:
+        """Build the side-by-side comparison as a job; persists the
+        "comparison" artifact and returns build_comparison's output.
+        The NR key is optional (NR side falls back to best-effort)."""
+        body = self._body()
+        _grafana_live()  # fail fast with 400 before starting the job
+        store = self.store
+        self._json({"job": _start_job(
+            "compare", lambda job: _job_compare(job, body, store))})
+
+    def _post_verify_flow(self, uid: str) -> None:
+        """Fast (non-job) datasource-flow probe for one ds uid against
+        the currently-open dashboard -- powers "re-check flow"."""
+        body = self._body()
+        slug = body.get("slug") or ""
+        if not slug:
+            raise ApiError("missing 'slug'", 400)
+        dash = _dash_from_row(slug, self.store.get_dashboard(slug))
+        wr = (_artifact(self.store, slug, "widget-report") or {}).get(
+            "widgets", [])
+        reqs = _artifact(self.store, slug, "requirements") or {}
+        live = _grafana_live()
+        flow = _lazy("compare").datasource_flow(
+            live, reqs, dash, wr, ds_uid=uid, ds_map=body.get("ds_map"))
+        self._json({"slug": slug, "uid": uid, "flow": flow})
 
     def _post_parity(self) -> None:
         body = self._body()

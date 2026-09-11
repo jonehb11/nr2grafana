@@ -743,6 +743,217 @@ details.jd pre { margin: 0; border: 0;
   from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: none; }
 }
+
+/* =================================================== charts (3a) */
+/* Categorical series palette (validated, colorblind-safe) --
+   dark-first to match the app default; light overridden below. */
+.chart {
+  position: relative; width: 100%;
+  --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70;
+  --series-4: #c98500; --series-5: #d55181; --series-6: #008300;
+  --series-7: #9085e9; --series-8: #e66767;
+}
+[data-theme="light"] .chart {
+  --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a;
+  --series-4: #eda100; --series-5: #e87ba4; --series-6: #008300;
+  --series-7: #4a3aa7; --series-8: #e34948;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) .chart {
+    --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a;
+    --series-4: #eda100; --series-5: #e87ba4; --series-6: #008300;
+    --series-7: #4a3aa7; --series-8: #e34948;
+  }
+}
+.chart svg { display: block; width: 100%; height: auto;
+  overflow: visible; }
+.chart .ch-grid { stroke: var(--border-soft); stroke-width: 1;
+  shape-rendering: crispEdges; }
+.chart .ch-axis { stroke: var(--border); stroke-width: 1;
+  shape-rendering: crispEdges; }
+.chart text.ch-tick { fill: var(--faint); font: 10px var(--sans);
+  font-variant-numeric: tabular-nums; }
+.chart .ch-line { fill: none; stroke-width: 2;
+  stroke-linejoin: round; stroke-linecap: round; }
+.chart .ch-guide { stroke: var(--muted); stroke-width: 1;
+  stroke-dasharray: 3 3; opacity: 0; pointer-events: none; }
+.chart .ch-guide.on { opacity: .85; }
+.chart .ch-dot { stroke: var(--bg2); stroke-width: 1.5; }
+.chart .ch-lastlbl { fill: var(--muted); font: 700 10px var(--sans);
+  font-variant-numeric: tabular-nums; }
+.chart .ch-bar { rx: 3; }
+.chart .ch-barlbl { fill: var(--muted); font: 700 10px var(--sans);
+  font-variant-numeric: tabular-nums; text-anchor: middle; }
+.chart .ch-slice { stroke: var(--bg2); stroke-width: 2; }
+.chart-legend { display: flex; flex-wrap: wrap; gap: 4px 12px;
+  margin-top: 6px; font-size: var(--fs-xs); color: var(--muted); }
+.chart-legend .lg { display: inline-flex; align-items: center;
+  gap: 5px; max-width: 220px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.chart-legend .sw { width: 10px; height: 10px; border-radius: 2px;
+  flex: 0 0 10px; }
+.chart-stat { display: flex; flex-direction: column;
+  justify-content: center; align-items: flex-start;
+  min-height: 120px; padding: 4px 2px; }
+.chart-stat .cs-num { font-size: 34px; font-weight: 750;
+  letter-spacing: -.02em; line-height: 1.05;
+  font-variant-numeric: tabular-nums; }
+.chart-stat .cs-num.ok { color: var(--green); }
+.chart-stat .cs-num.warn { color: var(--amber); }
+.chart-stat .cs-num.err { color: var(--red); }
+.chart-stat .cs-unit { font-size: var(--fs-md); color: var(--muted);
+  font-weight: 600; margin-left: 4px; }
+.chart-stat .cs-spark { width: 100%; margin-top: 8px; color:
+  var(--accent); }
+.chart-logs { font-family: var(--mono); font-size: var(--fs-sm);
+  line-height: 1.6; max-height: 200px; overflow-y: auto;
+  white-space: pre-wrap; word-break: break-word; }
+.chart-logs .lt { color: var(--faint); margin-right: 8px;
+  user-select: none; }
+.chart-table { max-height: 220px; overflow: auto; }
+.chart-table table { font-size: 12px; }
+.chart-table td, .chart-table th { padding: 3px 8px; }
+.chart-tip { position: absolute; z-index: 20; pointer-events: none;
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: var(--r-sm); box-shadow: var(--shadow);
+  padding: 6px 9px; font-size: var(--fs-sm); min-width: 90px;
+  display: none; }
+.chart-tip .ch-tip-t { font-weight: 700; margin-bottom: 3px;
+  color: var(--text); }
+.chart-tip .ch-tip-row { display: flex; align-items: center;
+  gap: 6px; color: var(--muted); }
+.chart-tip .ch-sw { width: 9px; height: 9px; border-radius: 2px;
+  flex: 0 0 9px; }
+.chart-tip .ch-tip-row b { color: var(--text);
+  font-variant-numeric: tabular-nums; margin-left: auto;
+  padding-left: 8px; }
+.chart-empty { display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 8px;
+  min-height: 120px; text-align: center; color: var(--muted);
+  font-size: var(--fs-sm); border: 1px dashed var(--border-soft);
+  border-radius: var(--r-md); padding: var(--s3); }
+.chart-empty svg.i { color: var(--faint); }
+.chart-empty.err { color: var(--red); border-color: var(--red-bg); }
+.chart-empty.err svg.i { color: var(--red); }
+.chart-empty.warn { color: var(--amber); }
+
+/* ================================================ skeletons */
+.skel { position: relative; overflow: hidden;
+  background: var(--bg3); border-radius: var(--r-sm); }
+.skel::after { content: ""; position: absolute; inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent,
+    rgba(255,255,255,.06), transparent);
+  animation: skel 1.2s infinite; }
+[data-theme="light"] .skel::after {
+  background: linear-gradient(90deg, transparent,
+    rgba(15,30,60,.05), transparent); }
+@keyframes skel { 100% { transform: translateX(100%); } }
+.skel-chart { height: 150px; width: 100%; }
+
+/* =============================================== compare (3b) */
+.cmp-topbar { display: flex; align-items: center; gap: var(--s4);
+  flex-wrap: wrap; }
+.cmp-score { display: flex; align-items: center; gap: 10px; }
+.cmp-score-lbl { font-size: var(--fs-xs); color: var(--muted);
+  line-height: 1.25; }
+.cmp-tally { display: flex; flex-wrap: wrap; gap: 3px;
+  align-items: center; }
+.cmp-controls { display: flex; align-items: center; gap: var(--s3);
+  flex-wrap: wrap; margin-left: auto; }
+.seg-range { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+.cmp-custom { display: flex; gap: 6px; align-items: center; }
+.cmp-switch { display: inline-flex; align-items: center; gap: 6px;
+  margin: 0; font-size: var(--fs-sm); color: var(--muted);
+  font-weight: 600; cursor: pointer; }
+.cmp-switch input { width: auto; margin: 0; }
+.cmp-rowhead { font-size: var(--fs-xs); font-weight: 700;
+  letter-spacing: .08em; text-transform: uppercase;
+  color: var(--faint); margin: var(--s4) 0 var(--s2);
+  padding-bottom: 4px; border-bottom: 1px solid var(--border-soft); }
+.cmp-rowhead:first-child { margin-top: 0; }
+.cmp-pair { border: 1px solid var(--border-soft);
+  border-radius: var(--r-lg); background: var(--bg2);
+  box-shadow: var(--shadow-card); padding: var(--s3) var(--s4);
+  margin-bottom: var(--s3); }
+.cmp-pair-head { display: flex; align-items: center; gap: var(--s2);
+  flex-wrap: wrap; margin-bottom: var(--s2); }
+.cmp-pair-title { font-weight: 650; font-size: var(--fs-lg); }
+.cmp-agree { display: inline-flex; }
+.cmp-why { color: var(--muted); font-size: var(--fs-sm);
+  min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; flex: 1; }
+.cmp-open { margin-left: auto; }
+.cmp-cols { display: grid; grid-template-columns: 1fr 1fr;
+  gap: var(--s3); align-items: stretch; }
+@media (max-width: 720px) {
+  .cmp-cols { grid-template-columns: 1fr; }
+  .cmp-controls { margin-left: 0; }
+}
+.cmp-side { border: 1px solid var(--border-soft);
+  border-radius: var(--r-md); background: var(--bg);
+  padding: var(--s2) var(--s3); min-width: 0; }
+.cmp-side-h { display: flex; align-items: center; gap: 6px;
+  font-size: var(--fs-xs); font-weight: 700; letter-spacing: .05em;
+  text-transform: uppercase; color: var(--muted);
+  margin-bottom: var(--s2); }
+.cmp-side-h .cmp-refresh { margin-left: auto; }
+.cmp-side-h svg.i { color: var(--faint); }
+
+/* =============================================== flow (3c) */
+.flow-card { border: 1px solid var(--border-soft);
+  border-radius: var(--r-md); background: var(--bg);
+  padding: var(--s3); margin-top: var(--s2); }
+.flow-head { display: flex; align-items: center; gap: var(--s2);
+  flex-wrap: wrap; margin-bottom: var(--s2); }
+.flow-ba { display: flex; align-items: center; gap: var(--s3);
+  flex-wrap: wrap; }
+.flow-num { text-align: center; }
+.flow-num .flow-n { font-size: 28px; font-weight: 750;
+  font-variant-numeric: tabular-nums; line-height: 1; }
+.flow-num .flow-n.after { color: var(--green); }
+.flow-num .flow-n.before { color: var(--muted); }
+.flow-arrow { color: var(--green); display: flex;
+  align-items: center; }
+.flow-badges { display: flex; flex-wrap: wrap; gap: 3px;
+  margin-left: auto; }
+.flow-sample { margin-top: var(--s2); }
+
+/* =============================================== welcome (3d) */
+.welcome { border: 1px solid var(--accent);
+  background: var(--accent-soft); }
+.welcome-head { display: flex; align-items: center;
+  justify-content: space-between; margin-bottom: var(--s2);
+  font-size: var(--fs-lg); }
+.wc-list { display: flex; flex-direction: column; gap: 4px; }
+.wc-item { display: flex; align-items: center; gap: 10px;
+  padding: 7px 10px; border-radius: var(--r-sm); color: var(--text);
+  font-size: var(--fs-md); font-weight: 500;
+  border: 1px solid transparent; }
+.wc-item:hover { background: var(--bg3); text-decoration: none; }
+.wc-item .wc-mark { width: 20px; height: 20px; border-radius: 50%;
+  border: 2px solid var(--border); display: inline-flex;
+  align-items: center; justify-content: center; flex: 0 0 20px;
+  font-size: 12px; color: var(--muted); }
+.wc-item.done .wc-mark { border-color: var(--green);
+  color: var(--green); background: var(--green-bg); }
+.wc-item.next { background: var(--bg2); border-color: var(--accent);
+  font-weight: 650; }
+.wc-item.next .wc-mark { border-color: var(--accent);
+  color: var(--accent); box-shadow: 0 0 0 3px var(--accent-dim); }
+.wc-item .wc-next { margin-left: auto; color: var(--accent);
+  font-weight: 700; font-size: var(--fs-sm);
+  display: inline-flex; align-items: center; gap: 4px; }
+
+/* =============================================== help sheet */
+.help-modal { width: min(520px, 94vw); }
+.help-tbl { width: 100%; }
+.help-tbl td { padding: 5px 8px; border-bottom: 1px solid
+  var(--border-soft); }
+.help-tbl td:first-child { width: 130px; }
+.help-tbl kbd { font-family: var(--mono); font-size: 11px;
+  background: var(--bg3); border: 1px solid var(--border);
+  border-radius: 4px; padding: 1px 6px; color: var(--text); }
 </style>
 </head>
 <body>
@@ -800,6 +1011,13 @@ details.jd pre { margin: 0; border: 0;
           points="17 8 12 3 7 8"></polyline><line x1="12" y1="3"
           x2="12" y2="15"></line></svg></span> Import</a>
       <div class="nav-sec">Review</div>
+      <a href="#/compare" data-r="compare">
+        <span class="ico"><svg class="i" viewBox="0 0 24 24"
+          fill="none" stroke="currentColor" stroke-width="1.7"
+          stroke-linecap="round" stroke-linejoin="round"
+          aria-hidden="true"><rect x="3" y="4" width="8" height="16"
+          rx="1"></rect><rect x="13" y="4" width="8" height="16"
+          rx="1"></rect></svg></span> Compare</a>
       <a href="#/changes" data-r="changes">
         <span class="ico"><svg class="i" viewBox="0 0 24 24"
           fill="none" stroke="currentColor" stroke-width="1.7"
@@ -834,6 +1052,9 @@ details.jd pre { margin: 0; border: 0;
         title="Background jobs" aria-label="Background jobs">
         <span class="spin"></span>Jobs
         <span id="jobscount"></span></button>
+      <button class="pill" id="helpbtn" type="button"
+        title="Keyboard shortcuts (press ?)"
+        aria-label="Keyboard shortcuts">?</button>
       <button class="pill" id="themebtn" type="button" title="Theme">
         <span id="themelbl">Auto</span></button>
     </header>
@@ -862,10 +1083,18 @@ var App = {
   timers: [],            /* view-local intervals (cleared on route) */
   ws: null,              /* current workspace {slug, detail, tab} */
   dsHealth: {},          /* ds uid -> {status,message} */
+  dsFlow: {},            /* ds uid -> flow family (verify-flow) */
+  dsFlowSlug: '',        /* dashboard the ds flow badges track */
+  cmp: null,             /* compare view state {slug,from,to,...} */
+  cmpIO: null,           /* IntersectionObserver for lazy panels */
   templates: null        /* /api/grafana/ds-templates cache */
 };
 
 var Jobs = { items: [], open: false };
+
+/* Live chart registry: id -> geometry+series, for hover/sync. Reset
+   on every route change so it never leaks across views. */
+var CHARTS = {};
 
 /* ====================================================== utils */
 function esc(s) {
@@ -987,7 +1216,11 @@ var ICONS = {
     '<path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path>',
   wrench: '<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 ' +
     '1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 ' +
-    '1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>'
+    '1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>',
+  refresh: '<polyline points="23 4 23 10 17 10"></polyline>' +
+    '<polyline points="1 20 1 14 7 14"></polyline>' +
+    '<path d="M3.5 9a9 9 0 0 1 14.9-3.4L23 10M1 14l4.6 4.4A9 9 0 0 ' +
+    '0 20.5 15"></path>'
 };
 
 function ico(name, size) {
@@ -1297,6 +1530,27 @@ var VERDICT_CLS = { match: 'ok', close: 'info',
                     'shape-mismatch': 'warn', 'nr-empty': 'dim',
                     'gf-empty': 'warn', 'both-empty': 'dim',
                     'nr-error': 'err', 'gf-error': 'err' };
+/* Plain-language tooltip for every verdict -- used as the default
+   badge title so hovering any verdict explains what it means. */
+var VERDICT_HELP = {
+  match: 'Both sides return the same values over this range.',
+  close: 'Values track each other but differ by a small factor.',
+  'value-mismatch': 'Both sides have data but the numbers differ.',
+  'shape-mismatch': 'The curves have different shapes over time.',
+  'nr-empty': 'New Relic returned no data for this range.',
+  'gf-empty': 'Grafana returned no data -- likely a missing ' +
+    'datasource or a query that needs a fix.',
+  'both-empty': 'Neither side returned data for this range.',
+  'nr-error': 'The New Relic query failed to run.',
+  'gf-error': 'The Grafana query failed to run.' };
+/* Short, friendly label for a compare agreement badge. */
+var VERDICT_LBL = {
+  match: 'match', close: 'close', 'value-mismatch': 'values differ',
+  'shape-mismatch': 'shape differs', 'nr-empty': 'NR: no data',
+  'gf-empty': 'Grafana: no data', 'both-empty': 'no data',
+  'nr-error': 'NR error', 'gf-error': 'Grafana error' };
+/* Verdicts that count as agreement (hidden by "only disagreements"). */
+var AGREE_OK = { match: 1, close: 1 };
 var SEV_CLS = { blocker: 'err', warn: 'warn', info: 'info' };
 var SEV_ORDER = { blocker: 0, warn: 1, info: 2 };
 var REVIEW_CLS = { confirmed: 'ok', rejected: 'err', unsure: 'dim' };
@@ -1334,7 +1588,8 @@ function verdictChip(v, ratio, detail) {
   if (ratio != null && isFinite(ratio) && v !== 'match') {
     label += ' (x' + fmtRatio(ratio) + ')';
   }
-  return chip(label, VERDICT_CLS[v] || 'dim', detail || '');
+  return chip(label, VERDICT_CLS[v] || 'dim',
+              detail || VERDICT_HELP[v] || '');
 }
 
 function fmtRatio(r) {
@@ -1637,6 +1892,552 @@ function signoffHtml(pid, ref, rv) {
     '">' + current + '</div>';
 }
 
+/* =================================================== charts (3a) */
+/* A tiny inline-SVG charting layer -- no libraries, no CDN. Every
+   chart is theme-aware (CSS vars for palette/axes), responsive
+   (fixed viewBox + width:100%), formats numbers human-friendly and
+   NEVER renders blank: empty/error states get a clean placeholder.
+   chart(kind, data, opts) -> HTML string. Timeseries charts also
+   register their geometry in CHARTS for hover tooltips + sync. */
+var SERIES_COLORS = ['var(--series-1)', 'var(--series-2)',
+  'var(--series-3)', 'var(--series-4)', 'var(--series-5)',
+  'var(--series-6)', 'var(--series-7)', 'var(--series-8)'];
+function seriesColor(i) {
+  return SERIES_COLORS[i % SERIES_COLORS.length];
+}
+
+/* Human duration from milliseconds. */
+function fmtDur(ms) {
+  if (ms == null || !isFinite(ms)) return '–';
+  var a = Math.abs(ms);
+  if (a === 0) return '0';
+  if (a < 1) return Math.round(ms * 1000) + 'µs';
+  if (a < 1000) return (Math.round(ms * 10) / 10) + 'ms';
+  var s = ms / 1000;
+  if (a < 60000) return (Math.round(s * 100) / 100) + 's';
+  var m = Math.floor(Math.abs(s) / 60), rem = Math.round(Math.abs(s) % 60);
+  if (a < 3600000) return (s < 0 ? '-' : '') + m + 'm ' + rem + 's';
+  var h = Math.floor(Math.abs(s) / 3600),
+      mm = Math.floor((Math.abs(s) % 3600) / 60);
+  return (s < 0 ? '-' : '') + h + 'h ' + mm + 'm';
+}
+
+/* Human bytes (binary). */
+function fmtBytes(v) {
+  if (v == null || !isFinite(v)) return '–';
+  var u = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'], i = 0;
+  while (Math.abs(v) >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+  return (Math.round(v * 100) / 100) + ' ' + u[i];
+}
+
+/* Format a value with unit awareness (%, ms/s durations, bytes, SI). */
+function fmtUnit(v, unit) {
+  if (v == null || !isFinite(v)) return '–';
+  unit = String(unit || '').toLowerCase();
+  if (unit === 'percent' || unit === '%') {
+    return (Math.round(v * 10) / 10) + '%';
+  }
+  if (unit === 'percentunit') return (Math.round(v * 1000) / 10) + '%';
+  if (unit === 's' || unit === 'seconds') return fmtDur(v * 1000);
+  if (unit === 'ms' || unit === 'milliseconds') return fmtDur(v);
+  if (unit === 'ns' || unit === 'nanoseconds') return fmtDur(v / 1e6);
+  if (unit.indexOf('byte') === 0 || unit === 'decbytes' ||
+      unit === 'bytes/sec') {
+    return fmtBytes(v) + (unit.indexOf('/sec') >= 0 ? '/s' : '');
+  }
+  var s = fmtNumP(v);
+  return unit ? s + ' ' + unit : s;
+}
+
+/* Plain-text (no HTML entity) variant of fmtNum for SVG/axis text. */
+function fmtNumP(v) {
+  if (v == null || !isFinite(v)) return '–';
+  var a = Math.abs(v);
+  if (a >= 1e12) return (v / 1e12).toFixed(1) + 'T';
+  if (a >= 1e9) return (v / 1e9).toFixed(1) + 'B';
+  if (a >= 1e6) return (v / 1e6).toFixed(1) + 'M';
+  if (a >= 1e4) return (v / 1e3).toFixed(1) + 'k';
+  if (a >= 100) return String(Math.round(v));
+  if (a === 0) return '0';
+  if (a >= 1) return String(Math.round(v * 100) / 100);
+  return Number(v.toPrecision(3)).toString();
+}
+
+/* Clock label HH:MM from an epoch-seconds (or epoch-ms) timestamp. */
+function fmtClock(t) {
+  if (t == null || !isFinite(t)) return '';
+  var d = new Date(t > 1e11 ? t : t * 1000);
+  if (isNaN(d.getTime())) return '';
+  return ('0' + d.getHours()).slice(-2) + ':' +
+         ('0' + d.getMinutes()).slice(-2);
+}
+
+/* Defensive downsample: keep <= max points, always keep the last. */
+function stridePts(pts, max) {
+  pts = pts || [];
+  if (pts.length <= max) return pts;
+  var step = Math.ceil(pts.length / max), out = [];
+  for (var i = 0; i < pts.length; i += step) out.push(pts[i]);
+  if (out[out.length - 1] !== pts[pts.length - 1]) {
+    out.push(pts[pts.length - 1]);
+  }
+  return out;
+}
+
+/* In-panel placeholder -- shown instead of a blank chart. */
+function chartEmpty(msg, kind) {
+  var cls = kind === 'err' ? ' err' : kind === 'warn' ? ' warn' : '';
+  var icon = kind === 'err' ? 'alert' : 'inbox';
+  return '<div class="chart-empty' + cls + '">' + ico(icon, 20) +
+    '<span>' + esc(msg || 'No data') + '</span></div>';
+}
+
+/* Threshold color class (ok/warn/err) for a stat/gauge value.
+   opts.thresholds = [{value, level}] ascending; highest match wins. */
+function thresholdClass(v, thresholds) {
+  if (v == null || !isFinite(v) || !thresholds ||
+      !thresholds.length) return '';
+  var cls = '';
+  thresholds.forEach(function (t) {
+    if (v >= t.value) cls = t.level || '';
+  });
+  return cls;
+}
+
+/* Public entry point. kind mirrors the Grafana panel viz so both
+   sides of Compare draw the same chart. data is a "side" shape
+   {kind, series, scalar, rows, lines, unit, error} or the loose
+   {series}/{scalar}/... a caller passes directly. */
+function chart(kind, data, opts) {
+  opts = opts || {};
+  data = data || {};
+  if (data.kind === 'error' || data.error) {
+    return chartEmpty(data.error || 'query error', 'err');
+  }
+  var unit = opts.unit != null ? opts.unit : (data.unit || '');
+  kind = kind || 'timeseries';
+  if (kind === 'text' || kind === 'unsupported' || kind === 'row') {
+    return chartEmpty(opts.placeholder || 'Not a data panel');
+  }
+  if (kind === 'table') return chTable(data.rows, opts);
+  if (kind === 'logs') return chLogs(data.lines, opts);
+  if (kind === 'stat' || kind === 'billboard') {
+    return chStat(data, unit, opts);
+  }
+  if (kind === 'gauge' || kind === 'bargauge') {
+    return chGauge(data, unit, opts);
+  }
+  if (kind === 'bar' || kind === 'barchart') {
+    return chBar(data.series, unit, opts);
+  }
+  if (kind === 'piechart' || kind === 'pie') {
+    return chPie(data.series, unit, opts);
+  }
+  return chTimeseries(data.series, unit, opts);
+}
+
+/* nearest point (by time) in a [[t,v],...] array */
+function nearestPt(pts, t) {
+  if (!pts || !pts.length) return null;
+  var best = pts[0], bd = Math.abs(pts[0][0] - t);
+  for (var i = 1; i < pts.length; i++) {
+    var d = Math.abs(pts[i][0] - t);
+    if (d < bd) { bd = d; best = pts[i]; }
+  }
+  return best;
+}
+
+function chTimeseries(series, unit, opts) {
+  var max = opts.maxPoints || 150;
+  var norm = (series || []).filter(function (s) {
+    return s && (s.points || []).length;
+  }).slice(0, 8).map(function (s, i) {
+    return { name: s.name || ('series ' + (i + 1)),
+             color: seriesColor(i),
+             pts: stridePts(normPts(s.points), max) };
+  }).filter(function (s) { return s.pts.length; });
+  if (!norm.length) return chartEmpty('No data in this range');
+  var W = 480, H = opts.height || 150;
+  var pl = 44, pr = 10, ptop = 8, pb = 20;
+  var pw = W - pl - pr, ph = H - ptop - pb;
+  var xs = [], ys = [];
+  norm.forEach(function (s) {
+    s.pts.forEach(function (p) { xs.push(p[0]); ys.push(p[1]); });
+  });
+  var x0 = Math.min.apply(null, xs), x1 = Math.max.apply(null, xs);
+  var y0 = Math.min.apply(null, ys), y1 = Math.max.apply(null, ys);
+  if (x1 === x0) x1 = x0 + 1;
+  if (y1 === y0) { var d = Math.abs(y0) || 1; y0 -= d * 0.5;
+                   y1 += d * 0.5; }
+  var ypad = (y1 - y0) * 0.08; y0 -= ypad; y1 += ypad;
+  if (y0 > 0 && y0 / (y1 - y0) < 0.35) y0 = 0;
+  function X(t) { return pl + (t - x0) / (x1 - x0) * pw; }
+  function Y(v) { return ptop + ph - (v - y0) / (y1 - y0) * ph; }
+  var grid = '', i, gy, gv, gx;
+  for (i = 0; i <= 4; i++) {
+    gv = y0 + (i / 4) * (y1 - y0); gy = Y(gv);
+    grid += '<line class="ch-grid" x1="' + pl + '" y1="' +
+      gy.toFixed(1) + '" x2="' + (W - pr) + '" y2="' + gy.toFixed(1) +
+      '"></line><text class="ch-tick" x="' + (pl - 5) + '" y="' +
+      (gy + 3).toFixed(1) + '" text-anchor="end">' +
+      esc(fmtUnit(gv, unit)) + '</text>';
+  }
+  var nt = Math.min(5, norm[0].pts.length);
+  for (i = 0; i < nt; i++) {
+    var tt = x0 + (i / (nt - 1 || 1)) * (x1 - x0); gx = X(tt);
+    grid += '<text class="ch-tick" x="' + gx.toFixed(1) + '" y="' +
+      (H - 6) + '" text-anchor="' +
+      (i === 0 ? 'start' : i === nt - 1 ? 'end' : 'middle') + '">' +
+      esc(fmtClock(tt)) + '</text>';
+  }
+  var lines = norm.map(function (s) {
+    var pstr = s.pts.map(function (p) {
+      return X(p[0]).toFixed(1) + ',' + Y(p[1]).toFixed(1);
+    }).join(' ');
+    if (s.pts.length === 1) {
+      return '<circle cx="' + X(s.pts[0][0]).toFixed(1) + '" cy="' +
+        Y(s.pts[0][1]).toFixed(1) + '" r="3" fill="' + s.color +
+        '"></circle>';
+    }
+    return '<polyline class="ch-line" stroke="' + s.color +
+      '" points="' + pstr + '"></polyline>';
+  }).join('');
+  var axis = '<line class="ch-axis" x1="' + pl + '" y1="' + ptop +
+    '" x2="' + pl + '" y2="' + (ptop + ph) + '"></line>' +
+    '<line class="ch-axis" x1="' + pl + '" y1="' + (ptop + ph) +
+    '" x2="' + (W - pr) + '" y2="' + (ptop + ph) + '"></line>';
+  var legend = norm.length > 1 ? '<div class="chart-legend">' +
+    norm.map(function (s) {
+      return '<span class="lg"><span class="sw" style="background:' +
+        s.color + '"></span>' + esc(s.name) + '</span>';
+    }).join('') + '</div>' : '';
+  var id = 'ch-' + uid();
+  CHARTS[id] = { kind: 'timeseries', W: W, pl: pl, pr: pr,
+    x0: x0, x1: x1, X: X, Y: Y, series: norm, unit: unit,
+    partner: '' };
+  return '<div class="chart" id="' + id + '" data-tsid="' + id +
+    '"><svg viewBox="0 0 ' + W + ' ' + H + '" role="img" ' +
+    'aria-label="time series chart">' + grid + axis + lines +
+    '<line class="ch-guide" x1="0" x2="0" y1="' + ptop + '" y2="' +
+    (ptop + ph) + '"></line><g class="ch-dots"></g></svg>' +
+    '<div class="chart-tip"></div>' + legend + '</div>';
+}
+
+function chBar(series, unit, opts) {
+  var list = (series || []).filter(function (s) {
+    return s && (s.points || []).length;
+  });
+  if (!list.length) return chartEmpty('No data');
+  var cats;
+  if (list.length === 1) {
+    cats = stridePts(normPts(list[0].points), 24).map(function (p) {
+      return { label: fmtClock(p[0]), value: p[1] };
+    });
+  } else {
+    cats = list.slice(0, 12).map(function (s) {
+      var p = normPts(s.points);
+      return { label: s.name || '',
+               value: p.length ? p[p.length - 1][1] : 0 };
+    });
+  }
+  var W = 480, H = opts.height || 150;
+  var pl = 44, pr = 10, ptop = 8, pb = 22;
+  var pw = W - pl - pr, ph = H - ptop - pb;
+  var vals = cats.map(function (c) { return c.value; });
+  var y1 = Math.max.apply(null, vals);
+  var y0 = Math.min.apply(null, vals.concat([0]));
+  if (y1 === y0) y1 = y0 + 1;
+  function Y(v) { return ptop + ph - (v - y0) / (y1 - y0) * ph; }
+  var n = cats.length, gap = pw / n * 0.24, bw = pw / n - gap;
+  var grid = '', i, gy, gv;
+  for (i = 0; i <= 4; i++) {
+    gv = y0 + (i / 4) * (y1 - y0); gy = Y(gv);
+    grid += '<line class="ch-grid" x1="' + pl + '" y1="' +
+      gy.toFixed(1) + '" x2="' + (W - pr) + '" y2="' + gy.toFixed(1) +
+      '"></line><text class="ch-tick" x="' + (pl - 5) + '" y="' +
+      (gy + 3).toFixed(1) + '" text-anchor="end">' +
+      esc(fmtUnit(gv, unit)) + '</text>';
+  }
+  var bars = cats.map(function (c, k) {
+    var x = pl + k * (pw / n) + gap / 2;
+    var yv = Y(c.value), y00 = Y(Math.min(0, y1) > 0 ? y0 : 0);
+    var top = Math.min(yv, Y(0)), hh = Math.abs(yv - Y(0));
+    var lbl = n <= 12 ? '<text class="ch-tick" x="' +
+      (x + bw / 2).toFixed(1) + '" y="' + (H - 7) +
+      '" text-anchor="middle">' + esc(String(c.label).slice(0, 6)) +
+      '</text>' : '';
+    return '<rect class="ch-bar" x="' + x.toFixed(1) + '" y="' +
+      top.toFixed(1) + '" width="' + bw.toFixed(1) + '" height="' +
+      Math.max(1, hh).toFixed(1) + '" fill="' + seriesColor(k) +
+      '"><title>' + esc(c.label + ': ' + fmtUnit(c.value, unit)) +
+      '</title></rect>' + lbl;
+  }).join('');
+  return '<div class="chart"><svg viewBox="0 0 ' + W + ' ' + H +
+    '" role="img" aria-label="bar chart">' + grid + bars +
+    '</svg></div>';
+}
+
+function chStat(data, unit, opts) {
+  var v = data.scalar;
+  if (v == null && data.series && data.series.length) {
+    var p = normPts(data.series[0].points);
+    if (p.length) v = p[p.length - 1][1];
+  }
+  if (v == null || !isFinite(v)) {
+    return chartEmpty(opts.placeholder || 'No value');
+  }
+  var cls = thresholdClass(v, opts.thresholds);
+  var spark = '';
+  var s0 = (data.series || [])[0];
+  if (s0 && (s0.points || []).length > 1) {
+    var pts = stridePts(normPts(s0.points), 80);
+    var W = 240, H = 34;
+    var xs = pts.map(function (q) { return q[0]; });
+    var ys = pts.map(function (q) { return q[1]; });
+    var x0 = Math.min.apply(null, xs), x1 = Math.max.apply(null, xs);
+    var y0 = Math.min.apply(null, ys), y1 = Math.max.apply(null, ys);
+    if (x1 === x0) x1 = x0 + 1;
+    if (y1 === y0) { y0 -= 1; y1 += 1; }
+    var poly = pts.map(function (q) {
+      return (2 + (q[0] - x0) / (x1 - x0) * (W - 4)).toFixed(1) + ',' +
+        (H - 2 - (q[1] - y0) / (y1 - y0) * (H - 4)).toFixed(1);
+    }).join(' ');
+    spark = '<svg class="cs-spark" viewBox="0 0 ' + W + ' ' + H +
+      '" preserveAspectRatio="none" height="' + H +
+      '"><polyline fill="none" stroke="currentColor" ' +
+      'stroke-width="1.6" stroke-linejoin="round" points="' + poly +
+      '"></polyline></svg>';
+  }
+  var big = fmtUnit(v, unit);
+  var num = big, un = '';
+  var m = /^(-?[0-9.,]+)\s*(.*)$/.exec(big);
+  if (m && m[2]) { num = m[1]; un = m[2]; }
+  return '<div class="chart-stat"><div><span class="cs-num ' + cls +
+    '">' + esc(num) + '</span>' +
+    (un ? '<span class="cs-unit">' + esc(un) + '</span>' : '') +
+    '</div>' + spark + '</div>';
+}
+
+function chGauge(data, unit, opts) {
+  var v = data.scalar;
+  if (v == null && data.series && data.series.length) {
+    var p = normPts(data.series[0].points);
+    if (p.length) v = p[p.length - 1][1];
+  }
+  if (v == null || !isFinite(v)) return chartEmpty('No value');
+  var lo = opts.min != null ? opts.min : 0;
+  var hi = opts.max != null ? opts.max :
+    (v <= 1 ? 1 : Math.pow(10, Math.ceil(Math.log10(v * 1.1 || 1))));
+  if (hi <= lo) hi = lo + 1;
+  var frac = Math.max(0, Math.min(1, (v - lo) / (hi - lo)));
+  var cls = thresholdClass(v, opts.thresholds);
+  var col = cls === 'err' ? 'var(--red)' : cls === 'warn' ?
+    'var(--amber)' : cls === 'ok' ? 'var(--green)' : 'var(--accent)';
+  var W = 240, H = 132, cx = W / 2, cy = 116, r = 92;
+  function pt(a) {
+    return [cx + r * Math.cos(a), cy + r * Math.sin(a)];
+  }
+  var a0 = Math.PI, a1 = 2 * Math.PI;
+  var av = a0 + frac * (a1 - a0);
+  function arc(from, to, color, width) {
+    var s = pt(from), e = pt(to);
+    var large = (to - from) > Math.PI ? 1 : 0;
+    return '<path d="M' + s[0].toFixed(1) + ' ' + s[1].toFixed(1) +
+      ' A' + r + ' ' + r + ' 0 ' + large + ' 1 ' + e[0].toFixed(1) +
+      ' ' + e[1].toFixed(1) + '" fill="none" stroke="' + color +
+      '" stroke-width="' + width + '" stroke-linecap="round"></path>';
+  }
+  return '<div class="chart"><svg viewBox="0 0 ' + W + ' ' + H +
+    '" role="img" aria-label="gauge">' +
+    arc(a0, a1, 'var(--bg4)', 14) +
+    (frac > 0 ? arc(a0, av, col, 14) : '') +
+    '<text x="' + cx + '" y="' + (cy - 18) +
+    '" text-anchor="middle" style="fill:var(--text);font:700 22px ' +
+    'var(--sans)">' + esc(fmtUnit(v, unit)) + '</text>' +
+    '<text class="ch-tick" x="' + (cx - r) + '" y="' + (cy + 16) +
+    '" text-anchor="middle">' + esc(fmtNumP(lo)) + '</text>' +
+    '<text class="ch-tick" x="' + (cx + r) + '" y="' + (cy + 16) +
+    '" text-anchor="middle">' + esc(fmtNumP(hi)) + '</text>' +
+    '</svg></div>';
+}
+
+function chTable(rows, opts) {
+  rows = rows || [];
+  if (!rows.length) return chartEmpty('No rows');
+  var cols = [];
+  rows.forEach(function (r) {
+    Object.keys(r || {}).forEach(function (k) {
+      if (cols.indexOf(k) < 0) cols.push(k);
+    });
+  });
+  if (!cols.length) return chartEmpty('No rows');
+  cols = cols.slice(0, 8);
+  var head = cols.map(function (c) {
+    return '<th>' + esc(c) + '</th>'; }).join('');
+  var body = rows.slice(0, 60).map(function (r) {
+    return '<tr>' + cols.map(function (c) {
+      var val = r[c];
+      if (typeof val === 'number') val = fmtNumP(val);
+      return '<td class="mono">' + esc(val == null ? '' : val) +
+        '</td>';
+    }).join('') + '</tr>';
+  }).join('');
+  return '<div class="chart-table"><table class="zebra"><thead><tr>' +
+    head + '</tr></thead><tbody>' + body + '</tbody></table></div>';
+}
+
+function chLogs(lines, opts) {
+  lines = lines || [];
+  if (!lines.length) return chartEmpty('No log lines');
+  return '<div class="chart-logs">' + lines.slice(0, 200).map(
+    function (l) {
+      var ts = l.ts ? '<span class="lt">' +
+        esc(String(l.ts).replace('T', ' ').slice(0, 19)) + '</span>'
+        : '';
+      return '<div>' + ts + esc(l.line == null ? '' : l.line) +
+        '</div>';
+    }).join('') + '</div>';
+}
+
+function chPie(series, unit, opts) {
+  var slices = (series || []).map(function (s, i) {
+    var p = normPts(s.points);
+    return { name: s.name || ('slice ' + (i + 1)),
+             value: p.length ? Math.abs(p[p.length - 1][1]) : 0,
+             color: seriesColor(i) };
+  }).filter(function (s) { return s.value > 0; });
+  if (!slices.length) return chartEmpty('No data');
+  var total = slices.reduce(function (a, s) { return a + s.value; }, 0);
+  if (total <= 0) return chartEmpty('No data');
+  var W = 300, H = 150, cx = 75, cy = 75, r = 66;
+  var ang = -Math.PI / 2, paths = '';
+  slices.forEach(function (s) {
+    var frac = s.value / total, a2 = ang + frac * 2 * Math.PI;
+    var large = frac > 0.5 ? 1 : 0;
+    if (frac >= 0.999) {
+      paths += '<circle cx="' + cx + '" cy="' + cy + '" r="' + r +
+        '" class="ch-slice" fill="' + s.color + '"></circle>';
+    } else {
+      var x1 = cx + r * Math.cos(ang), y1 = cy + r * Math.sin(ang);
+      var x2 = cx + r * Math.cos(a2), y2 = cy + r * Math.sin(a2);
+      paths += '<path class="ch-slice" d="M' + cx + ' ' + cy + ' L' +
+        x1.toFixed(1) + ' ' + y1.toFixed(1) + ' A' + r + ' ' + r +
+        ' 0 ' + large + ' 1 ' + x2.toFixed(1) + ' ' + y2.toFixed(1) +
+        ' Z" fill="' + s.color + '"><title>' +
+        esc(s.name + ': ' + fmtUnit(s.value, unit)) +
+        '</title></path>';
+    }
+    ang = a2;
+  });
+  var legend = '<div class="chart-legend" style="flex-direction:' +
+    'column;gap:3px">' + slices.map(function (s) {
+      return '<span class="lg"><span class="sw" style="background:' +
+        s.color + '"></span>' + esc(s.name) + ' · ' +
+        esc(fmtUnit(s.value, unit)) + '</span>';
+    }).join('') + '</div>';
+  return '<div class="chart" style="display:flex;align-items:center;' +
+    'gap:8px"><svg viewBox="0 0 150 150" style="width:150px;flex:' +
+    '0 0 150px" role="img" aria-label="pie chart">' + paths +
+    '</svg>' + legend + '</div>';
+}
+
+/* Wire hover tooltips for every timeseries chart under root. Safe to
+   call repeatedly -- already-bound charts are skipped. */
+function mountCharts(root) {
+  $all('.chart[data-tsid]', root || document).forEach(function (el) {
+    var id = el.getAttribute('data-tsid');
+    var rec = CHARTS[id];
+    if (!rec || rec.bound) return;
+    rec.bound = true;
+    var svg = $('svg', el);
+    if (!svg) return;
+    svg.addEventListener('mousemove', function (ev) {
+      chHover(id, ev.clientX);
+    });
+    svg.addEventListener('mouseleave', function () { chClear(id); });
+  });
+}
+
+function chHover(id, clientX) {
+  var rec = CHARTS[id];
+  var el = document.getElementById(id);
+  if (!rec || !el) return;
+  var svg = $('svg', el);
+  var rect = svg.getBoundingClientRect();
+  if (!rect.width) return;
+  var vbX = (clientX - rect.left) / rect.width * rec.W;
+  var t = rec.x0 + (vbX - rec.pl) / (rec.W - rec.pl - rec.pr) *
+    (rec.x1 - rec.x0);
+  t = Math.max(rec.x0, Math.min(rec.x1, t));
+  chShowAt(id, t, true);
+  if (App.cmp && App.cmp.syncHover && rec.partner) {
+    chShowAt(rec.partner, t, false);
+  }
+}
+
+/* Draw the guide line + nearest-point dots (and the tooltip when
+   withTip) at time t on chart id. */
+function chShowAt(id, t, withTip) {
+  var rec = CHARTS[id];
+  var el = document.getElementById(id);
+  if (!rec || !el) return;
+  var gx = rec.X(t);
+  var guide = $('.ch-guide', el);
+  if (guide) {
+    guide.setAttribute('x1', gx.toFixed(1));
+    guide.setAttribute('x2', gx.toFixed(1));
+    guide.classList.add('on');
+  }
+  var dots = '', rows = '', near = null;
+  rec.series.forEach(function (s) {
+    var p = nearestPt(s.pts, t);
+    if (!p) return;
+    dots += '<circle class="ch-dot" cx="' + rec.X(p[0]).toFixed(1) +
+      '" cy="' + rec.Y(p[1]).toFixed(1) + '" r="3.2" fill="' +
+      s.color + '"></circle>';
+    rows += '<div class="ch-tip-row"><span class="ch-sw" style="' +
+      'background:' + s.color + '"></span>' + esc(s.name) + '<b>' +
+      esc(fmtUnit(p[1], rec.unit)) + '</b></div>';
+    near = p;
+  });
+  var g = $('.ch-dots', el);
+  if (g) g.innerHTML = dots;
+  if (withTip && near) {
+    var tip = $('.chart-tip', el);
+    if (tip) {
+      tip.innerHTML = '<div class="ch-tip-t">' +
+        esc(fmtClock(near[0])) + '</div>' + rows;
+      tip.style.display = 'block';
+      var contW = el.clientWidth || rec.W;
+      var px = gx / rec.W * contW, tw = tip.offsetWidth;
+      var left = px + 12;
+      if (left + tw > contW) left = px - tw - 12;
+      if (left < 0) left = 0;
+      tip.style.left = left.toFixed(0) + 'px';
+      tip.style.top = '2px';
+    }
+  }
+}
+
+function chClear(id) {
+  var rec = CHARTS[id];
+  var el = document.getElementById(id);
+  if (!el) return;
+  var guide = $('.ch-guide', el);
+  if (guide) guide.classList.remove('on');
+  var g = $('.ch-dots', el);
+  if (g) g.innerHTML = '';
+  var tip = $('.chart-tip', el);
+  if (tip) tip.style.display = 'none';
+  if (rec && App.cmp && App.cmp.syncHover && rec.partner) {
+    var pel = document.getElementById(rec.partner);
+    if (pel) {
+      var pg = $('.ch-guide', pel); if (pg) pg.classList.remove('on');
+      var pd = $('.ch-dots', pel); if (pd) pd.innerHTML = '';
+    }
+  }
+}
+
 /* ====================================================== state/pills */
 async function refreshState() {
   try {
@@ -1703,6 +2504,8 @@ function crumb(text) { $('#crumb').textContent = text; }
 
 async function route() {
   App.timers.forEach(clearInterval); App.timers = [];
+  if (App.cmpIO) { App.cmpIO.disconnect(); App.cmpIO = null; }
+  CHARTS = {};
   closeFlyout(); closeModal();
   var h = location.hash.replace(/^#\/?/, '');
   if (!h) {
@@ -1719,6 +2522,8 @@ async function route() {
   } else if (name === 'dash' && parts[1]) {
     slug = decodeURIComponent(parts[1]);
     tab = parts[2] || 'panels';
+  } else if (name === 'compare' && parts[1]) {
+    slug = decodeURIComponent(parts[1]);
   }
   var navKey = name === 'dash' ? 'overview' : name;
   $all('#nav a').forEach(function (a) {
@@ -1728,6 +2533,8 @@ async function route() {
   try {
     if (name === 'dash' && slug) {
       await vWorkspace(view, slug, tab);
+    } else if (name === 'compare') {
+      await vCompare(view, slug);
     } else {
       await (VIEWS[name] || vOverview)(view);
     }
@@ -1909,7 +2716,8 @@ function primaryAction(d) {
 
 async function vOverview(view) {
   crumb('Overview');
-  view.innerHTML = '<h1>Overview</h1><p class="lead">Every ' +
+  view.innerHTML = welcomeHtml() +
+    '<h1>Overview</h1><p class="lead">Every ' +
     'converted dashboard with its migration readiness.</p>' +
     '<div id="ov-area"><div class="empty">Loading&hellip;</div>' +
     '</div>';
@@ -2459,11 +3267,21 @@ function healthChip(uid) {
 
 async function vDatasources(view) {
   crumb('Datasources');
+  try {
+    if (!App.dashboards.length) {
+      App.dashboards = (await api('/api/dashboards')).dashboards || [];
+    }
+  } catch (e) { /* datasources still work without the list */ }
+  if (!App.dsFlowSlug) {
+    App.dsFlowSlug = (App.ws && App.ws.slug) ||
+      (App.cmp && App.cmp.slug) || '';
+  }
   view.innerHTML = '<h1>Datasources</h1><p class="lead">The ' +
     'datasources on the connected Grafana instance. Create the ' +
-    'ones your dashboards need, health-check them live, and ' +
-    'clean up mistakes.</p><div id="ds-area">' +
-    '<div class="empty">Loading&hellip;</div></div>';
+    'ones your dashboards need, then watch real data start ' +
+    'flowing through the panels that were empty.</p>' +
+    '<div id="ds-area"><div class="empty">Loading&hellip;</div>' +
+    '</div>';
   var area = $('#ds-area');
   var list;
   try {
@@ -2491,6 +3309,62 @@ async function vDatasources(view) {
       if (cell) cell.innerHTML = healthChip(uid);
     });
   });
+  if (App.dsFlowSlug) dsKickFlow(list);
+}
+
+/* Probe how many panels of a given dashboard now flow through each
+   datasource -- the badge in the Flow column, re-checkable in place. */
+function flowCellHtml(uid) {
+  if (!App.dsFlowSlug) {
+    return '<span class="kv">pick a dashboard above</span>';
+  }
+  var fam = App.dsFlow[uid];
+  if (fam === undefined) {
+    return '<span class="chip dim">checking&hellip;</span>';
+  }
+  if (fam === null) return '<span class="chip dim">not used</span>';
+  return flowBadgeHtml(fam) +
+    ' <button class="btn small ghost iconbtn" data-dsact="flow" ' +
+    'data-uid="' + esc(uid) + '" title="Re-check flow" ' +
+    'aria-label="Re-check flow">' + ico('refresh', 12) + '</button>';
+}
+
+async function dsCheckFlow(uid, toastIt, btn) {
+  if (!App.dsFlowSlug || !uid) return;
+  if (btn) busy(btn, true);
+  try {
+    var r = await api('/api/datasource/' + encodeURIComponent(uid) +
+      '/verify-flow', { slug: App.dsFlowSlug });
+    var fams = flowFamilies(r.flow);
+    App.dsFlow[uid] = fams[0] || null;
+    if (App.dsFlow[uid] && App.dsFlow[uid].health) {
+      App.dsHealth[uid] = App.dsFlow[uid].health;
+    }
+    if (toastIt) {
+      var f = App.dsFlow[uid] || {};
+      toast((f.panels_with_data || 0) + '/' + (f.panels_total || 0) +
+            ' panels flowing', 'ok');
+    }
+  } catch (e) {
+    App.dsFlow[uid] = null;
+    if (toastIt) toast(e.message, 'err');
+  }
+  var cell = $('#ds-flow-' + cssId(uid));
+  if (cell) {
+    cell.innerHTML = flowCellHtml(uid);
+    var fb = $('button[data-dsact="flow"]', cell);
+    if (fb) fb.onclick = function () { dsAction(fb, []); };
+  }
+  var hcell = $('#ds-h-' + cssId(uid));
+  if (hcell) hcell.innerHTML = healthChip(uid);
+  if (btn) busy(btn, false);
+}
+
+function dsKickFlow(list) {
+  list.forEach(function (ds) {
+    if (ds.uid) { App.dsFlow[ds.uid] = undefined;
+                  dsCheckFlow(ds.uid, false, null); }
+  });
 }
 
 function cssId(s) {
@@ -2508,6 +3382,8 @@ function renderDsTable(area, list) {
       '<td class="mono kv">' + esc(ds.url || '') + '</td>' +
       '<td id="ds-h-' + cssId(uid) + '">' + healthChip(uid) +
       '</td>' +
+      '<td id="ds-flow-' + cssId(uid) + '">' + flowCellHtml(uid) +
+      '</td>' +
       '<td class="right" style="white-space:nowrap">' +
       '<button class="btn small" data-dsact="health" data-uid="' +
       esc(uid) + '">Re-check</button> ' +
@@ -2517,21 +3393,36 @@ function renderDsTable(area, list) {
       'data-uid="' + esc(uid) + '" data-name="' + esc(ds.name) +
       '">Delete</button></td></tr>';
   }).join('');
+  var flowOpts = '<option value="">&mdash; none &mdash;</option>' +
+    (App.dashboards || []).map(function (d) {
+      return '<option value="' + esc(d.slug) + '"' +
+        (d.slug === App.dsFlowSlug ? ' selected' : '') + '>' +
+        esc(d.title || d.slug) + '</option>';
+    }).join('');
   area.innerHTML =
     '<div class="btnbar" style="margin:0 0 12px">' +
     '<button class="btn primary" id="ds-add">+ Add datasource' +
     '</button>' +
-    '<button class="btn" id="ds-reload">Refresh</button></div>' +
+    '<button class="btn" id="ds-reload">Refresh</button>' +
+    '<span class="row" style="gap:6px;margin-left:auto">' +
+    '<label class="kv" style="margin:0" for="ds-flowdash">Watch ' +
+    'data flow for</label>' +
+    '<select id="ds-flowdash" style="max-width:220px">' + flowOpts +
+    '</select></span></div>' +
     '<div class="card"><div class="tablewrap">' +
     '<table class="zebra">' +
     '<thead><tr><th>Name</th><th>Type</th><th>UID</th><th>URL</th>' +
-    '<th>Health</th><th class="right">Actions</th></tr></thead>' +
+    '<th>Health</th><th>Data flow</th><th class="right">Actions' +
+    '</th></tr></thead>' +
     '<tbody>' + (rows ||
-    '<tr><td colspan="6" class="kv">No datasources on this ' +
+    '<tr><td colspan="7" class="kv">No datasources on this ' +
     'instance yet &mdash; add the first one.</td></tr>') +
     '</tbody></table></div></div>';
   $('#ds-add').onclick = function () { dsFlyout(null); };
   $('#ds-reload').onclick = function () { route(); };
+  $('#ds-flowdash').onchange = function () {
+    App.dsFlowSlug = this.value; App.dsFlow = {}; route();
+  };
   $all('button[data-dsact]', area).forEach(function (btn) {
     btn.onclick = function () { dsAction(btn, list); };
   });
@@ -2558,6 +3449,8 @@ async function dsAction(btn, list) {
     var cell = $('#ds-h-' + cssId(uid));
     if (cell) cell.innerHTML = healthChip(uid);
     busy(btn, false);
+  } else if (act === 'flow') {
+    await dsCheckFlow(uid, true, btn);
   } else if (act === 'edit') {
     dsFlyout(row);
   } else if (act === 'del') {
@@ -2735,12 +3628,21 @@ async function dsFlyout(row) {
         toast('Datasource updated', 'ok');
         setTimeout(function () { closeFlyout(); route(); }, 900);
       } else {
-        var res = await api('/api/grafana/datasource',
-          { type: curType, name: name, values: values });
+        var flowSlug = App.dsFlowSlug || (App.ws && App.ws.slug) ||
+          (App.cmp && App.cmp.slug) || '';
+        var reqBody = { type: curType, name: name, values: values };
+        if (flowSlug) reqBody.slug = flowSlug;
+        var res = await api('/api/grafana/datasource', reqBody);
         var h = res.health || {};
         if (res.uid) App.dsHealth[res.uid] = h;
         var cls = h.status === 'ok' ? 'ok' :
           h.status === 'error' ? 'err' : 'warn';
+        var flowHtml = res.flow ?
+          flowResultHtml(res.flow, res.uid, flowSlug) : '';
+        if (res.uid && res.flow) {
+          var fams = flowFamilies(res.flow);
+          if (fams[0]) App.dsFlow[res.uid] = fams[0];
+        }
         out.innerHTML = '<div class="ai-box">' +
           chip('created', 'ok') +
           (res.uid ? ' <span class="mono kv">' + esc(res.uid) +
@@ -2748,14 +3650,24 @@ async function dsFlyout(row) {
           '<div style="margin-top:6px">' +
           chip('health: ' + (h.status || 'unknown'), cls) +
           (h.message ? '<div class="kv" style="margin-top:4px">' +
-            esc(h.message) + '</div>' : '') + '</div></div>';
+            esc(h.message) + '</div>' : '') + '</div></div>' +
+          (flowHtml ? '<h3 style="margin-top:12px">Watch it flow' +
+            '</h3>' + flowHtml : (flowSlug ? '' :
+            '<div class="kv" style="margin-top:8px">Tip: pick a ' +
+            'dashboard under <b>Watch data flow for</b> on the ' +
+            'Datasources page to watch panels light up the instant ' +
+            'a datasource is added.</div>')) +
+          '<div class="btnbar"><button class="btn primary" ' +
+          'id="ds-flow-done">Done</button></div>';
+        bindFlowRecheck(out); mountCharts(out);
+        var done = $('#ds-flow-done', fly);
+        if (done) done.onclick = function () {
+          closeFlyout(); route();
+        };
         toast('Datasource created' +
               (h.status === 'ok' ? ' and healthy' :
                ' - health: ' + (h.status || 'unknown')),
               h.status === 'ok' ? 'ok' : 'err');
-        if (h.status === 'ok') {
-          setTimeout(function () { closeFlyout(); route(); }, 1100);
-        }
       }
     } catch (e) {
       out.innerHTML = errorCard(
@@ -4049,6 +4961,549 @@ async function vAI(view) {
   };
 }
 
+/* ============================================ datasource flow (3c) */
+/* Normalize a flow block to a list of family entries. The real
+   compare.datasource_flow returns {families:[...]}; the create/verify
+   paths may hand back a single family dict -- handle both so the UI
+   never breaks on either shape. */
+function flowFamilies(flow) {
+  if (!flow) return [];
+  if (Array.isArray(flow.families)) return flow.families;
+  if (flow.family != null || flow.panels_total != null) return [flow];
+  return [];
+}
+
+/* Compact health + "N/total flowing" badges for one ds family. */
+function flowBadgeHtml(fam) {
+  if (!fam) return '';
+  var h = fam.health || {};
+  var hcls = h.status === 'ok' ? 'ok' :
+    h.status === 'error' ? 'err' : 'warn';
+  var wd = fam.panels_with_data || 0, tot = fam.panels_total || 0;
+  var fcls = tot === 0 ? 'dim' : wd >= tot ? 'ok' :
+    wd > 0 ? 'info' : 'warn';
+  return '<span class="chip ' + hcls + '" title="' +
+    esc(h.message || ('datasource health: ' + (h.status ||
+      'unknown'))) + '"><span class="health-dot ' + hcls +
+    '"></span>' + esc(h.status || 'unknown') + '</span>' +
+    '<span class="chip ' + fcls + '" title="panels receiving real ' +
+    'data through this datasource">' + wd + '/' + tot +
+    ' flowing</span>' +
+    (fam.panels_error ? chip(fam.panels_error + ' error', 'err') : '');
+}
+
+/* The full before/after "watch it flow" card for one ds family:
+   0 had data -> N now flowing, a real sample chart proving data, the
+   health status and a Re-check button. Still-no-data -> error card. */
+function flowFamilyHtml(fam, uid, slug) {
+  if (!fam) return '';
+  var after = fam.panels_with_data || 0;
+  var tot = fam.panels_total || 0;
+  var nf = (fam.newly_flowing || []).length;
+  var before = Math.max(0, after - nf);
+  var health = fam.health || {};
+  var head = '<div class="flow-head"><b>' +
+    esc(fam.family || 'datasource') + '</b>' +
+    '<div class="flow-badges">' + flowBadgeHtml(fam) + '</div></div>';
+  var ba = '<div class="flow-ba">' +
+    '<div class="flow-num"><div class="flow-n before">' + before +
+    '</div><div class="kv">had data</div></div>' +
+    '<div class="flow-arrow">' + ico('arrow', 20) + '</div>' +
+    '<div class="flow-num"><div class="flow-n after">' + after +
+    '</div><div class="kv">now flowing</div></div>' +
+    '<div class="kv" style="margin-left:8px">of ' + tot +
+    ' panels' + (nf ? ' &middot; ' + nf + ' newly lit up' : '') +
+    '</div></div>';
+  var sample = (fam.sample_series && fam.sample_series.length) ?
+    '<div class="flow-sample"><div class="kv" ' +
+    'style="margin-bottom:4px">Live sample proving data flows:' +
+    '</div>' + chart('timeseries', { series: fam.sample_series },
+                     { height: 120 }) + '</div>' : '';
+  var noData = after === 0 ?
+    errorCard('No panels are receiving data through ' +
+      esc(fam.family || 'this datasource') + ' yet.',
+      health.message || 'The datasource was created but no panel ' +
+      'query returned data over this range. Check the URL / auth, ' +
+      'then re-check flow.',
+      { label: 'Open Datasources', href: '#/datasources' },
+      'warn') : '';
+  var recheck = (uid && slug) ? '<div class="btnbar">' +
+    '<button class="btn small" data-flowrecheck="' + esc(uid) +
+    '" data-slug="' + esc(slug) + '">' + ico('refresh', 12) +
+    'Re-check flow</button></div>' : '';
+  return '<div class="flow-card">' + head + ba + sample + noData +
+    recheck + '</div>';
+}
+
+function flowResultHtml(flow, uid, slug) {
+  return flowFamilies(flow).map(function (fam) {
+    return flowFamilyHtml(fam, uid, slug);
+  }).join('');
+}
+
+/* Wire every Re-check-flow button under root (re-binds itself after a
+   card replaces its own node). */
+function bindFlowRecheck(root) {
+  $all('button[data-flowrecheck]', root).forEach(function (b) {
+    b.onclick = async function () {
+      var uid = b.getAttribute('data-flowrecheck');
+      var slug = b.getAttribute('data-slug');
+      var card = b.closest('.flow-card');
+      busy(b, true);
+      try {
+        var r = await api('/api/datasource/' +
+          encodeURIComponent(uid) + '/verify-flow', { slug: slug });
+        var fams = flowFamilies(r.flow);
+        if (fams[0]) App.dsFlow[uid] = fams[0];
+        if (card && fams[0]) {
+          card.outerHTML = flowFamilyHtml(fams[0], uid, slug);
+          bindFlowRecheck(root); mountCharts(root);
+        }
+        toast('Flow re-checked', 'ok');
+      } catch (e) { toast(e.message, 'err'); busy(b, false); }
+    };
+  });
+}
+
+/* =============================================== compare view (3b) */
+var CMP_RANGES = [['now-15m', '15m'], ['now-1h', '1h'],
+                  ['now-6h', '6h'], ['now-24h', '24h']];
+var VERDICT_SORT = ['gf-error', 'nr-error', 'shape-mismatch',
+  'value-mismatch', 'gf-empty', 'nr-empty', 'both-empty',
+  'close', 'match'];
+
+/* Friendly agreement badge for a compare panel pair. */
+function cmpAgreeBadge(p) {
+  var v = p.verdict || '';
+  var lbl = VERDICT_LBL[v] || v || 'unknown';
+  if ((v === 'close' || v === 'value-mismatch' ||
+       v === 'shape-mismatch') && p.ratio != null &&
+      isFinite(p.ratio)) {
+    lbl += ' x' + fmtRatio(p.ratio);
+  }
+  return chip(lbl, VERDICT_CLS[v] || 'dim',
+              p.detail || VERDICT_HELP[v] || '');
+}
+
+async function vCompare(view, slug) {
+  crumb('Compare');
+  try {
+    if (!App.dashboards.length) {
+      App.dashboards = (await api('/api/dashboards')).dashboards || [];
+    }
+  } catch (e) { /* keep going with whatever we have */ }
+  if (!App.dashboards.length) {
+    view.innerHTML = '<h1>Compare</h1><div class="empty">' +
+      '<span class="eico">' + ico('inbox', 26) + '</span><b>' +
+      'Nothing to compare yet.</b><br>Convert a dashboard first, ' +
+      'then come back to see New Relic and Grafana side by side.' +
+      '<div style="margin-top:12px"><a class="btn primary" ' +
+      'href="#/convert">Fetch &amp; Convert ' + ico('arrow', 13) +
+      '</a></div></div>';
+    return;
+  }
+  if (!slug) slug = (App.cmp && App.cmp.slug) ||
+    App.dashboards[0].slug;
+  if (!App.dashboards.some(function (d) { return d.slug === slug; })) {
+    slug = App.dashboards[0].slug;
+  }
+  if (!App.cmp || App.cmp.slug !== slug) {
+    App.cmp = { slug: slug, from: 'now-1h', to: 'now', report: null,
+                syncHover: true, onlyDisagree: false, custom: false,
+                _panels: {} };
+  }
+  var opts = App.dashboards.map(function (d) {
+    return '<option value="' + esc(d.slug) + '"' +
+      (d.slug === slug ? ' selected' : '') + '>' +
+      esc(d.title || d.slug) + '</option>';
+  }).join('');
+  view.innerHTML =
+    '<h1>Compare &mdash; New Relic vs Grafana</h1>' +
+    '<p class="lead">The whole dashboard rendered on both sides ' +
+    'with real data, panel by panel, so you can see at a glance ' +
+    'where the migration matches and where it needs a fix.</p>' +
+    '<div class="card" style="padding:12px 16px">' +
+    '<div class="row"><label style="margin:0">Dashboard</label>' +
+    '<select id="cmp-dash" style="min-width:220px">' + opts +
+    '</select>' +
+    '<button class="btn primary" id="cmp-run">' + ico('play', 14) +
+    'Run comparison</button>' +
+    '<span id="cmp-status" class="kv" aria-live="polite"></span>' +
+    '</div></div>' +
+    '<div id="cmp-top"></div><div id="cmp-hint"></div>' +
+    '<div id="cmp-pairs"></div>';
+  $('#cmp-dash').onchange = function () {
+    location.hash = '#/compare/' + encodeURIComponent(this.value);
+  };
+  $('#cmp-run').onclick = function () { cmpRun(); };
+  if (App.cmp.report) cmpRenderReport();
+  else cmpRun();
+}
+
+async function cmpRun() {
+  if (!App.cmp) return;
+  var slug = App.cmp.slug;
+  var status = $('#cmp-status');
+  cmpRenderTop(App.cmp.report);
+  var pairs = $('#cmp-pairs');
+  if (pairs) pairs.innerHTML = cmpSkeletons(6);
+  if (status) status.textContent = 'Comparing over ' + App.cmp.from +
+    ' …';
+  try {
+    var job = await startJob('compare: ' + slug, '/api/compare',
+      { slug: slug, from: App.cmp.from, to: App.cmp.to }, null);
+    if (!App.cmp || App.cmp.slug !== slug) return;  /* navigated away */
+    App.cmp.report = job.result || {};
+    var st = $('#cmp-status'); if (st) st.textContent = '';
+    if ($('#cmp-pairs')) cmpRenderReport();
+  } catch (e) {
+    var p2 = $('#cmp-pairs');
+    if (p2) {
+      p2.innerHTML = errorCard('The comparison could not be built.',
+        e.message, { label: 'Check the connections',
+                     href: '#/connect' });
+    }
+    var st2 = $('#cmp-status'); if (st2) st2.textContent = '';
+  }
+}
+
+function cmpRenderReport() {
+  cmpRenderTop(App.cmp.report);
+  cmpRenderHint(App.cmp.report || {});
+  cmpRenderPairs(App.cmp.report || {});
+}
+
+/* When Grafana panels fail because no datasource resolves, the fix is
+   not per-panel -- it is "add the datasource". Surface one actionable
+   banner above the pairs so a first-run user is not left staring at a
+   wall of red errors with no next step. */
+function cmpRenderHint(rep) {
+  var host = $('#cmp-hint'); if (!host) return;
+  var panels = rep.panels || [];
+  var dsErrs = panels.filter(function (p) {
+    if (p.verdict !== 'gf-error') return false;
+    var d = String(p.detail || '').toLowerCase();
+    return d.indexOf('datasource') !== -1 || d.indexOf('no matching') !== -1;
+  });
+  if (!dsErrs.length) { host.innerHTML = ''; return; }
+  var n = dsErrs.length;
+  host.innerHTML = errorCard(
+    n + (n === 1 ? ' panel' : ' panels') + " can't render on the " +
+    'Grafana side because no matching datasource is configured yet.',
+    'Add the datasource these panels need, then re-run the ' +
+    'comparison to watch them light up next to New Relic.',
+    { label: 'Add a datasource', href: '#/datasources' },
+    'warn');
+}
+
+function cmpRenderTop(rep) {
+  var top = $('#cmp-top'); if (!top) return;
+  var score = rep ? rep.score : null;
+  var grade = score == null ? '' : score >= 90 ? 'ready' :
+    score >= 60 ? 'almost' : 'blocked';
+  var sum = (rep && rep.summary) || {};
+  var tally = VERDICT_SORT.filter(function (k) {
+    return sum[k];
+  }).map(function (k) {
+    return chip(sum[k] + ' ' + (VERDICT_LBL[k] || k),
+                VERDICT_CLS[k] || 'dim', VERDICT_HELP[k] || '');
+  }).join('');
+  var ranges = CMP_RANGES.map(function (r) {
+    var on = !App.cmp.custom && App.cmp.from === r[0];
+    return '<button class="btn small' + (on ? ' primary' : '') +
+      '" data-cmprange="' + r[0] + '">' + r[1] + '</button>';
+  }).join('') + '<button class="btn small' +
+    (App.cmp.custom ? ' primary' : '') +
+    '" data-cmprange="custom">custom</button>';
+  var custom = App.cmp.custom ? '<span class="cmp-custom">' +
+    '<input id="cmp-from" value="' + esc(App.cmp.from) +
+    '" style="max-width:96px" aria-label="from">' +
+    '<span class="kv">to</span><input id="cmp-to" value="' +
+    esc(App.cmp.to) + '" style="max-width:80px" aria-label="to">' +
+    '<button class="btn small primary" id="cmp-apply">Apply' +
+    '</button></span>' : '';
+  top.innerHTML = '<div class="card"><div class="cmp-topbar">' +
+    '<div class="cmp-score">' + ring(score, grade, 56) +
+    '<div class="cmp-score-lbl">overall<br>agreement</div></div>' +
+    '<div class="cmp-tally">' + (tally ||
+      '<span class="kv">run the comparison to see results</span>') +
+    '</div><div class="cmp-controls">' +
+    '<div class="seg-range" role="group" aria-label="Time range">' +
+    ranges + '</div>' + custom +
+    '<label class="cmp-switch" title="Hovering a point on one side ' +
+    'marks the same moment on the other"><input type="checkbox" ' +
+    'id="cmp-sync"' + (App.cmp.syncHover ? ' checked' : '') +
+    '>Sync hover</label>' +
+    '<label class="cmp-switch" title="Hide panels that already ' +
+    'match"><input type="checkbox" id="cmp-only"' +
+    (App.cmp.onlyDisagree ? ' checked' : '') +
+    '>Only disagreements</label></div></div></div>';
+  $all('[data-cmprange]', top).forEach(function (b) {
+    b.onclick = function () {
+      var v = b.getAttribute('data-cmprange');
+      if (v === 'custom') {
+        App.cmp.custom = true; cmpRenderTop(App.cmp.report);
+      } else {
+        App.cmp.custom = false; App.cmp.from = v; App.cmp.to = 'now';
+        cmpRun();
+      }
+    };
+  });
+  var ap = $('#cmp-apply', top);
+  if (ap) {
+    ap.onclick = function () {
+      App.cmp.from = ($('#cmp-from').value || 'now-1h').trim();
+      App.cmp.to = ($('#cmp-to').value || 'now').trim();
+      cmpRun();
+    };
+  }
+  var sy = $('#cmp-sync', top);
+  if (sy) sy.onchange = function () { App.cmp.syncHover = sy.checked; };
+  var on = $('#cmp-only', top);
+  if (on) {
+    on.onchange = function () {
+      App.cmp.onlyDisagree = on.checked;
+      cmpRenderPairs(App.cmp.report || {});
+    };
+  }
+}
+
+function cmpSideSkeleton(lbl) {
+  return '<div class="cmp-side"><div class="cmp-side-h">' +
+    esc(lbl) + '</div><div class="skel skel-chart"></div></div>';
+}
+
+function cmpSkeletons(n) {
+  var one = '<div class="cmp-pair"><div class="cmp-pair-head">' +
+    '<span class="skel" style="height:15px;width:190px;' +
+    'display:inline-block"></span></div><div class="cmp-cols">' +
+    cmpSideSkeleton('New Relic') + cmpSideSkeleton('Grafana') +
+    '</div></div>';
+  var out = '';
+  for (var i = 0; i < n; i++) out += one;
+  return out;
+}
+
+function cmpSide(p, side, label) {
+  var data = p[side] || {};
+  return '<div class="cmp-side"><div class="cmp-side-h">' +
+    ico(side === 'grafana' ? 'database' : 'zap', 12) + esc(label) +
+    '<button class="btn small ghost iconbtn cmp-refresh" ' +
+    'data-cmprefresh="' + esc(p.panel_id) + '" data-side="' + side +
+    '" title="Refresh this side" aria-label="Refresh ' + esc(label) +
+    '">' + ico('refresh', 12) + '</button></div>' +
+    chart(p.viz || 'timeseries', data, { height: 130 }) + '</div>';
+}
+
+function cmpPairHtml(p) {
+  var pid = p.panel_id;
+  var why = p.detail || VERDICT_HELP[p.verdict] || '';
+  return '<div class="cmp-pair" data-cmppid="' + esc(pid) + '">' +
+    '<div class="cmp-pair-head">' +
+    '<span class="cmp-pair-title">' +
+    esc(p.title || ('panel ' + pid)) + '</span>' +
+    '<span class="cmp-agree">' + cmpAgreeBadge(p) + '</span>' +
+    '<span class="cmp-why" title="' + esc(why) + '">' + esc(why) +
+    '</span>' +
+    '<button class="btn small ghost cmp-open" data-cmpopen="' +
+    esc(pid) + '">Open panel ' + ico('arrow', 12) + '</button>' +
+    '</div><div class="cmp-cols" data-cmpbody="' + esc(pid) + '">' +
+    cmpSideSkeleton('New Relic') + cmpSideSkeleton('Grafana') +
+    '</div></div>';
+}
+
+/* Fill one pair's charts (lazy, on scroll) and link the two
+   timeseries as sync-hover partners. */
+function cmpFillPair(pairEl) {
+  if (!pairEl || pairEl.getAttribute('data-filled')) return;
+  var pid = pairEl.getAttribute('data-cmppid');
+  var p = (App.cmp._panels || {})[pid];
+  if (!p) return;
+  var body = $('[data-cmpbody]', pairEl);
+  if (body) {
+    body.innerHTML = cmpSide(p, 'nr', 'New Relic') +
+      cmpSide(p, 'grafana', 'Grafana');
+    var charts = $all('.chart[data-tsid]', body);
+    if (charts.length === 2) {
+      var a = charts[0].getAttribute('data-tsid');
+      var b = charts[1].getAttribute('data-tsid');
+      if (CHARTS[a]) CHARTS[a].partner = b;
+      if (CHARTS[b]) CHARTS[b].partner = a;
+    }
+    mountCharts(body);
+  }
+  pairEl.setAttribute('data-filled', '1');
+}
+
+function cmpMountLazy() {
+  if (App.cmpIO) { App.cmpIO.disconnect(); App.cmpIO = null; }
+  var host = $('#cmp-pairs'); if (!host) return;
+  var targets = $all('.cmp-pair', host);
+  if (!('IntersectionObserver' in window)) {
+    targets.forEach(cmpFillPair); return;
+  }
+  App.cmpIO = new IntersectionObserver(function (entries) {
+    entries.forEach(function (en) {
+      if (en.isIntersecting) {
+        cmpFillPair(en.target);
+        App.cmpIO.unobserve(en.target);
+      }
+    });
+  }, { root: null, rootMargin: '250px 0px' });
+  targets.forEach(function (t) { App.cmpIO.observe(t); });
+}
+
+function cmpPairByPid(pid) {
+  var host = $('#cmp-pairs'), found = null;
+  if (!host) return null;
+  $all('.cmp-pair', host).forEach(function (el) {
+    if (el.getAttribute('data-cmppid') === String(pid)) found = el;
+  });
+  return found;
+}
+
+function cmpOpenPanel(pid) {
+  var slug = App.cmp.slug;
+  App.expanded[slug + ':' + pid] = true;
+  location.hash = '#/dash/' + encodeURIComponent(slug);
+}
+
+async function cmpRefreshSide(btn) {
+  var pid = btn.getAttribute('data-cmprefresh');
+  var side = btn.getAttribute('data-side');
+  busy(btn, true);
+  try {
+    var r = await api('/api/panel-data?slug=' +
+      encodeURIComponent(App.cmp.slug) + '&panel_id=' +
+      encodeURIComponent(pid) + '&side=' + encodeURIComponent(side) +
+      '&from=' + encodeURIComponent(App.cmp.from) + '&to=' +
+      encodeURIComponent(App.cmp.to));
+    var p = (App.cmp._panels || {})[pid];
+    if (p) p[side] = r.data;
+    var pairEl = cmpPairByPid(pid);
+    if (pairEl) { pairEl.removeAttribute('data-filled');
+                  cmpFillPair(pairEl); }
+    toast('Refreshed the ' + (side === 'nr' ? 'New Relic' :
+          'Grafana') + ' side', 'ok');
+  } catch (e) { toast(e.message, 'err'); }
+  busy(btn, false);
+}
+
+function cmpRenderPairs(rep) {
+  var host = $('#cmp-pairs'); if (!host) return;
+  var panels = (rep.panels || []).slice();
+  App.cmp._panels = {};
+  panels.forEach(function (p) { App.cmp._panels[p.panel_id] = p; });
+  panels.sort(function (a, b) {
+    var ga = a.grid || {}, gb = b.grid || {};
+    return (ga.y || 0) - (gb.y || 0) || (ga.x || 0) - (gb.x || 0);
+  });
+  if (!panels.length) {
+    host.innerHTML = '<div class="empty"><span class="eico">' +
+      ico('inbox', 26) + '</span>No comparable panels in this ' +
+      'dashboard.</div>';
+    return;
+  }
+  var shown = App.cmp.onlyDisagree ? panels.filter(function (p) {
+    return !AGREE_OK[p.verdict];
+  }) : panels;
+  if (!shown.length) {
+    host.innerHTML = '<div class="empty"><span class="eico">' +
+      ico('checkcircle', 26) + '</span><b>Every panel agrees.</b>' +
+      '<br>Nothing to review — turn off &ldquo;only ' +
+      'disagreements&rdquo; to see them all.</div>';
+    return;
+  }
+  var groups = [], seen = {};
+  shown.forEach(function (p) {
+    var r = p.row || '';
+    if (!seen[r]) { seen[r] = { row: r, items: [] };
+                    groups.push(seen[r]); }
+    seen[r].items.push(p);
+  });
+  host.innerHTML = groups.map(function (g) {
+    return (g.row ? '<div class="cmp-rowhead">' + esc(g.row) +
+      '</div>' : '') + g.items.map(cmpPairHtml).join('');
+  }).join('');
+  $all('[data-cmpopen]', host).forEach(function (b) {
+    b.onclick = function () {
+      cmpOpenPanel(b.getAttribute('data-cmpopen'));
+    };
+  });
+  $all('[data-cmprefresh]', host).forEach(function (b) {
+    b.onclick = function () { cmpRefreshSide(b); };
+  });
+  cmpMountLazy();
+}
+
+/* ============================================= welcome path (3d) */
+var WELCOME_STEPS = [
+  ['connect', 'Connect New Relic & Grafana', '#/connect'],
+  ['convert', 'Fetch & convert your dashboards', '#/convert'],
+  ['datasources', 'Add the datasources they need', '#/datasources'],
+  ['compare', 'Compare New Relic vs Grafana', '#/compare'],
+  ['fix', 'Fix any panels with no data', '#/overview'],
+  ['download', 'Import & download', '#/import']];
+
+function welcomeState() {
+  var s = App.state || {}, st = s.status || {}, db = s.db || {};
+  return { connect: st.grafana === 'ok',
+           convert: (db.dashboards || 0) > 0 };
+}
+
+function welcomeHtml() {
+  if (localStorage.getItem('nr2g-welcome') === 'dismissed') return '';
+  var done = welcomeState();
+  var firstNext = '';
+  WELCOME_STEPS.forEach(function (s) {
+    if (!firstNext && !done[s[0]]) firstNext = s[0];
+  });
+  var items = WELCOME_STEPS.map(function (s, i) {
+    var isDone = !!done[s[0]];
+    var isNext = s[0] === firstNext;
+    return '<a class="wc-item' + (isDone ? ' done' : '') +
+      (isNext ? ' next' : '') + '" href="' + s[2] + '">' +
+      '<span class="wc-mark">' + (isDone ? '&#10003;' :
+        String(i + 1)) + '</span>' + esc(s[1]) +
+      (isNext ? '<span class="wc-next">start here ' +
+        ico('arrow', 12) + '</span>' : '') + '</a>';
+  }).join('');
+  return '<div class="card welcome"><div class="welcome-head">' +
+    '<b>' + ico('sparkle', 15) + ' Welcome — migrate a ' +
+    'dashboard in a few guided steps</b>' +
+    '<button class="btn small ghost" data-wcdismiss="1">Dismiss' +
+    '</button></div><div class="wc-list">' + items + '</div></div>';
+}
+
+/* ============================================== help / shortcuts */
+var GKEYS = { o: '#/overview', c: '#/connect', f: '#/convert',
+  d: '#/datasources', m: '#/compare', i: '#/import',
+  h: '#/changes', a: '#/ai' };
+var HELP_KEYS = [
+  ['g then o', 'Overview'], ['g then c', 'Connect'],
+  ['g then f', 'Fetch & Convert'], ['g then d', 'Datasources'],
+  ['g then m', 'Compare'], ['g then i', 'Import'],
+  ['g then h', 'Changes (history)'], ['g then a', 'AI Assistant'],
+  ['?', 'Show this help'], ['j', 'Toggle background jobs'],
+  ['t', 'Cycle theme'], ['Esc', 'Close dialogs / drawers']];
+
+function openHelp() {
+  var rows = HELP_KEYS.map(function (k) {
+    return '<tr><td><kbd>' + esc(k[0]) + '</kbd></td><td>' +
+      esc(k[1]) + '</td></tr>';
+  }).join('');
+  $('#modal-slot').innerHTML = '<div class="modal-wrap">' +
+    '<div class="modal help-modal"><h2>Keyboard shortcuts</h2>' +
+    '<table class="help-tbl"><tbody>' + rows + '</tbody></table>' +
+    '<div class="btnbar" style="justify-content:flex-end">' +
+    '<button class="btn primary" id="help-close">Got it</button>' +
+    '</div></div></div>';
+  $('#help-close').onclick = closeModal;
+  $('.modal-wrap', $('#modal-slot')).onclick = function (ev) {
+    if (ev.target === this) closeModal();
+  };
+}
+
 /* ====================================================== theme */
 function applyTheme(mode) {
   if (mode === 'dark' || mode === 'light') {
@@ -4109,15 +5564,47 @@ document.addEventListener('click', function (ev) {
         return c.textContent;
       }).join('\n'), t);
     }
+  } else if (t.hasAttribute('data-wcdismiss')) {
+    ev.preventDefault(); ev.stopPropagation();
+    localStorage.setItem('nr2g-welcome', 'dismissed');
+    var wc = t.closest('.welcome');
+    if (wc) wc.remove();
   }
 });
 
 $('#jobsbtn').onclick = function () { openDrawer(); };
 $('#drawer-close').onclick = function () { openDrawer(false); };
+$('#helpbtn').onclick = function () { openHelp(); };
 document.addEventListener('keydown', function (ev) {
   if (ev.key === 'Escape') {
-    if ($('#flyout-slot').innerHTML) closeFlyout();
+    if ($('#modal-slot').innerHTML) closeModal();
+    else if ($('#flyout-slot').innerHTML) closeFlyout();
     else if (Jobs.open) openDrawer(false);
+  }
+});
+
+/* Global shortcuts: "?" help, "g" then a letter to jump views, "j"
+   jobs, "t" theme. Never fires while typing in a field. */
+var _gPending = false, _gTimer = null;
+document.addEventListener('keydown', function (ev) {
+  if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
+  var tag = (ev.target && ev.target.tagName) || '';
+  var typing = tag === 'INPUT' || tag === 'TEXTAREA' ||
+    tag === 'SELECT' || (ev.target && ev.target.isContentEditable);
+  if (_gPending) {
+    _gPending = false; clearTimeout(_gTimer);
+    var dest = GKEYS[(ev.key || '').toLowerCase()];
+    if (dest && !typing) { ev.preventDefault(); location.hash = dest; }
+    return;
+  }
+  if (typing) return;
+  if (ev.key === '?') { ev.preventDefault(); openHelp(); }
+  else if (ev.key === 'g') {
+    _gPending = true;
+    _gTimer = setTimeout(function () { _gPending = false; }, 1200);
+  } else if (ev.key === 'j') { ev.preventDefault(); openDrawer(); }
+  else if (ev.key === 't') {
+    ev.preventDefault(); $('#themebtn').click();
   }
 });
 

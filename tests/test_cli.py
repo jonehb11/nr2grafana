@@ -210,7 +210,7 @@ class NoCommandTests(unittest.TestCase):
 
 class VersionTests(unittest.TestCase):
     def test_package_version(self):
-        self.assertEqual(nr2grafana.__version__, "1.3.0")
+        self.assertEqual(nr2grafana.__version__, "1.4.0")
 
 
 class _TempDbMixin:
