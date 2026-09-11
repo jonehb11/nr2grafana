@@ -30,6 +30,260 @@ _FAMILY_LABEL = {
 }
 
 
+def _field(name, label, path, required=False, secret=False,
+           placeholder="", help_="", multiline=False):
+    """Build one DS_TEMPLATES field spec dict."""
+    spec = {"name": name, "label": label, "required": required,
+            "secret": secret, "placeholder": placeholder, "help": help_,
+            "path": path}
+    if multiline:
+        spec["multiline"] = True
+    return spec
+
+
+# Guided add-datasource form specs. Each field's "path" says where the
+# value lands in the create/update payload: "url", "jsonData.X" or
+# "secureJsonData.X" (folded by build_datasource_payload). Anything the
+# HTTP API cannot express is called out in "notes".
+DS_TEMPLATES: Dict[str, Dict[str, Any]] = {
+    "prometheus": {
+        "label": "Prometheus / Mimir",
+        "plugin_id": "prometheus",
+        "core": True,
+        "fields": [
+            _field("url", "URL", "url", required=True,
+                   placeholder="http://mimir:9009/prometheus",
+                   help_="Base URL of the Prometheus-compatible API as "
+                         "reachable FROM THE GRAFANA SERVER. For Mimir "
+                         "include the /prometheus prefix."),
+            _field("httpMethod", "HTTP method", "jsonData.httpMethod",
+                   placeholder="POST",
+                   help_="POST (default, handles long queries) or GET."),
+            _field("timeInterval", "Scrape interval",
+                   "jsonData.timeInterval", placeholder="60s",
+                   help_="Lower bound for $__rate_interval; match your "
+                         "scrape/remote-write interval."),
+        ],
+        "notes": "Works for Prometheus, Mimir and Thanos. Basic auth and "
+                 "TLS client certificates cannot be set through this "
+                 "form; add them in Grafana (Connections -> Data "
+                 "sources) after creation if your endpoint needs them.",
+    },
+    "loki": {
+        "label": "Loki",
+        "plugin_id": "loki",
+        "core": True,
+        "fields": [
+            _field("url", "URL", "url", required=True,
+                   placeholder="http://loki:3100",
+                   help_="Loki base URL as reachable from the Grafana "
+                         "server (no /loki/api/v1 suffix)."),
+            _field("maxLines", "Max lines", "jsonData.maxLines",
+                   placeholder="1000",
+                   help_="Line limit per log query (default 1000)."),
+        ],
+        "notes": "For multi-tenant Loki the X-Scope-OrgID header must be "
+                 "added as a custom HTTP header in Grafana after "
+                 "creation; it cannot be set through this form.",
+    },
+    "tempo": {
+        "label": "Tempo",
+        "plugin_id": "tempo",
+        "core": True,
+        "fields": [
+            _field("url", "URL", "url", required=True,
+                   placeholder="http://tempo:3200",
+                   help_="Tempo base URL as reachable from the Grafana "
+                         "server."),
+        ],
+        "notes": "Trace-to-logs / trace-to-metrics links reference other "
+                 "datasource uids; wire those up in Grafana once the "
+                 "Loki and Prometheus datasources exist.",
+    },
+    "cloudwatch": {
+        "label": "Amazon CloudWatch",
+        "plugin_id": "cloudwatch",
+        "core": True,
+        "fields": [
+            _field("authType", "Auth type", "jsonData.authType",
+                   required=True, placeholder="keys",
+                   help_="'keys' (access/secret key below), 'default' "
+                         "(instance profile / env credential chain on "
+                         "the Grafana server), or 'credentials' (shared "
+                         "credentials file on the Grafana server)."),
+            _field("defaultRegion", "Default region",
+                   "jsonData.defaultRegion", required=True,
+                   placeholder="us-east-1",
+                   help_="Region used when a query does not set one."),
+            _field("accessKey", "Access key ID",
+                   "secureJsonData.accessKey", secret=True,
+                   placeholder="AKIA...",
+                   help_="Required when Auth type is 'keys'."),
+            _field("secretKey", "Secret access key",
+                   "secureJsonData.secretKey", secret=True,
+                   help_="Required when Auth type is 'keys'."),
+            _field("assumeRoleArn", "Assume role ARN",
+                   "jsonData.assumeRoleArn",
+                   placeholder="arn:aws:iam::123456789012:role/grafana",
+                   help_="Optional IAM role to assume for queries."),
+        ],
+        "notes": "Grafana queries CloudWatch from the Grafana server, so "
+                 "the server (not your browser) needs network access to "
+                 "AWS and, for auth types other than 'keys', the "
+                 "matching credentials on that host. The IAM identity "
+                 "needs cloudwatch:GetMetricData/ListMetrics (read "
+                 "only).",
+    },
+    "stackdriver": {
+        "label": "Google Cloud Monitoring",
+        "plugin_id": "stackdriver",
+        "core": True,
+        "fields": [
+            _field("authenticationType", "Authentication type",
+                   "jsonData.authenticationType", required=True,
+                   placeholder="jwt",
+                   help_="'jwt' (service-account key, fields below) or "
+                         "'gce' (GCE metadata server; leave the rest "
+                         "empty)."),
+            _field("defaultProject", "Default project",
+                   "jsonData.defaultProject",
+                   placeholder="my-gcp-project",
+                   help_="project_id from the service-account JSON key "
+                         "file."),
+            _field("clientEmail", "Client email",
+                   "jsonData.clientEmail",
+                   placeholder="sa-name@project.iam.gserviceaccount.com",
+                   help_="client_email from the service-account JSON "
+                         "key file."),
+            _field("tokenUri", "Token URI", "jsonData.tokenUri",
+                   placeholder="https://oauth2.googleapis.com/token",
+                   help_="token_uri from the service-account JSON key "
+                         "file."),
+            _field("privateKey", "Private key",
+                   "secureJsonData.privateKey", secret=True,
+                   multiline=True,
+                   help_="private_key from the service-account JSON key "
+                         "file - paste the full '-----BEGIN PRIVATE "
+                         "KEY-----' block including newlines."),
+        ],
+        "notes": "The Grafana UI's 'upload service account key file' "
+                 "button cannot be used through the HTTP API. Instead, "
+                 "open the downloaded JSON key file and copy "
+                 "client_email, token_uri, project_id and private_key "
+                 "into the fields above with authentication type 'jwt'. "
+                 "The service account needs the Monitoring Viewer role.",
+    },
+    "grafana-azure-monitor-datasource": {
+        "label": "Azure Monitor",
+        "plugin_id": "grafana-azure-monitor-datasource",
+        "core": True,
+        "fields": [
+            _field("cloudName", "Azure cloud", "jsonData.cloudName",
+                   placeholder="azuremonitor",
+                   help_="'azuremonitor' (public), 'govazuremonitor' or "
+                         "'chinaazuremonitor'."),
+            _field("tenantId", "Directory (tenant) ID",
+                   "jsonData.tenantId", required=True,
+                   help_="From the App Registration overview page."),
+            _field("clientId", "Application (client) ID",
+                   "jsonData.clientId", required=True,
+                   help_="From the App Registration overview page."),
+            _field("clientSecret", "Client secret",
+                   "secureJsonData.clientSecret", required=True,
+                   secret=True,
+                   help_="A client secret created under the App "
+                         "Registration's 'Certificates & secrets'."),
+            _field("subscriptionId", "Default subscription",
+                   "jsonData.subscriptionId",
+                   help_="Optional default subscription id for "
+                         "queries."),
+        ],
+        "notes": "Create an App Registration in Microsoft Entra ID "
+                 "(Azure AD), grant it the Monitoring Reader role on "
+                 "the subscription, and use its tenant id, client id "
+                 "and a client secret here.",
+    },
+    "nrgrafanaplugin-newrelic-datasource": {
+        "label": "New Relic",
+        "plugin_id": "nrgrafanaplugin-newrelic-datasource",
+        "core": False,
+        "fields": [
+            _field("apiKey", "API key", "secureJsonData.apiKey",
+                   required=True, secret=True, placeholder="NRAK-...",
+                   help_="New Relic user API key. Only query access is "
+                         "used; nr2grafana never mutates New Relic."),
+            _field("accountId", "Account ID", "jsonData.accountId",
+                   required=True, placeholder="1234567",
+                   help_="Numeric New Relic account id to query."),
+            _field("region", "Region", "jsonData.region",
+                   placeholder="US", help_="US or EU."),
+        ],
+        "notes": "Community plugin - install it first: grafana-cli "
+                 "plugins install nrgrafanaplugin-newrelic-datasource, "
+                 "then restart Grafana. Used only for passthrough "
+                 "panels that have no LGTM equivalent.",
+    },
+}
+
+
+def _fold_value(payload: Dict[str, Any], path: str, value: Any) -> None:
+    """Fold one value into a datasource payload per its template path."""
+    if path == "url":
+        payload["url"] = str(value)
+    elif path.startswith("jsonData."):
+        payload.setdefault("jsonData", {})[path[len("jsonData."):]] = value
+    elif path.startswith("secureJsonData."):
+        key = path[len("secureJsonData."):]
+        payload.setdefault("secureJsonData", {})[key] = value
+    else:
+        raise GrafanaError("unsupported datasource field path %r" % path)
+
+
+def build_datasource_payload(ds_type: str, name: str,
+                             values: Dict[str, str]) -> Dict[str, Any]:
+    """Build a create/update datasource payload from template values.
+
+    ``values`` is keyed by field name from ``DS_TEMPLATES[ds_type]``
+    (raw ``url`` / ``jsonData.X`` / ``secureJsonData.X`` path keys are
+    accepted too). Raises :class:`GrafanaError` for an unknown type or
+    missing required fields; never logs secret values.
+    """
+    tpl = DS_TEMPLATES.get(ds_type)
+    if tpl is None:
+        raise GrafanaError(
+            "unknown datasource type %r (known: %s)"
+            % (ds_type, ", ".join(sorted(DS_TEMPLATES))))
+    values = values or {}
+    payload: Dict[str, Any] = {"name": name, "type": tpl["plugin_id"],
+                               "access": "proxy"}
+    used = set()
+    missing = []
+    for field in tpl["fields"]:
+        val = values.get(field["name"])
+        key = field["name"]
+        if val is None:
+            val = values.get(field["path"])
+            key = field["path"]
+        if val is not None:
+            used.add(key)
+        if val is None or str(val).strip() == "":
+            if field.get("required"):
+                missing.append(field["name"])
+            continue
+        _fold_value(payload, field["path"], val)
+    if missing:
+        raise GrafanaError(
+            "missing required field(s) for %s datasource: %s"
+            % (ds_type, ", ".join(missing)))
+    for key, val in values.items():
+        if key in used or val is None or str(val).strip() == "":
+            continue
+        if key == "url" or key.startswith("jsonData.") \
+                or key.startswith("secureJsonData."):
+            _fold_value(payload, key, val)
+    return payload
+
+
 def _epoch_ms(spec: Any, now: Optional[float] = None) -> int:
     """Convert "now-1h"-style or epoch-millisecond input to epoch ms."""
     if now is None:
@@ -95,6 +349,253 @@ class GrafanaLive(GrafanaClient):
 
     def create_datasource(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         return self._req("POST", "/api/datasources", payload)
+
+    def update_datasource(self, uid: str,
+                          payload: Dict[str, Any]) -> Dict[str, Any]:
+        return self._req("PUT", "/api/datasources/uid/" + uid, payload)
+
+    def delete_datasource(self, uid: str) -> None:
+        self._req("DELETE", "/api/datasources/uid/" + uid)
+
+    # -- datasource health -------------------------------------------------
+
+    # Cheap per-type probe targets for datasources whose plugin does not
+    # implement the /health endpoint (older Grafana or older plugins).
+    _HEALTH_PROBES = {
+        "prometheus": {"refId": "A", "expr": "vector(1)"},
+        "loki": {"refId": "A",
+                 "expr": 'sum(count_over_time({job=~".+"}[1m]))'},
+        "tempo": {"refId": "A", "queryType": "traceql", "query": "{}",
+                  "limit": 1},
+    }
+
+    def datasource_health(self, uid: str) -> Dict[str, Any]:
+        """Health of one datasource; never raises.
+
+        Tries ``GET /api/datasources/uid/<uid>/health`` first; when that
+        endpoint is missing or errors, falls back to a cheap probe query
+        through ``/api/ds/query``. Always returns ``{"status", "message"}``
+        with status ``ok``, ``error`` or ``unknown`` (no probe possible).
+        """
+        health_err = ""
+        try:
+            resp = self._req("GET",
+                             "/api/datasources/uid/%s/health" % uid)
+            if isinstance(resp, dict) and resp.get("status"):
+                status = str(resp.get("status", "")).lower()
+                status = "ok" if status in ("ok", "success") else "error"
+                return {"status": status,
+                        "message": str(resp.get("message", ""))}
+            health_err = "health endpoint returned no status"
+        except GrafanaError as e:
+            health_err = str(e)
+        return self._health_probe(uid, health_err)
+
+    def _health_probe(self, uid: str, health_err: str) -> Dict[str, Any]:
+        """Probe a datasource with a minimal read query; never raises."""
+        try:
+            ds = self.datasource_by_uid(uid)
+        except GrafanaError as e:
+            return {"status": "error",
+                    "message": "cannot look up datasource uid %r: %s"
+                               % (uid, e)}
+        if ds is None:
+            return {"status": "error",
+                    "message": "datasource uid %r not found" % uid}
+        ds_type = ds.get("type", "")
+        target = self._HEALTH_PROBES.get(ds_type)
+        if target is None:
+            return {"status": "unknown",
+                    "message": "no /health endpoint (%s) and no probe "
+                               "query known for type %r; check the "
+                               "datasource in Grafana directly"
+                               % (health_err, ds_type)}
+        try:
+            resp = self.ds_query(uid, ds_type, dict(target),
+                                 frm="now-5m")
+        except GrafanaError as e:
+            return {"status": "error",
+                    "message": "probe query failed: %s" % e}
+        res = (resp.get("results") or {}).get("A") or {}
+        err = _result_error(res)
+        if err:
+            return {"status": "error",
+                    "message": "probe query failed: %s" % err}
+        return {"status": "ok",
+                "message": "probe query via /api/ds/query succeeded "
+                           "(no /health endpoint for this datasource)"}
+
+    # -- datasource proxy introspection ------------------------------------
+
+    def _proxy_get(self, uid: str, path: str,
+                   errors: Optional[List[str]] = None) -> Any:
+        """GET through the datasource proxy; None + stashed error on
+        failure."""
+        try:
+            return self._req(
+                "GET", "/api/datasources/proxy/uid/%s%s" % (uid, path))
+        except GrafanaError as e:
+            if errors is not None:
+                errors.append(str(e))
+            return None
+
+    @staticmethod
+    def _data_list(resp: Any, errors: Optional[List[str]] = None,
+                   what: str = "") -> List[Any]:
+        """Extract the "data" list from a Prom/Loki-style response."""
+        if isinstance(resp, dict) and isinstance(resp.get("data"), list):
+            return resp["data"]
+        if resp is not None and errors is not None:
+            errors.append("unexpected %s response shape: %.120r"
+                          % (what or "proxy", resp))
+        return []
+
+    def prom_metric_names(self, uid: str,
+                          errors: Optional[List[str]] = None) \
+            -> List[str]:
+        """All metric names known to a Prometheus-type datasource.
+
+        Returns ``[]`` on any failure (proxy 404, auth, network); pass a
+        list as ``errors`` to receive the error text.
+        """
+        resp = self._proxy_get(uid, "/api/v1/label/__name__/values",
+                               errors)
+        return [str(v) for v in self._data_list(resp, errors,
+                                                "metric names")]
+
+    def prom_labels(self, uid: str,
+                    errors: Optional[List[str]] = None) -> List[str]:
+        """All label names known to a Prometheus-type datasource."""
+        resp = self._proxy_get(uid, "/api/v1/labels", errors)
+        return [str(v) for v in self._data_list(resp, errors,
+                                                "label names")]
+
+    def prom_label_values(self, uid: str, label: str, match: str = "",
+                          errors: Optional[List[str]] = None) \
+            -> List[str]:
+        """Values of one label, optionally restricted to a series
+        matcher."""
+        path = ("/api/v1/label/%s/values"
+                % urllib.parse.quote(label, safe=""))
+        if match:
+            path += "?" + urllib.parse.urlencode({"match[]": match})
+        resp = self._proxy_get(uid, path, errors)
+        return [str(v) for v in self._data_list(resp, errors,
+                                                "label values")]
+
+    def prom_series(self, uid: str, match: str, frm: str = "now-1h",
+                    errors: Optional[List[str]] = None) \
+            -> List[Dict[str, Any]]:
+        """Series (label sets) matching a selector over a recent
+        window."""
+        try:
+            start = _epoch_ms(frm) // 1000
+            end = _epoch_ms("now") // 1000
+        except GrafanaError as e:
+            if errors is not None:
+                errors.append(str(e))
+            return []
+        path = "/api/v1/series?" + urllib.parse.urlencode(
+            [("match[]", match), ("start", start), ("end", end)])
+        resp = self._proxy_get(uid, path, errors)
+        return [s for s in self._data_list(resp, errors, "series")
+                if isinstance(s, dict)]
+
+    def loki_labels(self, uid: str,
+                    errors: Optional[List[str]] = None) -> List[str]:
+        """All stream label names known to a Loki datasource."""
+        resp = self._proxy_get(uid, "/loki/api/v1/labels", errors)
+        return [str(v) for v in self._data_list(resp, errors,
+                                                "loki labels")]
+
+    def loki_label_values(self, uid: str, label: str,
+                          errors: Optional[List[str]] = None) \
+            -> List[str]:
+        """Values of one Loki stream label."""
+        path = ("/loki/api/v1/label/%s/values"
+                % urllib.parse.quote(label, safe=""))
+        resp = self._proxy_get(uid, path, errors)
+        return [str(v) for v in self._data_list(resp, errors,
+                                                "loki label values")]
+
+    # -- token capabilities ------------------------------------------------
+
+    def permissions_report(self) -> Dict[str, Any]:
+        """What this token can do, probed with GETs only; never raises.
+
+        Returns ``{"user", "role", "can_admin_datasources",
+        "can_edit_dashboards", "detail"}``. Probes ``/api/user``,
+        ``/api/org``, ``/api/datasources`` and (when available)
+        ``/api/access-control/user/permissions`` - nothing destructive.
+        """
+        detail: List[str] = []
+        user = ""
+        can_read_ds = False
+        try:
+            u = self._req("GET", "/api/user")
+            if isinstance(u, dict):
+                user = str(u.get("login") or u.get("email")
+                           or u.get("name") or "")
+            detail.append("authenticated as %r" % (user or "unknown"))
+        except GrafanaError as e:
+            s = str(e)
+            if "HTTP 401" in s:
+                detail.append("token rejected (401): check the "
+                              "service-account token")
+            elif "HTTP 403" in s:
+                detail.append("/api/user denied (403)")
+            else:
+                detail.append("/api/user failed: %s" % s)
+        try:
+            org = self._req("GET", "/api/org")
+            if isinstance(org, dict) and org.get("name"):
+                detail.append("org %r" % org["name"])
+        except GrafanaError:
+            pass  # org read is informational only
+        try:
+            self.datasources()
+            can_read_ds = True
+            detail.append("can list datasources")
+        except GrafanaError as e:
+            detail.append("cannot list datasources: %s" % e)
+        perms = None
+        try:
+            p = self._req("GET", "/api/access-control/user/permissions")
+            if isinstance(p, dict):
+                perms = p
+        except GrafanaError:
+            detail.append("access-control API unavailable; "
+                          "capabilities inferred from read probes")
+        if perms is not None:
+            can_admin = any(k in perms for k in
+                            ("datasources:create", "datasources:write",
+                             "datasources:delete"))
+            can_edit = any(k in perms for k in
+                           ("dashboards:create", "dashboards:write"))
+            if can_admin:
+                role = "Admin"
+            elif can_edit:
+                role = "Editor"
+            elif user or can_read_ds:
+                role = "Viewer"
+            else:
+                role = ""
+            if not can_admin:
+                detail.append("no datasources:create permission - "
+                              "Admin role needed to create datasources")
+            if not can_edit:
+                detail.append("no dashboards:write permission - "
+                              "Editor role needed to import dashboards")
+        else:
+            can_admin = False
+            can_edit = bool(user or can_read_ds)
+            role = ""
+            detail.append("datasource-admin rights could not be "
+                          "verified without the access-control API")
+        return {"user": user, "role": role,
+                "can_admin_datasources": can_admin,
+                "can_edit_dashboards": can_edit,
+                "detail": "; ".join(detail)}
 
     # -- datasource resolution --------------------------------------------
 
@@ -162,8 +663,10 @@ class GrafanaLive(GrafanaClient):
             matches = [d for d in dss if d.get("type") == plugin_id]
             uid_ref = req.get("uid_ref", "")
             concrete = uid_ref and not uid_ref.startswith("${")
-            fix_add = ("Add a %s datasource: Connections -> Data sources "
-                       "-> Add -> %s" % (label, label))
+            fix_add = ("Add a %s datasource without leaving nr2grafana: "
+                       "web UI Datasources -> Add datasource, or "
+                       "`nr2grafana grafana add-datasource --type %s`"
+                       % (label, plugin_id))
             if not req.get("core", True):
                 fix_add = ("grafana-cli plugins install %s, then restart "
                            "Grafana and %s" % (plugin_id, fix_add[0].lower()

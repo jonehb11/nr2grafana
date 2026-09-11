@@ -69,11 +69,13 @@ class TransactionTests(unittest.TestCase):
     def test_apdex(self):
         t = tr("SELECT apdex(duration, t: 0.5) FROM Transaction "
                "WHERE appName = 'checkout' SINCE 1 hour ago")
+        # (b(t) + b(4t)) / 2 / total == (satisfied + tolerating/2) / total;
+        # integral bucket bounds match both le="2" and le="2.0" spellings.
         self.assertEqual(
             t.expr,
             '(sum(rate(%s_bucket{service_name="checkout",le="0.5"}'
             '[$__range])) + sum(rate(%s_bucket{service_name="checkout",'
-            'le="2"}[$__range]))) / 2 / sum(rate(%s_count{'
+            'le=~"2|2\\\\.0"}[$__range]))) / 2 / sum(rate(%s_count{'
             'service_name="checkout"}[$__range]))' % (HTTP, HTTP, HTTP))
         self.assertEqual(t.query_type, "instant")
         # apdex bucket-boundary caveat forces needs-review
@@ -340,6 +342,146 @@ class WhereOperatorTests(unittest.TestCase):
             'status_code="STATUS_CODE_ERROR"}[$__rate_interval]))')
 
 
+class IfCasesTests(unittest.TestCase):
+    def test_count_if_becomes_filtered_count(self):
+        t = tr("SELECT count(if(error IS TRUE, 1)) FROM Transaction")
+        self.assertEqual(
+            t.expr,
+            'sum(increase(%s_count{http_response_status_code=~"5.."}'
+            '[$__range]))' % HTTP)
+        self.assertTrue(any("filtered aggregation" in n for n in t.notes))
+
+    def test_sum_if_one_zero_becomes_filtered_count(self):
+        t = tr("SELECT sum(if(httpResponseCode = '500', 1, 0)) "
+               "FROM Transaction")
+        self.assertEqual(
+            t.expr,
+            'sum(increase(%s_count{http_response_status_code="500"}'
+            '[$__range]))' % HTTP)
+
+    def test_agg_if_no_else_becomes_filtered_agg(self):
+        t = tr("SELECT average(if(httpResponseCode = '200', duration)) "
+               "FROM Transaction")
+        self.assertEqual(
+            t.expr,
+            'sum(rate(%s_sum{http_response_status_code="200"}[$__range])) '
+            '/ sum(rate(%s_count{http_response_status_code="200"}'
+            '[$__range]))' % (HTTP, HTTP))
+
+    def test_if_with_nontrivial_else_untranslatable(self):
+        t = tr("SELECT average(if(error IS TRUE, duration, 0)) "
+               "FROM Transaction")
+        self.assertEqual(t.confidence, UNTRANSLATABLE)
+        self.assertTrue(any("ELSE value" in n for n in t.notes))
+
+    def test_facet_cases_becomes_per_case_targets(self):
+        t = tr("SELECT count(*) FROM Transaction FACET cases("
+               "WHERE httpResponseCode >= 500 AS 'errors', "
+               "WHERE httpResponseCode < 500 AS 'ok') TIMESERIES")
+        self.assertEqual(
+            t.expr,
+            'sum(increase(%s_count{http_response_status_code=~"5.."}'
+            '[$__rate_interval]))' % HTTP)
+        self.assertEqual(t.legend, "errors")
+        self.assertEqual(len(t.extra), 1)
+        self.assertEqual(
+            t.extra[0].expr,
+            'sum(increase(%s_count{http_response_status_code=~"[1234].."}'
+            '[$__rate_interval]))' % HTTP)
+        self.assertEqual(t.extra[0].legend, "ok")
+        self.assertTrue(any("'Other' bucket" in n for n in t.notes))
+
+    def test_facet_cases_without_alias_uses_condition_text(self):
+        t = tr("SELECT count(*) FROM Transaction FACET cases("
+               "WHERE appName = 'a', WHERE appName = 'b')")
+        self.assertEqual(t.legend, "appName = a")
+        self.assertEqual(t.extra[0].legend, "appName = b")
+        self.assertIn('service_name="a"', t.expr)
+        self.assertIn('service_name="b"', t.extra[0].expr)
+
+    def test_facet_cases_unconvertible_falls_back_with_note(self):
+        t = tr("SELECT count(*) FROM Transaction "
+               "FACET cases(WHERE duration > 1 AS slow)")
+        # duration > 1 cannot be a label matcher: single unfiltered query
+        self.assertEqual(
+            t.expr, 'sum(increase(%s_count[$__range]))' % HTTP)
+        self.assertEqual(t.extra, [])
+        self.assertEqual(t.confidence, NEEDS_REVIEW)
+        self.assertTrue(any("could not become label matchers" in n
+                            for n in t.notes))
+
+
+class ConstructCoverageTests(unittest.TestCase):
+    def test_derivative_gauge(self):
+        t = tr("SELECT derivative(some.gauge, 1 minute) FROM Metric "
+               "TIMESERIES")
+        self.assertEqual(t.expr, "deriv(some_gauge[$__rate_interval]) * 60")
+
+    def test_derivative_on_histogram_untranslatable(self):
+        t = tr("SELECT derivative(duration, 1 minute) FROM Transaction")
+        self.assertEqual(t.confidence, UNTRANSLATABLE)
+
+    def test_predict_linear_horizon_seconds(self):
+        t = tr("SELECT predictLinear(some.gauge, 2 hours) FROM Metric "
+               "TIMESERIES")
+        self.assertEqual(t.expr,
+                         "predict_linear(some_gauge[$__rate_interval], 7200)")
+
+    def test_stddev_gauge_over_time(self):
+        t = tr("SELECT stddev(some.gauge) FROM Metric")
+        self.assertEqual(t.expr, "stddev_over_time(some_gauge[$__range])")
+
+    def test_stddev_histogram_untranslatable_with_reason(self):
+        t = tr("SELECT stddev(duration) FROM Transaction")
+        self.assertEqual(t.confidence, UNTRANSLATABLE)
+        self.assertTrue(any("sum-of-squares" in n for n in t.notes))
+
+    def test_earliest_untranslatable_on_metrics(self):
+        t = tr("SELECT earliest(some.gauge) FROM Metric")
+        self.assertEqual(t.confidence, UNTRANSLATABLE)
+        self.assertTrue(any("first_over_time" in n for n in t.notes))
+
+    def test_count_on_metric_counter_notes_datapoint_semantics(self):
+        t = tr("SELECT count(orders) FROM Metric TIMESERIES")
+        self.assertTrue(any("counts datapoints" in n for n in t.notes))
+
+    def test_prefix_multiplier_preserved(self):
+        t = tr("SELECT 1000 * average(duration) FROM Transaction")
+        self.assertTrue(t.expr.endswith(") * 1000"))
+        self.assertTrue(any("'* 1000' preserved" in n for n in t.notes))
+
+    def test_slide_by_noted(self):
+        t = tr("SELECT count(*) FROM Transaction TIMESERIES 5 minutes "
+               "SLIDE BY 1 minute")
+        self.assertTrue(any("SLIDE BY 1 minute" in n for n in t.notes))
+
+    def test_timeseries_interval_hint_noted(self):
+        t = tr("SELECT count(*) FROM Transaction TIMESERIES 30 minutes")
+        self.assertTrue(any("'Min interval' to 30m" in n for n in t.notes))
+
+    def test_timeseries_auto_has_no_interval_hint(self):
+        t = tr("SELECT count(*) FROM Transaction TIMESERIES AUTO")
+        self.assertFalse(any("Min interval" in n for n in t.notes))
+
+    def test_facet_without_limit_cardinality_note(self):
+        t = tr("SELECT count(*) FROM Transaction FACET name TIMESERIES")
+        self.assertTrue(any("top 10 groups" in n for n in t.notes))
+
+    def test_facet_with_limit_no_cardinality_note(self):
+        t = tr("SELECT count(*) FROM Transaction FACET name LIMIT 10")
+        self.assertFalse(any("top 10 groups" in n for n in t.notes))
+
+    def test_order_by_noted_on_faceted_query(self):
+        t = tr("SELECT count(*) FROM Transaction FACET name "
+               "ORDER BY count LIMIT 5")
+        self.assertTrue(any("ORDER BY is not preserved" in n
+                            for n in t.notes))
+
+    def test_median_is_p50(self):
+        t = tr("SELECT median(duration) FROM Transaction")
+        self.assertTrue(t.expr.startswith("histogram_quantile(0.5,"))
+
+
 class QueryShapeTests(unittest.TestCase):
     def test_timeseries_is_range_with_rate_interval(self):
         t = tr("SELECT count(*) FROM Transaction TIMESERIES")
@@ -369,6 +511,32 @@ class QueryShapeTests(unittest.TestCase):
     def test_funnel_untranslatable(self):
         t = tr("SELECT funnel(session, WHERE a = 1) FROM PageView")
         self.assertEqual(t.confidence, UNTRANSLATABLE)
+        # Must give the funnel-specific explanation, not the generic
+        # "no metric mapping for FROM PageView".
+        self.assertTrue(any("funnel()" in n and "event-sequence" in n
+                            for n in t.notes), t.notes)
+
+    def test_funnel_untranslatable_on_mapped_event(self):
+        t = tr("SELECT funnel(session, WHERE a = 1) FROM Transaction")
+        self.assertEqual(t.confidence, UNTRANSLATABLE)
+        self.assertTrue(any("funnel()" in n for n in t.notes), t.notes)
+
+    def test_browser_event_untranslatable_names_faro(self):
+        t = tr("SELECT count(*) FROM PageView")
+        self.assertEqual(t.confidence, UNTRANSLATABLE)
+        self.assertTrue(any("Faro" in n for n in t.notes), t.notes)
+
+    def test_synthetic_event_untranslatable_names_blackbox(self):
+        t = tr("SELECT count(*) FROM SyntheticCheck")
+        self.assertEqual(t.confidence, UNTRANSLATABLE)
+        self.assertTrue(any("blackbox_exporter" in n for n in t.notes),
+                        t.notes)
+
+    def test_nr_only_event_untranslatable_names_nr_plugin(self):
+        t = tr("SELECT sum(consumption) FROM NrConsumption")
+        self.assertEqual(t.confidence, UNTRANSLATABLE)
+        self.assertTrue(any("New Relic datasource plugin" in n
+                            for n in t.notes), t.notes)
 
 
 if __name__ == "__main__":

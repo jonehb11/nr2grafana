@@ -252,6 +252,10 @@ class Wizard:
                     "🔎  Live-check queries against Mimir/Loki",
                     "🧩  Check Grafana requirements",
                     "📊  Test dashboards against Grafana (data pull)",
+                    "🧪  Verify data parity (NR vs Grafana)",
+                    "🩺  Diagnose problems",
+                    "🔧  Auto-heal",
+                    "🗄   Manage datasources",
                     "📤  Import dashboards into Grafana",
                     "🌐  Launch web UI",
                     "⚙️   Choose / create a mapping config",
@@ -275,10 +279,18 @@ class Wizard:
                 elif choice == 6:
                     self.flow_grafana_test()
                 elif choice == 7:
-                    self.flow_import()
+                    self.flow_parity()
                 elif choice == 8:
-                    self.flow_web()
+                    self.flow_diagnose()
                 elif choice == 9:
+                    self.flow_heal()
+                elif choice == 10:
+                    self.flow_datasources()
+                elif choice == 11:
+                    self.flow_import()
+                elif choice == 12:
+                    self.flow_web()
+                elif choice == 13:
                     self.flow_config()
                 else:
                     print(dim("bye!"))
@@ -423,10 +435,14 @@ class Wizard:
                 "Validate the converted dashboards",
                 "Live-check queries against Mimir/Loki",
                 "Check Grafana requirements",
+                "Manage datasources",
                 "Test dashboards against Grafana (data pull)",
+                "Verify data parity (NR vs Grafana)",
+                "Diagnose problems",
+                "Auto-heal",
                 "Import into Grafana",
                 "Back to main menu",
-            ], default=5)
+            ], default=9)
             if nxt == 0:
                 self.flow_validate()
             elif nxt == 1:
@@ -434,8 +450,16 @@ class Wizard:
             elif nxt == 2:
                 self.flow_grafana_check()
             elif nxt == 3:
-                self.flow_grafana_test()
+                self.flow_datasources()
             elif nxt == 4:
+                self.flow_grafana_test()
+            elif nxt == 5:
+                self.flow_parity()
+            elif nxt == 6:
+                self.flow_diagnose()
+            elif nxt == 7:
+                self.flow_heal()
+            elif nxt == 8:
                 self.flow_import()
             else:
                 return
@@ -533,6 +557,155 @@ class Wizard:
             print(green("✓ no query errors"))
         elif rc == 1:
             print(red("✗ some queries errored (see above)"))
+        return rc
+
+    # -- parity / diagnose / heal -------------------------------------------
+
+    def _package_source(self) -> str:
+        return prompt("Package dir or dashboard JSON",
+                      self.recall("convert_out", "./grafana-dashboards"),
+                      validator=lambda v: "" if os.path.exists(v)
+                      else "no such file or directory")
+
+    def flow_parity(self) -> int:
+        header("Verify data parity (NR vs Grafana)")
+        print(dim("Runs each panel's original NRQL through New Relic "
+                  "and the translated query through Grafana, then "
+                  "compares the actual values side by side."))
+        src = self._package_source()
+        api_key = prompt_secret("New Relic USER API key (NRAK-...)",
+                                env_var="NEW_RELIC_API_KEY")
+        if not api_key:
+            print(red("an API key is required"))
+            return 1
+        region = ["US", "EU"][menu("New Relic region?", ["US", "EU"],
+                                   default=0 if self.recall("region",
+                                                            "US")
+                                   == "US" else 1)]
+        self.remember("region", region)
+        account = prompt("New Relic account id (blank = from env / "
+                         "widget report)",
+                         self.recall("nr_account", ""))
+        if account:
+            self.remember("nr_account", account)
+        url, token = self._grafana_connection()
+        frm = prompt("Compare range from", "now-1h")
+        to = prompt("Compare range to", "now")
+        from .cli import cmd_grafana_parity
+        rc = cmd_grafana_parity(argparse.Namespace(
+            inputs=[src], grafana_url=url, grafana_token=token,
+            insecure=False, api_key=api_key, region=region,
+            account_id=[account] if account else [], frm=frm, to=to))
+        if rc == 0:
+            print(green("✓ parity run complete (no Grafana query "
+                        "errors)"))
+        elif rc == 1:
+            print(red("✗ some Grafana queries errored (see above)"))
+        return rc
+
+    def flow_diagnose(self) -> int:
+        header("Diagnose problems")
+        print(dim("Layered root-cause checks: auth, datasources, "
+                  "per-panel metric/label names, data pipeline and "
+                  "config -- each finding comes with a concrete fix."))
+        src = self._package_source()
+        url, token = self._grafana_connection()
+        api_key = prompt_secret("New Relic USER API key (optional, "
+                                "Enter to skip)",
+                                env_var="NEW_RELIC_API_KEY")
+        from .cli import cmd_grafana_diagnose
+        rc = cmd_grafana_diagnose(argparse.Namespace(
+            inputs=[src], grafana_url=url, grafana_token=token,
+            insecure=False, api_key=api_key,
+            region=self.recall("region", "US"),
+            config=self.recall("config", "")))
+        if rc == 0:
+            print(green("✓ no blockers"))
+        elif rc == 1:
+            print(red("✗ blockers found (see fixes above)"))
+        return rc
+
+    def flow_heal(self) -> int:
+        header("Auto-heal")
+        print(dim("Test -> diagnose -> apply safe fixes (high-"
+                  "confidence query edits and config overlays; never "
+                  "creates datasources) -> re-test, until converged."))
+        src = self._package_source()
+        url, token = self._grafana_connection()
+        push = confirm("Push fixed dashboards to Grafana? (No = edit "
+                       "local files only)", default=False)
+        from .cli import cmd_grafana_heal
+        rc = cmd_grafana_heal(argparse.Namespace(
+            inputs=[src], grafana_url=url, grafana_token=token,
+            insecure=False, api_key="",
+            region=self.recall("region", "US"),
+            push=push, max_rounds=3))
+        if rc == 0:
+            print(green("✓ auto-heal finished (see summary above)"))
+        else:
+            print(red("✗ auto-heal hit errors (see above)"))
+        return rc
+
+    # -- datasources --------------------------------------------------------
+
+    def flow_datasources(self) -> int:
+        header("Manage datasources")
+        url, token = self._grafana_connection()
+        while True:
+            choice = menu("Datasources", [
+                "List datasources (with health)",
+                "Add a datasource (guided)",
+                "Back to main menu",
+            ])
+            if choice == 0:
+                from .cli import cmd_grafana_datasources
+                cmd_grafana_datasources(argparse.Namespace(
+                    grafana_url=url, grafana_token=token,
+                    insecure=False))
+            elif choice == 1:
+                self._add_datasource(url, token)
+            else:
+                return 0
+
+    def _add_datasource(self, url: str, token: str) -> int:
+        from .grafana.live import DS_TEMPLATES
+        types = sorted(DS_TEMPLATES)
+        idx = menu("Datasource type?",
+                   ["%s (%s)" % (DS_TEMPLATES[t]["label"], t)
+                    for t in types])
+        ds_type = types[idx]
+        tpl = DS_TEMPLATES[ds_type]
+        if tpl.get("notes"):
+            print(dim(tpl["notes"]))
+        name = prompt("Datasource name", tpl["label"],
+                      validator=_require_nonempty)
+        values: List[str] = []
+        for field in tpl["fields"]:
+            label = "%s (%s)" % (field.get("label", field["name"]),
+                                 field["name"])
+            if field.get("help"):
+                print(dim("  " + field["help"]))
+            if field.get("secret"):
+                val = prompt_secret(label + (" [required]"
+                                             if field.get("required")
+                                             else " [Enter to skip]"))
+            elif field.get("required"):
+                val = prompt(label, field.get("placeholder", ""),
+                             validator=_require_nonempty)
+            else:
+                val = prompt(label + dim(" (Enter to skip)"))
+            if val:
+                values.append("%s=%s" % (field["name"], val))
+        from .cli import cmd_grafana_add_datasource
+        rc = cmd_grafana_add_datasource(argparse.Namespace(
+            type=ds_type, name=name, set_values=values,
+            no_prompt=True, grafana_url=url, grafana_token=token,
+            insecure=False))
+        if rc == 0:
+            print(green("✓ datasource created"))
+        else:
+            print(red("✗ datasource creation had problems (see "
+                      "above)"))
         return rc
 
     # -- web ui -------------------------------------------------------------

@@ -1,7 +1,25 @@
-"""Embedded single-page UI for the nr2grafana web app.
+"""Embedded single-page UI for the nr2grafana web app (1.2 redesign).
 
 One module-level HTML string (``PAGE``) with inline CSS and JS -- no
 external assets, fonts, or CDNs. Served by web/server.py at ``GET /``.
+
+Layout of the embedded app (all vanilla JS):
+
+* design system  -- CSS custom properties, dark default + light theme
+  (``prefers-color-scheme`` plus a persistent toggle), 8px spacing
+  grid, one badge/chip/button/input vocabulary reused everywhere.
+* state object   -- ``App`` (session state, route, caches, job list).
+* api() helper   -- fetch wrapper; every server string is escaped with
+  ``esc()`` before being injected into HTML.
+* hash router    -- ``#/overview``, ``#/connect``, ``#/convert``,
+  ``#/datasources``, ``#/dash/<slug>[/tab]``, ``#/import``,
+  ``#/changes``, ``#/ai`` (legacy 1.1 hashes are aliased).
+* per-view render functions plus small component helpers: ``chip()``,
+  ``ring()`` (SVG readiness ring), ``sparkline()`` (inline SVG
+  polyline), ``statStrip()``, ``stepper()``.
+* global job drawer -- long operations (fetch/convert/test/parity/
+  diagnose/heal/import) poll ``/api/jobs/<id>`` and stream their logs
+  into a drawer that survives navigation, plus toasts.
 """
 
 from __future__ import annotations
@@ -13,262 +31,569 @@ PAGE = r"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>nr2grafana</title>
 <style>
+/* =================================================== design tokens */
 :root {
-  --bg: #0e1116;
-  --bg2: #161b23;
-  --bg3: #1e2530;
+  --bg: #0d1117;
+  --bg2: #151b23;
+  --bg3: #1c2430;
+  --bg4: #232d3b;
   --border: #2a3341;
-  --text: #dde3ec;
+  --border-soft: #222b38;
+  --text: #dfe5ee;
   --muted: #8b96a7;
+  --faint: #5d6879;
   --accent: #4c9aff;
-  --accent-dim: #1f3a5f;
-  --green: #3fb96a;
-  --green-bg: #12301e;
+  --accent-dim: #1d3a5f;
+  --green: #34c26b;
+  --green-bg: #10301d;
   --amber: #e2a33c;
   --amber-bg: #33270e;
-  --red: #e05c5c;
-  --red-bg: #341518;
+  --red: #ef6363;
+  --red-bg: #371618;
   --blue: #5aa2e8;
-  --blue-bg: #14263a;
-  --shadow: 0 1px 3px rgba(0,0,0,.4);
+  --blue-bg: #142a40;
+  --purple: #a78bfa;
+  --purple-bg: #241d3d;
+  --shadow: 0 1px 2px rgba(0,0,0,.35), 0 4px 14px rgba(0,0,0,.22);
+  --shadow-sm: 0 1px 2px rgba(0,0,0,.3);
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          Helvetica, Arial, sans-serif;
+  --r-sm: 6px; --r-md: 8px; --r-lg: 12px;
+  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px;
+  --s6: 32px;
+  --fs-xs: 11px; --fs-sm: 12px; --fs-md: 13px; --fs-lg: 14px;
+  --fs-xl: 16px; --fs-h1: 20px;
 }
 [data-theme="light"] {
-  --bg: #f4f6f9;
+  --bg: #f5f7fa;
   --bg2: #ffffff;
-  --bg3: #eef1f5;
-  --border: #d7dde6;
-  --text: #1c2430;
-  --muted: #5c6878;
+  --bg3: #eef1f6;
+  --bg4: #e5eaf1;
+  --border: #d6dde6;
+  --border-soft: #e2e8f0;
+  --text: #1b2430;
+  --muted: #5b6878;
+  --faint: #93a0b1;
   --accent: #1a6ed8;
-  --accent-dim: #d8e7fa;
-  --green: #1d8a48;
-  --green-bg: #e2f4e9;
-  --amber: #a86d0c;
-  --amber-bg: #faf0d8;
-  --red: #c03434;
-  --red-bg: #fae3e3;
-  --blue: #2470b8;
-  --blue-bg: #e2eefa;
-  --shadow: 0 1px 3px rgba(20,30,50,.12);
+  --accent-dim: #dcedff;
+  --green: #178a45;
+  --green-bg: #ddf3e5;
+  --amber: #9c6608;
+  --amber-bg: #faf0d5;
+  --red: #c23434;
+  --red-bg: #fbe3e3;
+  --blue: #21639f;
+  --blue-bg: #e0eefb;
+  --purple: #6d4fd2;
+  --purple-bg: #ece7fb;
+  --shadow: 0 1px 2px rgba(25,35,55,.08), 0 4px 14px rgba(25,35,55,.07);
+  --shadow-sm: 0 1px 2px rgba(25,35,55,.08);
 }
 @media (prefers-color-scheme: light) {
   :root:not([data-theme="dark"]) {
-    --bg: #f4f6f9;
+    --bg: #f5f7fa;
     --bg2: #ffffff;
-    --bg3: #eef1f5;
-    --border: #d7dde6;
-    --text: #1c2430;
-    --muted: #5c6878;
+    --bg3: #eef1f6;
+    --bg4: #e5eaf1;
+    --border: #d6dde6;
+    --border-soft: #e2e8f0;
+    --text: #1b2430;
+    --muted: #5b6878;
+    --faint: #93a0b1;
     --accent: #1a6ed8;
-    --accent-dim: #d8e7fa;
-    --green: #1d8a48;
-    --green-bg: #e2f4e9;
-    --amber: #a86d0c;
-    --amber-bg: #faf0d8;
-    --red: #c03434;
-    --red-bg: #fae3e3;
-    --blue: #2470b8;
-    --blue-bg: #e2eefa;
-    --shadow: 0 1px 3px rgba(20,30,50,.12);
+    --accent-dim: #dcedff;
+    --green: #178a45;
+    --green-bg: #ddf3e5;
+    --amber: #9c6608;
+    --amber-bg: #faf0d5;
+    --red: #c23434;
+    --red-bg: #fbe3e3;
+    --blue: #21639f;
+    --blue-bg: #e0eefb;
+    --purple: #6d4fd2;
+    --purple-bg: #ece7fb;
+    --shadow: 0 1px 2px rgba(25,35,55,.08),
+              0 4px 14px rgba(25,35,55,.07);
+    --shadow-sm: 0 1px 2px rgba(25,35,55,.08);
   }
 }
+/* ======================================================== base */
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
 body {
   background: var(--bg); color: var(--text);
-  font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI",
-        Roboto, Helvetica, Arial, sans-serif;
+  font: var(--fs-lg)/1.55 var(--sans);
+  -webkit-font-smoothing: antialiased;
 }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
+:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+  border-radius: 4px;
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
+}
 #app { display: flex; min-height: 100vh; }
 
-/* ---- sidebar ---- */
+/* ======================================================== sidebar */
 #sidebar {
-  width: 218px; flex: 0 0 218px; background: var(--bg2);
+  width: 224px; flex: 0 0 224px; background: var(--bg2);
   border-right: 1px solid var(--border);
-  padding: 18px 12px; position: sticky; top: 0; height: 100vh;
-  display: flex; flex-direction: column;
+  padding: var(--s4) var(--s3); position: sticky; top: 0;
+  height: 100vh; display: flex; flex-direction: column;
 }
-.brand { display: flex; align-items: center; gap: 9px;
-  padding: 2px 8px 16px; }
+.brand { display: flex; align-items: center; gap: 10px;
+  padding: 2px var(--s2) var(--s4); }
 .brand-mark {
-  width: 28px; height: 28px; border-radius: 7px; flex: 0 0 28px;
+  width: 30px; height: 30px; border-radius: 8px; flex: 0 0 30px;
   background: linear-gradient(135deg, #1ce783 0%, #f46800 100%);
   display: flex; align-items: center; justify-content: center;
   color: #fff; font-weight: 800; font-size: 13px;
+  box-shadow: var(--shadow-sm);
 }
-.brand-name { font-weight: 700; font-size: 15px; letter-spacing: .2px; }
-.brand-sub { font-size: 11px; color: var(--muted); }
+.brand-name { font-weight: 700; font-size: 15px;
+  letter-spacing: .2px; }
+.brand-sub { font-size: var(--fs-xs); color: var(--muted); }
+.nav-sec { font-size: 10px; font-weight: 700; letter-spacing: .1em;
+  text-transform: uppercase; color: var(--faint);
+  padding: var(--s3) var(--s2) var(--s1); }
 .nav a {
-  display: flex; align-items: center; gap: 9px;
-  padding: 8px 10px; border-radius: 7px; color: var(--text);
-  font-weight: 500; margin-bottom: 2px;
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 10px; border-radius: var(--r-sm); color: var(--text);
+  font-weight: 500; margin-bottom: 2px; font-size: var(--fs-md);
 }
 .nav a:hover { background: var(--bg3); text-decoration: none; }
 .nav a.active { background: var(--accent-dim); color: var(--accent); }
-.nav .ico { width: 18px; text-align: center; opacity: .85; }
-.sidebar-foot { margin-top: auto; padding: 10px 8px 0;
-  font-size: 11px; color: var(--muted); }
+.nav .ico { width: 18px; text-align: center; opacity: .8;
+  font-size: 13px; }
+.nav .cnt { margin-left: auto; font-size: var(--fs-xs);
+  color: var(--muted); background: var(--bg3); border-radius: 999px;
+  padding: 0 7px; }
+.nav a.active .cnt { background: transparent; color: var(--accent); }
+.sidebar-foot { margin-top: auto; padding: var(--s3) var(--s2) 0;
+  font-size: var(--fs-xs); color: var(--muted); line-height: 1.5; }
 
-/* ---- header ---- */
+/* ======================================================== topbar */
 #mainwrap { flex: 1; min-width: 0; display: flex;
   flex-direction: column; }
 #topbar {
-  position: sticky; top: 0; z-index: 20;
-  display: flex; align-items: center; gap: 12px;
-  padding: 10px 22px; background: var(--bg2);
-  border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; z-index: 30;
+  display: flex; align-items: center; gap: var(--s2);
+  padding: var(--s2) var(--s5); background: var(--bg2);
+  border-bottom: 1px solid var(--border); min-height: 52px;
 }
-#crumb { font-weight: 600; font-size: 14px; flex: 1; min-width: 0;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#crumb { font-weight: 600; font-size: var(--fs-lg); flex: 1;
+  min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
 .pill {
   display: inline-flex; align-items: center; gap: 6px;
   border: 1px solid var(--border); border-radius: 999px;
-  padding: 3px 10px; font-size: 12px; color: var(--muted);
-  background: var(--bg); white-space: nowrap;
+  padding: 3px 10px; font-size: var(--fs-sm); color: var(--muted);
+  background: var(--bg); white-space: nowrap; cursor: default;
 }
-.pill .dot { width: 8px; height: 8px; border-radius: 50%;
-  background: var(--muted); }
+.pill .dot { width: 7px; height: 7px; border-radius: 50%;
+  background: var(--faint); flex: 0 0 7px; }
 .pill.ok { color: var(--green); border-color: var(--green); }
 .pill.ok .dot { background: var(--green); }
 .pill.err { color: var(--red); border-color: var(--red); }
 .pill.err .dot { background: var(--red); }
-#themebtn { cursor: pointer; }
+button.pill { font: inherit; font-size: var(--fs-sm);
+  cursor: pointer; }
+button.pill:hover { border-color: var(--accent);
+  color: var(--accent); }
+#jobsbtn .spin { display: none; }
+#jobsbtn.running .spin { display: inline-block; width: 10px;
+  height: 10px; border: 2px solid var(--accent);
+  border-top-color: transparent; border-radius: 50%;
+  animation: spin .8s linear infinite; }
 
-/* ---- main ---- */
-main { padding: 22px; max-width: 1180px; width: 100%;
+/* ======================================================== main */
+main { padding: var(--s5); max-width: 1240px; width: 100%;
   margin: 0 auto; }
-h1 { font-size: 20px; margin: 0 0 4px; }
-h2 { font-size: 15px; margin: 0 0 10px; }
-.lead { color: var(--muted); margin: 0 0 18px; }
+h1 { font-size: var(--fs-h1); margin: 0 0 var(--s1);
+  letter-spacing: -.01em; }
+h2 { font-size: var(--fs-lg); margin: 0 0 var(--s3);
+  font-weight: 650; }
+h3 { font-size: var(--fs-md); margin: 0 0 var(--s2);
+  font-weight: 650; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .05em;
+  font-size: var(--fs-xs); }
+.lead { color: var(--muted); margin: 0 0 var(--s4);
+  font-size: var(--fs-md); }
 .card {
   background: var(--bg2); border: 1px solid var(--border);
-  border-radius: 10px; padding: 16px 18px; box-shadow: var(--shadow);
-  margin-bottom: 16px;
+  border-radius: var(--r-lg); padding: var(--s4);
+  box-shadow: var(--shadow-sm); margin-bottom: var(--s4);
 }
-.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-@media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } }
-.cards-row { display: flex; gap: 12px; flex-wrap: wrap;
-  margin-bottom: 16px; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr;
+  gap: var(--s4); align-items: start; }
+@media (max-width: 960px) { .grid2 { grid-template-columns: 1fr; } }
+.cards-row { display: flex; gap: var(--s3); flex-wrap: wrap;
+  margin-bottom: var(--s4); }
 .stat-card { background: var(--bg2); border: 1px solid var(--border);
-  border-radius: 10px; padding: 12px 18px; min-width: 130px; }
-.stat-card .num { font-size: 22px; font-weight: 700; }
-.stat-card .lbl { font-size: 12px; color: var(--muted); }
+  border-radius: var(--r-lg); padding: var(--s3) var(--s4);
+  min-width: 128px; box-shadow: var(--shadow-sm); }
+.stat-card .num { font-size: 22px; font-weight: 700;
+  font-variant-numeric: tabular-nums; }
+.stat-card .lbl { font-size: var(--fs-sm); color: var(--muted); }
 
-label { display: block; font-size: 12px; font-weight: 600;
-  color: var(--muted); margin: 10px 0 4px; }
+/* ======================================================== forms */
+label { display: block; font-size: var(--fs-sm); font-weight: 600;
+  color: var(--muted); margin: var(--s3) 0 var(--s1); }
+label .req { color: var(--red); }
 input, select, textarea {
   width: 100%; background: var(--bg); color: var(--text);
-  border: 1px solid var(--border); border-radius: 7px;
-  padding: 7px 10px; font: inherit; outline: none;
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  padding: 7px 10px; font: inherit; font-size: var(--fs-md);
+  outline: none;
 }
 textarea { font-family: var(--mono); font-size: 12.5px;
-  min-height: 74px; resize: vertical; }
+  min-height: 72px; resize: vertical; }
 input:focus, select:focus, textarea:focus {
-  border-color: var(--accent); }
-.row { display: flex; gap: 8px; align-items: center;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-dim); }
+input[type="checkbox"] { width: auto; accent-color: var(--accent); }
+.row { display: flex; gap: var(--s2); align-items: center;
   flex-wrap: wrap; }
 .row > * { width: auto; }
-.btnbar { margin-top: 12px; display: flex; gap: 8px;
+.btnbar { margin-top: var(--s3); display: flex; gap: var(--s2);
   flex-wrap: wrap; align-items: center; }
+.field-help { font-size: var(--fs-xs); color: var(--faint);
+  margin-top: 3px; line-height: 1.4; }
 
+/* ======================================================== buttons */
 .btn {
   display: inline-flex; align-items: center; gap: 6px;
   background: var(--bg3); color: var(--text);
-  border: 1px solid var(--border); border-radius: 7px;
-  padding: 7px 14px; font: inherit; font-weight: 600;
-  cursor: pointer; white-space: nowrap;
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  padding: 6px 14px; font: inherit; font-size: var(--fs-md);
+  font-weight: 600; cursor: pointer; white-space: nowrap;
+  transition: border-color .12s, background .12s, color .12s;
 }
-.btn:hover { border-color: var(--accent); color: var(--accent); }
+.btn:hover { border-color: var(--accent); color: var(--accent);
+  text-decoration: none; }
 .btn.primary { background: var(--accent); border-color: var(--accent);
   color: #fff; }
-.btn.primary:hover { filter: brightness(1.1); color: #fff; }
-.btn.small { padding: 4px 10px; font-size: 12px; }
-.btn:disabled { opacity: .5; cursor: default; }
+.btn.primary:hover { filter: brightness(1.12); color: #fff; }
+.btn.danger { color: var(--red); border-color: var(--red); }
+.btn.danger:hover { background: var(--red-bg); }
+.btn.ghost { background: transparent; border-color: transparent;
+  color: var(--muted); }
+.btn.ghost:hover { color: var(--accent); }
+.btn.small { padding: 3px 10px; font-size: var(--fs-sm); }
+.btn:disabled { opacity: .45; cursor: default;
+  pointer-events: none; }
 .btn.busy::after { content: ""; width: 11px; height: 11px;
   border: 2px solid currentColor; border-top-color: transparent;
   border-radius: 50%; animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+a.btn.armed { background: var(--green); border-color: var(--green);
+  color: #fff; }
+a.btn.armed:hover { filter: brightness(1.1); color: #fff; }
 
-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+/* ======================================================== tables */
+table { width: 100%; border-collapse: collapse;
+  font-size: var(--fs-md); }
 .tablewrap { overflow-x: auto; }
-th { text-align: left; font-size: 11px; text-transform: uppercase;
-  letter-spacing: .06em; color: var(--muted); font-weight: 600;
-  padding: 8px 10px; border-bottom: 1px solid var(--border); }
-td { padding: 9px 10px; border-bottom: 1px solid var(--border);
+th { text-align: left; font-size: 10.5px; text-transform: uppercase;
+  letter-spacing: .07em; color: var(--muted); font-weight: 650;
+  padding: var(--s2) 10px; border-bottom: 1px solid var(--border); }
+td { padding: 9px 10px; border-bottom: 1px solid var(--border-soft);
   vertical-align: top; }
+tbody tr:last-child td { border-bottom: 0; }
 tr.click { cursor: pointer; }
-tr.click:hover td { background: var(--bg3); }
-tr.expand-row td { background: var(--bg); padding: 14px 16px; }
+tr.click:hover td, tr.click:focus-visible td {
+  background: var(--bg3); }
+tr.expand-row td { background: var(--bg);
+  padding: var(--s4); border-bottom: 1px solid var(--border); }
 
+/* ======================================================== chips */
 .chip {
   display: inline-block; border-radius: 5px; padding: 1px 8px;
   font-size: 11.5px; font-weight: 600; margin: 1px 3px 1px 0;
   border: 1px solid transparent; white-space: nowrap;
+  vertical-align: middle;
 }
-.chip.ok    { color: var(--green); background: var(--green-bg); }
-.chip.warn  { color: var(--amber); background: var(--amber-bg); }
-.chip.err   { color: var(--red);   background: var(--red-bg); }
-.chip.info  { color: var(--blue);  background: var(--blue-bg); }
-.chip.dim   { color: var(--muted); background: var(--bg3); }
+.chip.ok    { color: var(--green);  background: var(--green-bg); }
+.chip.warn  { color: var(--amber);  background: var(--amber-bg); }
+.chip.err   { color: var(--red);    background: var(--red-bg); }
+.chip.info  { color: var(--blue);   background: var(--blue-bg); }
+.chip.purple{ color: var(--purple); background: var(--purple-bg); }
+.chip.dim   { color: var(--muted);  background: var(--bg3); }
+.chip.lg { font-size: var(--fs-sm); padding: 2px 10px; }
 
 pre, code, .mono { font-family: var(--mono); font-size: 12.5px; }
 pre {
-  background: var(--bg); border: 1px solid var(--border);
-  border-radius: 7px; padding: 10px 12px; overflow-x: auto;
-  margin: 6px 0; white-space: pre-wrap; word-break: break-word;
+  background: var(--bg); border: 1px solid var(--border-soft);
+  border-radius: var(--r-sm); padding: 10px 12px; overflow-x: auto;
+  margin: var(--s2) 0; white-space: pre-wrap; word-break: break-word;
 }
 .log {
-  background: #0b0e13; color: #c7d0dc; border: 1px solid var(--border);
-  border-radius: 7px; font-family: var(--mono); font-size: 12px;
-  padding: 10px 12px; max-height: 300px; overflow-y: auto;
-  white-space: pre-wrap; word-break: break-word; display: none;
+  background: #0b0e13; color: #c7d0dc;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm); font-family: var(--mono);
+  font-size: var(--fs-sm); padding: 10px 12px; max-height: 280px;
+  overflow-y: auto; white-space: pre-wrap; word-break: break-word;
+  display: none; margin-top: var(--s3);
 }
-[data-theme="light"] .log { background: #10141b; }
 .log.show { display: block; }
 
 .empty {
-  border: 1px dashed var(--border); border-radius: 10px;
-  padding: 34px 20px; text-align: center; color: var(--muted);
+  border: 1px dashed var(--border); border-radius: var(--r-lg);
+  padding: var(--s6) var(--s4); text-align: center;
+  color: var(--muted); font-size: var(--fs-md);
 }
 .empty b { color: var(--text); }
-.helper { font-size: 12px; color: var(--muted); margin-top: 6px; }
-.kv { font-size: 12px; color: var(--muted); }
+.helper { font-size: var(--fs-sm); color: var(--muted);
+  margin-top: 6px; }
+.kv { font-size: var(--fs-sm); color: var(--muted); }
 .kv b { color: var(--text); }
 .err-text { color: var(--red); font-family: var(--mono);
-  font-size: 12px; white-space: pre-wrap; word-break: break-word; }
-.sec-note { font-size: 12px; color: var(--muted);
+  font-size: var(--fs-sm); white-space: pre-wrap;
+  word-break: break-word; margin: var(--s1) 0; }
+.sec-note { font-size: var(--fs-sm); color: var(--muted);
   border-left: 3px solid var(--accent); padding-left: 10px;
-  margin: 10px 0; }
-.ai-box { border: 1px solid var(--border); border-radius: 8px;
-  padding: 12px 14px; background: var(--bg); margin-top: 10px; }
+  margin: var(--s3) 0; }
+.ai-box { border: 1px solid var(--border); border-radius: var(--r-md);
+  padding: var(--s3); background: var(--bg); margin-top: var(--s2); }
 .ai-box .conf { float: right; }
+.backlink { font-size: var(--fs-sm); display: inline-block;
+  margin-bottom: var(--s2); }
+.checkbox-row { display: flex; gap: var(--s2); align-items: center;
+  padding: 6px var(--s1); border-bottom: 1px solid var(--border-soft);
+}
+.right { text-align: right; }
 
-/* chat */
-#chatlog { max-height: 52vh; overflow-y: auto; padding: 4px; }
-.msg { max-width: 82%; margin: 8px 0; padding: 9px 13px;
-  border-radius: 10px; white-space: pre-wrap; word-break: break-word; }
+/* ======================================================== stepper */
+.stepper { display: flex; align-items: flex-start; gap: 0;
+  overflow-x: auto; padding: var(--s3) var(--s1);
+  margin-bottom: var(--s4); }
+.step { display: flex; align-items: center; flex: 1;
+  min-width: 84px; }
+.step a { display: flex; flex-direction: column; align-items: center;
+  gap: 5px; color: var(--muted); font-size: var(--fs-xs);
+  font-weight: 600; text-decoration: none; min-width: 68px; }
+.step a:hover { color: var(--accent); text-decoration: none; }
+.step .bubble { width: 26px; height: 26px; border-radius: 50%;
+  border: 2px solid var(--border); background: var(--bg2);
+  display: flex; align-items: center; justify-content: center;
+  font-size: var(--fs-xs); font-weight: 700; color: var(--muted); }
+.step.done .bubble { border-color: var(--green);
+  color: var(--green); background: var(--green-bg); }
+.step.attn .bubble { border-color: var(--amber);
+  color: var(--amber); background: var(--amber-bg); }
+.step.blocked .bubble { border-color: var(--red);
+  color: var(--red); background: var(--red-bg); }
+.step.active a { color: var(--text); }
+.step.active .bubble { border-color: var(--accent);
+  color: var(--accent); box-shadow: 0 0 0 3px var(--accent-dim); }
+.step .bar { flex: 1; height: 2px; background: var(--border);
+  margin: 13px 4px 0; min-width: 10px; }
+.step.done .bar { background: var(--green); }
+.step:last-child .bar { display: none; }
+
+/* ======================================================== rings */
+.ring { position: relative; display: inline-flex;
+  align-items: center; justify-content: center; flex: 0 0 auto; }
+.ring svg { transform: rotate(-90deg); display: block; }
+.ring .track { stroke: var(--bg4); fill: none; }
+.ring .arc { fill: none; stroke-linecap: round;
+  transition: stroke-dasharray .4s; }
+.ring.ok .arc { stroke: var(--green); }
+.ring.warn .arc { stroke: var(--amber); }
+.ring.err .arc { stroke: var(--red); }
+.ring.dim .arc { stroke: var(--faint); }
+.ring .ring-num { position: absolute; font-weight: 700;
+  font-variant-numeric: tabular-nums; }
+.ring.ok .ring-num { color: var(--green); }
+.ring.warn .ring-num { color: var(--amber); }
+.ring.err .ring-num { color: var(--red); }
+.ring.dim .ring-num { color: var(--muted); }
+
+/* ======================================================== overview */
+.ov-grid { display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+  gap: var(--s4); }
+.ov-card { background: var(--bg2); border: 1px solid var(--border);
+  border-radius: var(--r-lg); padding: var(--s4);
+  box-shadow: var(--shadow-sm); display: flex; gap: var(--s4);
+  transition: border-color .12s; }
+.ov-card:hover { border-color: var(--accent); }
+.ov-main { flex: 1; min-width: 0; }
+.ov-title { font-weight: 650; font-size: var(--fs-lg);
+  margin-bottom: 2px; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+.ov-title a { color: var(--text); }
+.ov-sub { font-size: var(--fs-xs); color: var(--faint);
+  font-family: var(--mono); margin-bottom: var(--s2);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ov-chips { margin-bottom: var(--s3); min-height: 22px; }
+
+/* ======================================================== spark */
+.side-by-side { display: grid; grid-template-columns: 1fr 1fr;
+  gap: var(--s3); margin: var(--s2) 0; }
+@media (max-width: 860px) {
+  .side-by-side { grid-template-columns: 1fr; } }
+.side-card { border: 1px solid var(--border-soft);
+  border-radius: var(--r-md); background: var(--bg);
+  padding: var(--s2) var(--s3); min-height: 92px; }
+.side-card .side-head { display: flex; align-items: center;
+  gap: var(--s2); font-size: var(--fs-xs); font-weight: 700;
+  letter-spacing: .06em; text-transform: uppercase;
+  color: var(--muted); margin-bottom: var(--s1); }
+.spark { display: flex; align-items: center; gap: var(--s2); }
+.spark svg { display: block; flex: 1; min-width: 0; }
+.spark .last { font-family: var(--mono); font-size: var(--fs-md);
+  font-weight: 700; font-variant-numeric: tabular-nums;
+  white-space: nowrap; }
+.spark-empty { color: var(--faint); font-size: var(--fs-sm);
+  padding: var(--s3) 0; text-align: center; }
+.spark-err { color: var(--red); font-size: var(--fs-sm);
+  font-family: var(--mono); word-break: break-word;
+  max-height: 76px; overflow-y: auto; }
+.sample-lines { font-family: var(--mono); font-size: var(--fs-sm);
+  white-space: pre-wrap; word-break: break-word;
+  max-height: 220px; overflow-y: auto; line-height: 1.6; }
+.sample-lines .ts { color: var(--faint); margin-right: 8px; }
+.sample-tbl { font-size: 12px; margin-top: 4px; }
+.sample-tbl td { padding: 2px 8px 2px 0; border-bottom: 0; }
+.signoff { display: flex; gap: var(--s2); align-items: center;
+  flex-wrap: wrap; margin-top: var(--s2);
+  padding: var(--s2) var(--s3); border: 1px dashed var(--border);
+  border-radius: var(--r-md); background: var(--bg); }
+.signoff .q { font-weight: 600; font-size: var(--fs-md); }
+.signoff input { flex: 1; min-width: 140px; width: auto; }
+.statstrip { display: flex; gap: var(--s4); flex-wrap: wrap;
+  padding: var(--s1) 0; }
+.statstrip .st { text-align: left; }
+.statstrip .st .v { font-family: var(--mono); font-weight: 700;
+  font-size: var(--fs-md); }
+.statstrip .st .k { font-size: 10px; color: var(--faint);
+  text-transform: uppercase; letter-spacing: .06em; }
+
+/* ======================================================== tabs */
+.tabs { display: flex; gap: 2px; border-bottom: 1px solid
+  var(--border); margin-bottom: var(--s4); }
+.tabs a { padding: var(--s2) var(--s3); color: var(--muted);
+  font-weight: 600; font-size: var(--fs-md);
+  border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.tabs a:hover { color: var(--text); text-decoration: none; }
+.tabs a.active { color: var(--accent);
+  border-bottom-color: var(--accent); }
+
+/* ======================================================== findings */
+.finding { border: 1px solid var(--border);
+  border-left-width: 3px; border-radius: var(--r-md);
+  background: var(--bg2); padding: var(--s3) var(--s4);
+  margin-bottom: var(--s3); }
+.finding.blocker { border-left-color: var(--red); }
+.finding.warn { border-left-color: var(--amber); }
+.finding.info { border-left-color: var(--blue); }
+.finding .f-head { display: flex; gap: var(--s2);
+  align-items: center; flex-wrap: wrap; }
+.finding .f-problem { font-weight: 600; flex: 1; min-width: 200px; }
+.finding .f-evidence { margin-top: var(--s2); }
+.fix-preview { border: 1px dashed var(--border);
+  border-radius: var(--r-md); padding: var(--s3);
+  margin-top: var(--s2); background: var(--bg); }
+
+/* ======================================================== flyout */
+#overlay { position: fixed; inset: 0; background: rgba(4,8,14,.55);
+  z-index: 90; display: none; }
+#overlay.show { display: block; }
+.flyout { position: fixed; top: 0; right: 0; height: 100vh;
+  width: min(460px, 94vw); background: var(--bg2);
+  border-left: 1px solid var(--border); z-index: 95;
+  box-shadow: var(--shadow); transform: translateX(102%);
+  transition: transform .18s ease-out; display: flex;
+  flex-direction: column; }
+.flyout.show { transform: translateX(0); }
+.flyout-head { display: flex; align-items: center; gap: var(--s2);
+  padding: var(--s4); border-bottom: 1px solid var(--border); }
+.flyout-head h2 { margin: 0; flex: 1; }
+.flyout-body { flex: 1; overflow-y: auto; padding: var(--s4); }
+.flyout-foot { padding: var(--s3) var(--s4);
+  border-top: 1px solid var(--border); display: flex;
+  gap: var(--s2); justify-content: flex-end; }
+
+/* ======================================================== modal */
+.modal-wrap { position: fixed; inset: 0; z-index: 96;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(4,8,14,.55); }
+.modal { background: var(--bg2); border: 1px solid var(--border);
+  border-radius: var(--r-lg); box-shadow: var(--shadow);
+  padding: var(--s4); width: min(420px, 92vw); }
+.modal h2 { margin-top: 0; }
+
+/* ======================================================== drawer */
+#drawer { position: fixed; top: 0; right: 0; height: 100vh;
+  width: min(440px, 94vw); background: var(--bg2);
+  border-left: 1px solid var(--border); z-index: 80;
+  box-shadow: var(--shadow); transform: translateX(102%);
+  transition: transform .18s ease-out; display: flex;
+  flex-direction: column; }
+#drawer.show { transform: translateX(0); }
+.job-item { border: 1px solid var(--border-soft);
+  border-radius: var(--r-md); margin-bottom: var(--s2);
+  overflow: hidden; }
+.job-head { display: flex; align-items: center; gap: var(--s2);
+  padding: var(--s2) var(--s3); cursor: pointer;
+  background: var(--bg3); font-size: var(--fs-md);
+  font-weight: 600; }
+.job-head:hover { background: var(--bg4); }
+.job-log { font-family: var(--mono); font-size: var(--fs-xs);
+  background: var(--bg); color: var(--muted);
+  max-height: 220px; overflow-y: auto; padding: var(--s2) var(--s3);
+  white-space: pre-wrap; word-break: break-word; display: none; }
+.job-item.open .job-log { display: block; }
+
+/* ======================================================== ds view */
+.health-dot { display: inline-block; width: 8px; height: 8px;
+  border-radius: 50%; margin-right: 5px; background: var(--faint);
+  vertical-align: baseline; }
+.health-dot.ok { background: var(--green); }
+.health-dot.err { background: var(--red); }
+.health-dot.warn { background: var(--amber); }
+
+/* ======================================================== editor */
+.editor-wrap { position: relative; }
+.ac { position: absolute; left: 0; right: 0; top: 100%;
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: var(--r-sm); box-shadow: var(--shadow);
+  z-index: 50; max-height: 200px; overflow-y: auto; display: none; }
+.ac.show { display: block; }
+.ac button { display: block; width: 100%; text-align: left;
+  background: none; border: 0; color: var(--text);
+  font-family: var(--mono); font-size: var(--fs-sm);
+  padding: 5px 10px; cursor: pointer; }
+.ac button:hover, .ac button.sel { background: var(--accent-dim);
+  color: var(--accent); }
+
+/* ======================================================== chat */
+#chatlog { max-height: 52vh; overflow-y: auto; padding: var(--s1); }
+.msg { max-width: 82%; margin: var(--s2) 0; padding: 9px 13px;
+  border-radius: 10px; white-space: pre-wrap;
+  word-break: break-word; font-size: var(--fs-md); }
 .msg.user { background: var(--accent-dim); margin-left: auto; }
 .msg.assistant { background: var(--bg3); }
-.msg pre { margin: 8px 0; }
+.msg pre { margin: var(--s2) 0; }
 
-#toasts { position: fixed; right: 18px; bottom: 18px; z-index: 100;
-  display: flex; flex-direction: column; gap: 8px; max-width: 420px; }
+/* ======================================================== toasts */
+#toasts { position: fixed; right: var(--s4); bottom: var(--s4);
+  z-index: 100; display: flex; flex-direction: column;
+  gap: var(--s2); max-width: 420px; }
 .toast { background: var(--bg2); border: 1px solid var(--border);
-  border-left: 4px solid var(--accent); border-radius: 8px;
-  padding: 10px 14px; box-shadow: var(--shadow); font-size: 13px;
-  word-break: break-word; }
+  border-left: 4px solid var(--accent); border-radius: var(--r-md);
+  padding: 10px 14px; box-shadow: var(--shadow);
+  font-size: var(--fs-md); word-break: break-word; }
 .toast.err { border-left-color: var(--red); }
 .toast.ok { border-left-color: var(--green); }
-
-.backlink { font-size: 12.5px; display: inline-block;
-  margin-bottom: 8px; }
-.checkbox-row { display: flex; gap: 8px; align-items: center;
-  padding: 6px 4px; border-bottom: 1px solid var(--border); }
-.checkbox-row input { width: auto; }
-.right { text-align: right; }
 </style>
 </head>
 <body>
@@ -282,23 +607,26 @@ pre {
       </div>
     </div>
     <nav class="nav" id="nav">
-      <a href="#/setup" data-r="setup"><span class="ico">&#9881;</span>
-        Setup</a>
-      <a href="#/dashboards" data-r="dashboards">
-        <span class="ico">&#9638;</span> Dashboards</a>
-      <a href="#/convert" data-r="convert"><span class="ico">&#8635;
-        </span> Convert &amp; Package</a>
-      <a href="#/test" data-r="test"><span class="ico">&#10003;</span>
-        Validate &amp; Test</a>
-      <a href="#/import" data-r="import"><span class="ico">&#8682;
-        </span> Import</a>
-      <a href="#/changes" data-r="changes"><span class="ico">&#916;
-        </span> Changes</a>
-      <a href="#/ai" data-r="ai"><span class="ico">&#10024;</span>
-        AI Assistant</a>
+      <div class="nav-sec">Migrate</div>
+      <a href="#/overview" data-r="overview">
+        <span class="ico">&#9638;</span> Overview
+        <span class="cnt" id="nav-cnt"></span></a>
+      <a href="#/connect" data-r="connect">
+        <span class="ico">&#9096;</span> Connect</a>
+      <a href="#/convert" data-r="convert">
+        <span class="ico">&#8635;</span> Fetch &amp; Convert</a>
+      <a href="#/datasources" data-r="datasources">
+        <span class="ico">&#9723;</span> Datasources</a>
+      <a href="#/import" data-r="import">
+        <span class="ico">&#8682;</span> Import</a>
+      <div class="nav-sec">Review</div>
+      <a href="#/changes" data-r="changes">
+        <span class="ico">&#916;</span> Changes</a>
+      <a href="#/ai" data-r="ai">
+        <span class="ico">&#10024;</span> AI Assistant</a>
     </nav>
     <div class="sidebar-foot">
-      Local only &mdash; API keys stay in server memory,<br>
+      Local only &mdash; API keys stay in server memory,
       never written to disk.
     </div>
   </aside>
@@ -311,24 +639,49 @@ pre {
         Grafana</span>
       <span class="pill" id="pill-ai"><span class="dot"></span>
         AI</span>
-      <span class="pill" id="themebtn" title="Theme">
-        <span id="themelbl">Auto</span></span>
+      <button class="pill" id="jobsbtn" type="button"
+        title="Background jobs" aria-label="Background jobs">
+        <span class="spin"></span>Jobs
+        <span id="jobscount"></span></button>
+      <button class="pill" id="themebtn" type="button" title="Theme">
+        <span id="themelbl">Auto</span></button>
     </header>
     <main id="view"></main>
   </div>
 </div>
+<div id="drawer" role="dialog" aria-label="Background jobs">
+  <div class="flyout-head"><h2>Background jobs</h2>
+    <button class="btn small ghost" id="drawer-close"
+      aria-label="Close">&#10005;</button></div>
+  <div class="flyout-body" id="drawer-body"></div>
+</div>
+<div id="overlay"></div>
+<div id="flyout-slot"></div>
+<div id="modal-slot"></div>
 <div id="toasts"></div>
 <script>
 'use strict';
 
-/* ------------------------------------------------------ utilities */
-var App = { state: null, dashboards: [], expanded: {}, ai: [],
-            aiBusy: false, timers: [] };
+/* ====================================================== state */
+var App = {
+  state: null,           /* /api/state payload */
+  dashboards: [],        /* /api/dashboards rows */
+  expanded: {},          /* slug:panel -> open */
+  ai: [], aiBusy: false,
+  timers: [],            /* view-local intervals (cleared on route) */
+  ws: null,              /* current workspace {slug, detail, tab} */
+  dsHealth: {},          /* ds uid -> {status,message} */
+  templates: null        /* /api/grafana/ds-templates cache */
+};
 
+var Jobs = { items: [], open: false };
+
+/* ====================================================== utils */
 function esc(s) {
   return String(s == null ? '' : s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 function $(sel, el) { return (el || document).querySelector(sel); }
@@ -340,7 +693,9 @@ function $all(sel, el) {
 async function api(path, body, method) {
   var opt = { method: method || (body === undefined ? 'GET' : 'POST'),
               headers: { 'Content-Type': 'application/json' } };
-  if (body !== undefined) opt.body = JSON.stringify(body);
+  if (body !== undefined && method !== 'DELETE') {
+    opt.body = JSON.stringify(body);
+  }
   var res;
   try { res = await fetch(path, opt); }
   catch (e) {
@@ -358,6 +713,7 @@ async function api(path, body, method) {
 function toast(msg, kind) {
   var el = document.createElement('div');
   el.className = 'toast ' + (kind || '');
+  el.setAttribute('role', 'status');
   el.textContent = msg;
   $('#toasts').appendChild(el);
   setTimeout(function () { el.remove(); },
@@ -370,43 +726,146 @@ function busy(btn, on) {
   btn.classList.toggle('busy', !!on);
 }
 
-/* Poll a job id; onUpdate(job) each tick; resolves with the job when
-   done, rejects on error status. */
-function pollJob(id, onUpdate) {
+function fmtNum(v) {
+  if (v == null || !isFinite(v)) return '&ndash;';
+  var a = Math.abs(v);
+  if (a >= 1e12) return (v / 1e12).toFixed(1) + 'T';
+  if (a >= 1e9) return (v / 1e9).toFixed(1) + 'B';
+  if (a >= 1e6) return (v / 1e6).toFixed(1) + 'M';
+  if (a >= 1e4) return (v / 1e3).toFixed(1) + 'k';
+  if (a >= 100) return String(Math.round(v));
+  if (a >= 1) return String(Math.round(v * 100) / 100);
+  if (a === 0) return '0';
+  return v.toPrecision(3);
+}
+
+function debounce(fn, ms) {
+  var t = null;
+  return function () {
+    var args = arguments, self = this;
+    clearTimeout(t);
+    t = setTimeout(function () { fn.apply(self, args); }, ms);
+  };
+}
+
+/* ====================================================== jobs */
+function renderJobsBtn() {
+  var running = Jobs.items.filter(function (j) {
+    return j.status === 'running'; }).length;
+  var btn = $('#jobsbtn');
+  btn.classList.toggle('running', running > 0);
+  $('#jobscount').textContent = running ? '(' + running + ')' : '';
+}
+
+function renderDrawer() {
+  var body = $('#drawer-body');
+  if (!Jobs.items.length) {
+    body.innerHTML = '<div class="empty">No background jobs yet.' +
+      '<br>Long operations (fetch, convert, tests, parity, ' +
+      'diagnose, heal) appear here with their live logs.</div>';
+    return;
+  }
+  body.innerHTML = Jobs.items.map(function (j, i) {
+    var st = j.status === 'running' ?
+      '<span class="chip info">running</span>' :
+      j.status === 'error' ? '<span class="chip err">error</span>' :
+      '<span class="chip ok">done</span>';
+    return '<div class="job-item' + (j.open ? ' open' : '') +
+      '" data-ji="' + i + '">' +
+      '<div class="job-head" role="button" tabindex="0">' +
+      '<span>' + esc(j.kind) + '</span>' + st +
+      '<span class="kv" style="margin-left:auto">' +
+      esc(j.started) + '</span></div>' +
+      '<div class="job-log">' + esc((j.log || []).join('\n') ||
+      '(no output yet)') +
+      (j.error ? '\nERROR: ' + esc(j.error) : '') + '</div></div>';
+  }).join('');
+  $all('.job-head', body).forEach(function (h) {
+    var toggle = function () {
+      var it = Jobs.items[+h.parentNode.getAttribute('data-ji')];
+      if (it) { it.open = !it.open; renderDrawer(); }
+    };
+    h.onclick = toggle;
+    h.onkeydown = function (ev) {
+      if (ev.key === 'Enter' || ev.key === ' ') {
+        ev.preventDefault(); toggle();
+      }
+    };
+  });
+  $all('.job-item.open .job-log', body).forEach(function (el) {
+    el.scrollTop = el.scrollHeight;
+  });
+}
+
+function openDrawer(open) {
+  Jobs.open = open === undefined ? !Jobs.open : !!open;
+  $('#drawer').classList.toggle('show', Jobs.open);
+  if (Jobs.open) renderDrawer();
+}
+
+/* Start a server job and poll it. onUpdate(job) per tick. The poll
+   is intentionally NOT registered in App.timers: jobs keep running
+   and logging into the drawer across navigation. */
+async function startJob(kind, path, body, onUpdate) {
+  var r = await api(path, body || {});
+  var j = { id: r.job, kind: kind, status: 'running', log: [],
+            result: null, error: '', open: Jobs.open,
+            started: new Date().toTimeString().slice(0, 8) };
+  Jobs.items.unshift(j);
+  if (Jobs.items.length > 20) Jobs.items.length = 20;
+  renderJobsBtn(); if (Jobs.open) renderDrawer();
   return new Promise(function (resolve, reject) {
     var t = setInterval(async function () {
       var job;
-      try { job = await api('/api/jobs/' + id); }
-      catch (e) { clearInterval(t); reject(e); return; }
-      if (onUpdate) onUpdate(job);
+      try { job = await api('/api/jobs/' + j.id); }
+      catch (e) {
+        clearInterval(t);
+        j.status = 'error'; j.error = e.message;
+        renderJobsBtn(); if (Jobs.open) renderDrawer();
+        reject(e); return;
+      }
+      j.log = job.log || []; j.status = job.status;
+      j.result = job.result; j.error = job.error || '';
+      if (onUpdate) { try { onUpdate(job); } catch (e) {} }
+      renderJobsBtn(); if (Jobs.open) renderDrawer();
       if (job.status === 'done') { clearInterval(t); resolve(job); }
       else if (job.status === 'error') {
         clearInterval(t);
         reject(new Error(job.error || 'job failed'));
       }
     }, 700);
-    App.timers.push(t);
   });
 }
 
 function logInto(el) {
   return function (job) {
-    if (!el) return;
+    if (!el || !el.isConnected) return;
     el.classList.add('show');
     el.textContent = (job.log || []).join('\n');
     el.scrollTop = el.scrollHeight;
   };
 }
 
-async function runJob(path, body, logEl) {
-  var r = await api(path, body || {});
-  return pollJob(r.job, logInto(logEl));
-}
-
-/* ------------------------------------------------------ chips */
+/* ====================================================== chips */
 var CONF_CLS = { exact: 'ok', approximate: 'info',
                  'needs-review': 'warn', untranslatable: 'err' };
 var TEST_CLS = { data: 'ok', 'no-data': 'warn', error: 'err' };
+var VERDICT_CLS = { match: 'ok', close: 'info',
+                    'value-mismatch': 'warn',
+                    'shape-mismatch': 'warn', 'nr-empty': 'dim',
+                    'gf-empty': 'warn', 'both-empty': 'dim',
+                    'nr-error': 'err', 'gf-error': 'err' };
+var SEV_CLS = { blocker: 'err', warn: 'warn', info: 'info' };
+var SEV_ORDER = { blocker: 0, warn: 1, info: 2 };
+var REVIEW_CLS = { confirmed: 'ok', rejected: 'err', unsure: 'dim' };
+var REVIEW_LBL = { confirmed: 'confirmed', rejected: 'rejected',
+                   unsure: 'not sure' };
+
+function chip(text, cls, title) {
+  return '<span class="chip ' + (cls || 'dim') + '"' +
+    (title ? ' title="' + esc(title) + '"' : '') + '>' +
+    esc(text) + '</span>';
+}
 
 function confChips(counts) {
   var order = ['exact', 'approximate', 'needs-review',
@@ -414,37 +873,340 @@ function confChips(counts) {
   var html = '';
   order.forEach(function (k) {
     if (counts && counts[k]) {
-      html += '<span class="chip ' + CONF_CLS[k] + '">' + counts[k] +
-              ' ' + esc(k) + '</span>';
+      html += chip(counts[k] + ' ' + k, CONF_CLS[k]);
     }
   });
-  return html || '<span class="chip dim">no panels</span>';
+  return html || chip('no panels', 'dim');
 }
 
-function confChip(c) {
-  return '<span class="chip ' + (CONF_CLS[c] || 'dim') + '">' +
-         esc(c || '?') + '</span>';
-}
+function confChip(c) { return chip(c || '?', CONF_CLS[c] || 'dim'); }
 
 function testChip(s) {
-  if (!s) return '<span class="chip dim">not tested</span>';
-  return '<span class="chip ' + (TEST_CLS[s] || 'dim') + '">' +
-         esc(s) + '</span>';
+  if (!s) return chip('not tested', 'dim');
+  return chip(s, TEST_CLS[s] || 'dim');
+}
+
+function verdictChip(v, ratio, detail) {
+  if (!v) return chip('no parity', 'dim');
+  var label = v;
+  if (ratio != null && isFinite(ratio) && v !== 'match') {
+    label += ' (x' + fmtRatio(ratio) + ')';
+  }
+  return chip(label, VERDICT_CLS[v] || 'dim', detail || '');
+}
+
+function fmtRatio(r) {
+  if (r >= 100) return String(Math.round(r));
+  if (r >= 10) return r.toFixed(1);
+  return r.toFixed(2);
+}
+
+function sevChip(s) { return chip(s || 'info', SEV_CLS[s] || 'info'); }
+
+function reviewChip(v, note) {
+  if (!v) return '';
+  return chip(REVIEW_LBL[v] || v, REVIEW_CLS[v] || 'dim', note || '');
+}
+
+/* Worst human verdict across a panel's targets (for the row badge):
+   rejected > unsure > confirmed. */
+function worstReview(rmap) {
+  var worst = '';
+  Object.keys(rmap || {}).forEach(function (k) {
+    var v = (rmap[k] || {}).verdict;
+    if (v === 'rejected') worst = 'rejected';
+    else if (v === 'unsure' && worst !== 'rejected') worst = 'unsure';
+    else if (v === 'confirmed' && !worst) worst = 'confirmed';
+  });
+  return worst;
 }
 
 function dsChips(list) {
   return (list || []).filter(Boolean).map(function (d) {
-    return '<span class="chip info">' + esc(d) + '</span>';
-  }).join('') || '<span class="chip dim">none</span>';
+    return chip(d, 'info');
+  }).join('') || chip('none', 'dim');
 }
 
-/* ------------------------------------------------------ state/pills */
+/* ====================================================== ring */
+function ring(score, grade, size) {
+  size = size || 64;
+  var stroke = size >= 56 ? 5 : 4;
+  var r = (size - stroke * 2) / 2;
+  var c = 2 * Math.PI * r;
+  var have = score != null && isFinite(score);
+  var pct = have ? Math.max(0, Math.min(100, score)) / 100 : 0;
+  var cls = !have ? 'dim' :
+    grade === 'ready' ? 'ok' :
+    grade === 'almost' ? 'warn' :
+    grade === 'blocked' ? 'err' :
+    score >= 90 ? 'ok' : score >= 60 ? 'warn' : 'err';
+  var mid = size / 2;
+  return '<div class="ring ' + cls + '" role="img" aria-label="' +
+    'readiness ' + (have ? Math.round(score) : 'unknown') +
+    '" style="width:' + size + 'px;height:' + size + 'px">' +
+    '<svg width="' + size + '" height="' + size + '" viewBox="0 0 ' +
+    size + ' ' + size + '">' +
+    '<circle class="track" cx="' + mid + '" cy="' + mid + '" r="' +
+    r + '" stroke-width="' + stroke + '"></circle>' +
+    '<circle class="arc" cx="' + mid + '" cy="' + mid + '" r="' + r +
+    '" stroke-width="' + stroke + '" stroke-dasharray="' +
+    (c * pct).toFixed(1) + ' ' + c.toFixed(1) + '"></circle>' +
+    '</svg><div class="ring-num" style="font-size:' +
+    Math.max(11, Math.round(size / 4)) + 'px">' +
+    (have ? Math.round(score) : '&ndash;') + '</div></div>';
+}
+
+/* ====================================================== sparkline */
+function normPts(arr) {
+  var out = [];
+  (arr || []).forEach(function (p) {
+    if (Array.isArray(p) && p.length >= 2) {
+      var t = Number(p[0]), v = Number(p[1]);
+      if (isFinite(t) && isFinite(v)) out.push([t, v]);
+    } else if (typeof p === 'number' && isFinite(p)) {
+      out.push([out.length, p]);
+    }
+  });
+  return out;
+}
+
+/* Points arrays may live in several places depending on how the
+   parity report was generated; try them all, defensively. */
+function pickPoints(row, side) {
+  if (!row) return null;
+  var direct = row[side + '_points'];
+  if (Array.isArray(direct)) {
+    var d = normPts(direct);
+    if (d.length) return d;
+  }
+  var s = row[side + '_summary'];
+  if (s && typeof s === 'object') {
+    if (Array.isArray(s.points)) {
+      var p = normPts(s.points);
+      if (p.length) return p;
+    }
+    if (Array.isArray(s.sample)) {
+      var q = normPts(s.sample);
+      if (q.length) return q;
+    }
+    if (Array.isArray(s.series) && s.series.length &&
+        s.series[0] && Array.isArray(s.series[0].points)) {
+      var r = normPts(s.series[0].points);
+      if (r.length) return r;
+    }
+  }
+  return null;
+}
+
+function sparkline(points, opts) {
+  opts = opts || {};
+  var w = opts.w || 170, h = opts.h || 40, pad = 3;
+  if (!points || !points.length) {
+    return '<div class="spark-empty">no data points</div>';
+  }
+  var xs = points.map(function (p) { return p[0]; });
+  var ys = points.map(function (p) { return p[1]; });
+  var x0 = Math.min.apply(null, xs), x1 = Math.max.apply(null, xs);
+  var y0 = Math.min.apply(null, ys), y1 = Math.max.apply(null, ys);
+  if (x1 === x0) { x1 = x0 + 1; }
+  if (y1 === y0) { y0 -= 1; y1 += 1; }
+  var pts = points.map(function (p) {
+    var x = pad + (p[0] - x0) / (x1 - x0) * (w - pad * 2);
+    var y = h - pad - (p[1] - y0) / (y1 - y0) * (h - pad * 2);
+    return x.toFixed(1) + ',' + y.toFixed(1);
+  }).join(' ');
+  var last = points[points.length - 1][1];
+  var single = points.length === 1;
+  return '<div class="spark">' +
+    '<svg viewBox="0 0 ' + w + ' ' + h + '" height="' + h +
+    '" preserveAspectRatio="none" role="img" aria-label="' +
+    points.length + ' points, last value ' + esc(fmtNum(last)) +
+    '">' +
+    (single ?
+      '<circle cx="' + (w / 2) + '" cy="' + (h / 2) +
+      '" r="3" fill="currentColor" opacity=".85"></circle>' :
+      '<polyline fill="none" stroke="currentColor" ' +
+      'stroke-width="1.6" stroke-linejoin="round" ' +
+      'stroke-linecap="round" opacity=".85" points="' + pts +
+      '"></polyline>') +
+    '</svg><span class="last">' + fmtNum(last) + '</span></div>';
+}
+
+function statStrip(sum) {
+  sum = sum || {};
+  var cells = [
+    ['series', sum.series], ['points', sum.points],
+    ['min', sum.min], ['mean', sum.mean], ['max', sum.max],
+    ['last', sum.last]];
+  var html = cells.filter(function (c) {
+    return c[1] != null;
+  }).map(function (c) {
+    return '<div class="st"><div class="v">' + fmtNum(c[1]) +
+      '</div><div class="k">' + esc(c[0]) + '</div></div>';
+  }).join('');
+  return html ? '<div class="statstrip">' + html + '</div>' : '';
+}
+
+/* One side (NR or Grafana) of the side-by-side comparison. */
+function sideCard(title, row, side) {
+  var body;
+  if (!row) {
+    body = '<div class="spark-empty">run Parity to compare' +
+      '</div>';
+  } else {
+    var verdict = row.verdict || '';
+    var errHere = verdict === side + '-error';
+    if (errHere) {
+      body = '<div class="spark-err">' + esc(row.detail || 'error') +
+        '</div>';
+    } else {
+      var pts = pickPoints(row, side);
+      var sum = row[side + '_summary'] || {};
+      if (pts && pts.length > 1) {
+        body = sparkline(pts) + statStrip(sum);
+      } else if (pts && pts.length === 1) {
+        body = '<div class="statstrip"><div class="st">' +
+          '<div class="v" style="font-size:18px">' +
+          fmtNum(pts[0][1]) + '</div>' +
+          '<div class="k">value</div></div></div>' + statStrip(sum);
+      } else if (sum.points) {
+        body = statStrip(sum);
+      } else {
+        body = '<div class="spark-empty">no data</div>';
+      }
+    }
+  }
+  return '<div class="side-card"><div class="side-head">' +
+    esc(title) + '</div>' + body + '</div>';
+}
+
+/* ============================================== raw samples */
+function fmtTs(t) {
+  if (t == null || !isFinite(t)) return '';
+  var d = new Date(t > 1e11 ? t : t * 1000);
+  if (isNaN(d.getTime())) return '';
+  return d.toISOString().replace('T', ' ').slice(5, 19);
+}
+
+function sampleLogsHtml(samples) {
+  return '<div class="sample-lines">' +
+    (samples || []).map(function (s) {
+      return '<div>' + (s.ts ? '<span class="ts">' + esc(s.ts) +
+        '</span>' : '') + esc(s.line || '') + '</div>';
+    }).join('') + '</div>';
+}
+
+function sampleEventsHtml(samples) {
+  return '<div class="sample-lines">' +
+    (samples || []).map(function (r) {
+      var ts = r.timestamp != null ? fmtTs(Number(r.timestamp)) : '';
+      var line;
+      if (r.message != null) {
+        line = String(r.message);
+      } else {
+        line = Object.keys(r).filter(function (k) {
+          return k !== 'timestamp';
+        }).map(function (k) {
+          return k + '=' + r[k];
+        }).join(' ');
+      }
+      return '<div>' + (ts ? '<span class="ts">' + esc(ts) +
+        '</span>' : '') + esc(line) + '</div>';
+    }).join('') + '</div>';
+}
+
+function samplePointsHtml(seriesList) {
+  return (seriesList || []).map(function (s) {
+    var lbl = Object.keys(s.labels || {}).map(function (k) {
+      return k + '=' + s.labels[k];
+    }).join(', ');
+    var rows = (s.points || []).map(function (p) {
+      return '<tr><td class="kv">' + esc(fmtTs(p[0])) +
+        '</td><td class="mono">' + fmtNum(p[1]) + '</td></tr>';
+    }).join('');
+    return (lbl ? '<div class="kv mono">' + esc(lbl) + '</div>' :
+      '') + '<table class="sample-tbl"><tbody>' + rows +
+      '</tbody></table>';
+  }).join('');
+}
+
+function sampleRowsHtml(frames) {
+  return (frames || []).map(function (f) {
+    var head = (f.fields || []).map(function (n) {
+      return '<th>' + esc(n) + '</th>'; }).join('');
+    var rows = (f.rows || []).map(function (r) {
+      return '<tr>' + r.map(function (v) {
+        return '<td class="mono">' + esc(v == null ? '' : v) +
+          '</td>';
+      }).join('') + '</tr>';
+    }).join('');
+    return '<div class="tablewrap"><table class="sample-tbl">' +
+      '<thead><tr>' + head + '</tr></thead><tbody>' + rows +
+      '</tbody></table></div>';
+  }).join('');
+}
+
+/* One side (NR or Grafana) of the raw-sample comparison. */
+function sampleCard(title, side) {
+  var body, kindChip = '';
+  if (!side) {
+    body = '<div class="spark-empty">no samples pulled yet</div>';
+  } else {
+    kindChip = ' ' + chip(side.kind || '?', 'dim');
+    var samples = side.samples || [];
+    if (side.kind === 'error') {
+      body = '<div class="spark-err">' + esc(side.error || 'error') +
+        '</div>';
+    } else if (!samples.length) {
+      body = '<div class="spark-empty">' +
+        esc(side.error || 'no data in this range') + '</div>';
+    } else if (side.kind === 'logs') {
+      body = sampleLogsHtml(samples);
+    } else if (side.kind === 'events') {
+      body = sampleEventsHtml(samples);
+    } else if (side.kind === 'points') {
+      body = samplePointsHtml(samples);
+    } else if (side.kind === 'rows' && samples[0] &&
+               samples[0].fields) {
+      body = sampleRowsHtml(samples);
+    } else {
+      body = sampleEventsHtml(samples);
+    }
+  }
+  return '<div class="side-card"><div class="side-head">' +
+    esc(title) + kindChip + '</div>' + body + '</div>';
+}
+
+/* "Is this what you expect?" confirm/reject bar under the samples. */
+function signoffHtml(pid, ref, rv) {
+  var current = rv ?
+    '<span style="margin-left:auto">' +
+    reviewChip(rv.verdict, rv.note) +
+    '</span>' : '';
+  return '<div class="signoff">' +
+    '<span class="q">Is this what you expect?</span>' +
+    btnA('rv-confirmed', pid, ref, 'Confirm',
+         rv && rv.verdict === 'confirmed' ? 'primary' : '') +
+    btnA('rv-rejected', pid, ref, 'Reject', 'danger') +
+    btnA('rv-unsure', pid, ref, 'Not sure') +
+    '<input id="rvnote-' + pid + '-' + ref + '" placeholder=' +
+    '"optional note (what is wrong / what you checked)" ' +
+    'autocomplete="off" value="' + esc((rv && rv.note) || '') +
+    '">' + current + '</div>';
+}
+
+/* ====================================================== state/pills */
 async function refreshState() {
   try {
     App.state = await api('/api/state');
     renderPills();
     var v = $('#verline');
     if (v && App.state.version) v.textContent = 'v' + App.state.version;
+    var c = $('#nav-cnt');
+    if (c) {
+      var n = (App.state.db || {}).dashboards || 0;
+      c.textContent = n ? String(n) : '';
+    }
   } catch (e) { /* server briefly busy; keep old state */ }
 }
 
@@ -470,60 +1232,310 @@ function renderPills() {
           'key set' : 'no Anthropic key configured'));
 }
 
-/* ------------------------------------------------------ router */
-var VIEWS = { setup: vSetup, dashboards: vDashboards,
-              convert: vConvert, test: vTest, import: vImport,
-              changes: vChanges, ai: vAI };
+/* ====================================================== router */
+var VIEWS = { overview: vOverview, connect: vConnect,
+              convert: vConvert, datasources: vDatasources,
+              import: vImport, changes: vChanges, ai: vAI };
+var ALIASES = { setup: 'connect', dashboards: 'overview',
+                test: 'overview' };
 
 function crumb(text) { $('#crumb').textContent = text; }
 
 async function route() {
   App.timers.forEach(clearInterval); App.timers = [];
+  closeFlyout(); closeModal();
   var h = location.hash.replace(/^#\/?/, '');
   if (!h) {
     h = (App.state && App.state.db &&
-         App.state.db.dashboards > 0) ? 'dashboards' : 'setup';
+         App.state.db.dashboards > 0) ? 'overview' : 'connect';
   }
   var parts = h.split('/');
-  var name = parts[0] || 'setup';
+  var name = parts[0] || 'overview';
+  var slug = '', tab = '';
+  if (ALIASES[name]) {
+    if (name === 'dashboards' && parts[1]) {
+      name = 'dash'; slug = decodeURIComponent(parts[1]);
+    } else { name = ALIASES[name]; }
+  } else if (name === 'dash' && parts[1]) {
+    slug = decodeURIComponent(parts[1]);
+    tab = parts[2] || 'panels';
+  }
+  var navKey = name === 'dash' ? 'overview' : name;
   $all('#nav a').forEach(function (a) {
-    a.classList.toggle('active', a.getAttribute('data-r') === name ||
-      (name === 'dashboards' && parts[1] &&
-       a.getAttribute('data-r') === 'dashboards'));
+    a.classList.toggle('active', a.getAttribute('data-r') === navKey);
   });
   var view = $('#view');
   try {
-    if (name === 'dashboards' && parts[1]) {
-      await vDetail(view, decodeURIComponent(parts[1]));
+    if (name === 'dash' && slug) {
+      await vWorkspace(view, slug, tab);
     } else {
-      await (VIEWS[name] || vSetup)(view);
+      await (VIEWS[name] || vOverview)(view);
     }
   } catch (e) {
-    view.innerHTML = '<div class="empty"><b>Something went wrong'
-      + '</b><br>' + esc(e.message) + '</div>';
+    view.innerHTML = '<div class="empty"><b>Something went wrong' +
+      '</b><br>' + esc(e.message) + '</div>';
   }
 }
 
-/* ====================================================== SETUP */
-async function vSetup(view) {
-  crumb('Setup');
+/* ====================================================== flyout */
+function openFlyout(title, bodyHtml, footHtml) {
+  closeFlyout();
+  var slot = $('#flyout-slot');
+  slot.innerHTML = '<div class="flyout" role="dialog" aria-label="' +
+    esc(title) + '"><div class="flyout-head"><h2>' + esc(title) +
+    '</h2><button class="btn small ghost" id="fly-close" ' +
+    'aria-label="Close">&#10005;</button></div>' +
+    '<div class="flyout-body">' + bodyHtml + '</div>' +
+    (footHtml ? '<div class="flyout-foot">' + footHtml + '</div>'
+              : '') + '</div>';
+  $('#overlay').classList.add('show');
+  var fly = $('.flyout', slot);
+  requestAnimationFrame(function () { fly.classList.add('show'); });
+  $('#fly-close').onclick = closeFlyout;
+  $('#overlay').onclick = closeFlyout;
+  return fly;
+}
+
+function closeFlyout() {
+  $('#flyout-slot').innerHTML = '';
+  $('#overlay').classList.remove('show');
+}
+
+/* ====================================================== modal */
+function closeModal() { $('#modal-slot').innerHTML = ''; }
+
+/* Typed-confirm destructive action. resolve(true) only when the user
+   typed `expect` exactly and confirmed. */
+function typedConfirm(opts) {
+  return new Promise(function (resolve) {
+    var slot = $('#modal-slot');
+    slot.innerHTML = '<div class="modal-wrap"><div class="modal">' +
+      '<h2>' + esc(opts.title || 'Are you sure?') + '</h2>' +
+      '<p class="kv">' + (opts.html || '') + '</p>' +
+      '<label>Type <b class="mono">' + esc(opts.expect) +
+      '</b> to confirm</label>' +
+      '<input id="tc-input" autocomplete="off" spellcheck="false">' +
+      '<div class="btnbar" style="justify-content:flex-end">' +
+      '<button class="btn" id="tc-cancel">Cancel</button>' +
+      '<button class="btn danger" id="tc-ok" disabled>' +
+      esc(opts.action || 'Delete') + '</button></div></div></div>';
+    var input = $('#tc-input'), ok = $('#tc-ok');
+    function done(v) { closeModal(); resolve(v); }
+    input.oninput = function () {
+      ok.disabled = input.value !== opts.expect;
+    };
+    input.onkeydown = function (ev) {
+      if (ev.key === 'Enter' && !ok.disabled) done(true);
+      if (ev.key === 'Escape') done(false);
+    };
+    ok.onclick = function () { done(true); };
+    $('#tc-cancel').onclick = function () { done(false); };
+    $('.modal-wrap', slot).onclick = function (ev) {
+      if (ev.target === this) done(false);
+    };
+    input.focus();
+  });
+}
+
+/* ====================================================== stepper */
+function stepStates(d) {
+  var s = App.state || {}, st = (s.status || {});
+  var out = {};
+  out.connect = st.grafana === 'ok' ?
+    (st.newrelic === 'error' ? 'attn' : 'done') :
+    st.grafana === 'error' ? 'blocked' : 'attn';
+  out.fetch = d ? 'done' : 'todo';
+  out.convert = d ? 'done' : 'todo';
+  var check = ((d || {}).check || {}).items || [];
+  if (!check.length) { out.datasources = 'todo'; }
+  else {
+    var missing = check.some(function (i) {
+      return i.status === 'missing'; });
+    var warn = check.some(function (i) { return i.status !== 'ok'; });
+    out.datasources = missing ? 'blocked' : warn ? 'attn' : 'done';
+  }
+  var ts = ((d || {}).datatest || {}).summary || {};
+  if (!Object.keys(ts).length) { out.validate = 'todo'; }
+  else if (ts.error) { out.validate = 'blocked'; }
+  else if (ts['no-data']) { out.validate = 'attn'; }
+  else { out.validate = 'done'; }
+  var fs = ((d || {}).diagnosis || {}).summary || {};
+  if (!(d || {}).diagnosis) { out.fix = 'todo'; }
+  else if (fs.blocker) { out.fix = 'blocked'; }
+  else if (fs.warn) { out.fix = 'attn'; }
+  else { out.fix = 'done'; }
+  var imported = ((d || {}).changes || []).some(function (c) {
+    return c.action === 'import' || c.action === 'dashboard-updated';
+  });
+  out.import = imported ? 'done' : 'todo';
+  var par = (d || {}).parity;
+  out.verify = !par ? 'todo' :
+    par.score >= 90 ? 'done' : par.score >= 60 ? 'attn' : 'blocked';
+  out.download = (out.verify === 'done' ||
+                  (out.verify === 'attn' && out.fix !== 'blocked')) ?
+    'done' : 'todo';
+  return out;
+}
+
+function stepper(slug, d, activeKey) {
+  var base = '#/dash/' + encodeURIComponent(slug);
+  var steps = [
+    ['connect', 'Connect', '#/connect'],
+    ['fetch', 'Fetch', '#/convert'],
+    ['convert', 'Convert', '#/convert'],
+    ['datasources', 'Datasources', '#/datasources'],
+    ['validate', 'Validate', base],
+    ['fix', 'Fix', base + '/diagnostics'],
+    ['import', 'Import', base + '/verify'],
+    ['verify', 'Verify', base + '/verify'],
+    ['download', 'Download', base + '/verify']
+  ];
+  var states = stepStates(d);
+  var titles = { done: 'done', attn: 'needs attention',
+                 blocked: 'blocked', todo: 'not started' };
+  return '<div class="stepper" role="navigation" ' +
+    'aria-label="Migration steps">' +
+    steps.map(function (sp, i) {
+      var key = sp[0], state = states[key] || 'todo';
+      var mark = state === 'done' ? '&#10003;' :
+        state === 'blocked' ? '&#10007;' :
+        state === 'attn' ? '!' : String(i + 1);
+      return '<div class="step ' + state +
+        (key === activeKey ? ' active' : '') + '">' +
+        '<a href="' + sp[2] + '" title="' + esc(sp[1]) + ': ' +
+        titles[state] + '"><span class="bubble">' + mark +
+        '</span><span>' + esc(sp[1]) + '</span></a>' +
+        '<span class="bar"></span></div>';
+    }).join('') + '</div>';
+}
+
+/* ====================================================== OVERVIEW */
+function readinessOf(d) {
+  /* Approximate grade from the list payload (server-side readiness
+     is fetched per-slug in the workspace). */
+  var f = d.findings_summary || {};
+  var score = d.parity_score;
+  if (f.blocker) return { score: score, grade: 'blocked' };
+  if (score == null) return { score: null, grade: '' };
+  return { score: score,
+           grade: score >= 90 ? 'ready' :
+                  score >= 60 ? 'almost' : 'blocked' };
+}
+
+function primaryAction(d) {
+  var base = '#/dash/' + encodeURIComponent(d.slug);
+  var f = d.findings_summary || {};
+  var t = d.datatest_summary || {};
+  if (f.blocker) {
+    return { label: f.blocker + ' blocker' +
+             (f.blocker > 1 ? 's' : '') + ' &mdash; fix now',
+             href: base + '/diagnostics', cls: 'danger' };
+  }
+  if (!Object.keys(t).length) {
+    return { label: 'Run data tests', href: base, cls: 'primary' };
+  }
+  if (t.error) {
+    return { label: t.error + ' failing panel' +
+             (t.error > 1 ? 's' : '') + ' &mdash; open',
+             href: base, cls: 'primary' };
+  }
+  if (d.parity_score == null) {
+    return { label: 'Verify data parity', href: base + '/verify',
+             cls: 'primary' };
+  }
+  return { label: 'Verify &amp; download', href: base + '/verify',
+           cls: d.parity_score >= 60 ? 'armed' : '' };
+}
+
+async function vOverview(view) {
+  crumb('Overview');
+  view.innerHTML = '<h1>Overview</h1><p class="lead">Every ' +
+    'converted dashboard with its migration readiness.</p>' +
+    '<div id="ov-area"><div class="empty">Loading&hellip;</div>' +
+    '</div>';
+  var data = await api('/api/dashboards');
+  App.dashboards = data.dashboards || [];
+  var area = $('#ov-area');
+  if (!App.dashboards.length) {
+    area.innerHTML = '<div class="empty"><b>No dashboards yet.' +
+      '</b><br>1. <a href="#/connect">Connect</a> New Relic and ' +
+      'Grafana &middot; 2. <a href="#/convert">Fetch &amp; ' +
+      'Convert</a> your dashboards.<br>They will appear here with ' +
+      'readiness scores.</div>';
+    return;
+  }
+  var totals = { panels: 0, review: 0, blockers: 0 };
+  App.dashboards.forEach(function (d) {
+    totals.panels += d.panels || 0;
+    var c = d.confidence || {};
+    totals.review += (c['needs-review'] || 0) +
+      (c.untranslatable || 0);
+    totals.blockers += (d.findings_summary || {}).blocker || 0;
+  });
+  var cards = App.dashboards.map(function (d) {
+    var r = readinessOf(d);
+    var act = primaryAction(d);
+    var pchips = '';
+    var ps = d.parity_summary || {};
+    ['match', 'close', 'value-mismatch', 'gf-empty',
+     'gf-error'].forEach(function (k) {
+      if (ps[k]) pchips += chip(ps[k] + ' ' + k, VERDICT_CLS[k]);
+    });
+    var rs = d.review_summary || {};
+    if (rs.confirmed) {
+      pchips += chip(rs.confirmed + ' human-verified', 'ok',
+                     'panels confirmed by raw-sample review');
+    }
+    if (rs.rejected) {
+      pchips += chip(rs.rejected + ' rejected', 'err',
+                     'panels rejected in raw-sample review');
+    }
+    var url = '#/dash/' + encodeURIComponent(d.slug);
+    return '<div class="ov-card">' + ring(r.score, r.grade, 64) +
+      '<div class="ov-main">' +
+      '<div class="ov-title"><a href="' + url + '">' + esc(d.title) +
+      '</a></div>' +
+      '<div class="ov-sub">' + esc(d.slug) + ' &middot; ' +
+      (d.panels || 0) + ' panels</div>' +
+      '<div class="ov-chips">' + confChips(d.confidence) +
+      (pchips ? '<br>' + pchips : '') + '</div>' +
+      '<a class="btn small ' + act.cls + '" href="' + act.href +
+      '">' + act.label + '</a></div></div>';
+  }).join('');
+  area.innerHTML =
+    '<div class="cards-row">' +
+    '<div class="stat-card"><div class="num">' +
+    App.dashboards.length + '</div><div class="lbl">dashboards' +
+    '</div></div>' +
+    '<div class="stat-card"><div class="num">' + totals.panels +
+    '</div><div class="lbl">panels</div></div>' +
+    '<div class="stat-card"><div class="num">' + totals.review +
+    '</div><div class="lbl">need review</div></div>' +
+    '<div class="stat-card"><div class="num">' + totals.blockers +
+    '</div><div class="lbl">open blockers</div></div></div>' +
+    '<div class="ov-grid">' + cards + '</div>';
+}
+
+/* ====================================================== CONNECT */
+async function vConnect(view) {
+  crumb('Connect');
   var s = App.state || await api('/api/state');
   App.state = s;
   var ses = s.session;
   view.innerHTML =
-  '<h1>Setup</h1>' +
-  '<p class="lead">Connect New Relic (source), Grafana (target) and ' +
-  'optionally Claude for AI help.</p>' +
+  '<h1>Connect</h1>' +
+  '<p class="lead">Connect New Relic (source), Grafana (target) ' +
+  'and optionally Claude for AI help.</p>' +
   '<div class="sec-note">API keys are held in the server process ' +
-  'memory only. They are never written to the database, to disk, or ' +
-  'to logs, and are gone when the server stops.</div>' +
+  'memory only. They are never written to the database, to disk, ' +
+  'or to logs, and are gone when the server stops.</div>' +
   '<div class="grid2">' +
 
   '<div class="card"><h2>New Relic</h2>' +
-  '<label>User API key (NRAK-...)</label>' +
-  '<input type="password" id="su-nrkey" placeholder="' +
-    (ses.nr_key_set ? '**** key set' :
-     'NRAK-...') + '">' +
+  '<label>User API key (NRAK-&hellip;)</label>' +
+  '<input type="password" id="su-nrkey" autocomplete="off" ' +
+  'placeholder="' + (ses.nr_key_set ? '**** key set' : 'NRAK-...') +
+  '">' +
   '<label>Region</label>' +
   '<select id="su-region"><option' +
     (ses.nr_region === 'US' ? ' selected' : '') + '>US</option>' +
@@ -531,35 +1543,34 @@ async function vSetup(view) {
     '>EU</option></select>' +
   '<div class="btnbar">' +
   '<button class="btn primary" id="su-nr-save">Save</button>' +
-  '<button class="btn" id="su-nr-test">Test connection</button>' +
-  '<span class="kv" id="su-nr-status"></span></div>' +
-  '<div class="log" id="su-nr-log"></div></div>' +
+  '<button class="btn" id="su-nr-test">Test key</button></div>' +
+  '<div id="su-nr-out"></div></div>' +
 
   '<div class="card"><h2>Grafana</h2>' +
   '<label>URL</label>' +
-  '<input id="su-gfurl" placeholder="http://localhost:3000" value="' +
-    esc(ses.grafana_url) + '">' +
+  '<input id="su-gfurl" placeholder="http://localhost:3000" ' +
+  'value="' + esc(ses.grafana_url) + '">' +
   '<label>Service account token</label>' +
-  '<input type="password" id="su-gftoken" placeholder="' +
-    (ses.grafana_token_set ? '**** token set' :
-     'glsa_...') + '">' +
+  '<input type="password" id="su-gftoken" autocomplete="off" ' +
+  'placeholder="' + (ses.grafana_token_set ? '**** token set' :
+   'glsa_...') + '">' +
   '<div class="btnbar">' +
   '<button class="btn primary" id="su-gf-save">Save</button>' +
-  '<button class="btn" id="su-gf-test">Test connection</button>' +
-  '<span class="kv" id="su-gf-status"></span></div></div>' +
+  '<button class="btn" id="su-gf-test">Test token</button></div>' +
+  '<div id="su-gf-out"></div></div>' +
 
   '<div class="card"><h2>AI assistance (optional)</h2>' +
   '<label>Anthropic API key</label>' +
-  '<input type="password" id="su-aikey" placeholder="' +
-    (ses.anthropic_key_set ? '**** key set' :
-     'sk-ant-...') + '">' +
+  '<input type="password" id="su-aikey" autocomplete="off" ' +
+  'placeholder="' + (ses.anthropic_key_set ? '**** key set' :
+   'sk-ant-...') + '">' +
   '<label>Model</label>' +
   '<input id="su-aimodel" placeholder="claude-sonnet-5 (default)"' +
-    ' value="' + esc(ses.ai_model) + '">' +
+  ' value="' + esc(ses.ai_model) + '">' +
   '<div class="btnbar">' +
   '<button class="btn primary" id="su-ai-save">Save</button>' +
-  '<span class="kv">Powers &quot;Ask AI&quot; on failing panels and ' +
-  'the assistant chat.</span></div></div>' +
+  '<span class="kv">Powers &quot;Ask AI&quot; on failing panels ' +
+  'and the assistant chat.</span></div></div>' +
 
   '<div class="card"><h2>Workspace</h2>' +
   '<label>New Relic export directory (fetch writes here)</label>' +
@@ -568,11 +1579,11 @@ async function vSetup(view) {
   '<input id="su-outdir" value="' + esc(ses.out_dir) + '">' +
   '<label>Mapping config JSON (optional)</label>' +
   '<input id="su-cfg" value="' + esc(ses.config_path) +
-    '" placeholder="config/mappings.json">' +
+  '" placeholder="config/mappings.json">' +
   '<div class="btnbar">' +
   '<button class="btn primary" id="su-ws-save">Save</button>' +
   '<span class="kv">Database: <span class="mono">' +
-    esc((s.db && s.db.path) || '~/.nr2grafana') + '</span></span>' +
+  esc((s.db && s.db.path) || '~/.nr2grafana') + '</span></span>' +
   '</div></div>' +
 
   '</div>';
@@ -595,19 +1606,27 @@ async function vSetup(view) {
   };
   $('#su-nr-test').onclick = async function () {
     var btn = this; busy(btn, true);
-    $('#su-nr-status').textContent = 'listing dashboards...';
+    var out = $('#su-nr-out');
     try {
       var k = $('#su-nrkey').value.trim();
       var body = { nr_region: $('#su-region').value };
       if (k) body.nr_api_key = k;
       await api('/api/settings', body);
-      var job = await runJob('/api/nr/list', {}, $('#su-nr-log'));
-      $('#su-nr-status').textContent = 'OK - ' +
-        job.result.count + ' dashboards visible';
-      toast('New Relic OK: ' + job.result.count + ' dashboards',
-            'ok');
+      var r = await api('/api/nr/test-key', {});
+      var accts = (r.accounts || []).map(function (a) {
+        return chip((a.name || '') + ' (' + a.id + ')', 'info');
+      }).join('');
+      out.innerHTML = '<div class="ai-box">' + chip('key OK', 'ok') +
+        ' <span class="kv">' +
+        esc((r.user || {}).email || (r.user || {}).name || '') +
+        '</span><div style="margin-top:8px">' +
+        (accts || chip('no accounts visible', 'warn')) +
+        '</div></div>';
+      toast('New Relic key OK (' + (r.accounts || []).length +
+            ' account(s))', 'ok');
     } catch (e) {
-      $('#su-nr-status').textContent = '';
+      out.innerHTML = '<div class="err-text">' + esc(e.message) +
+        '</div>';
       toast('New Relic: ' + e.message, 'err');
     }
     busy(btn, false); refreshState();
@@ -620,18 +1639,30 @@ async function vSetup(view) {
   };
   $('#su-gf-test').onclick = async function () {
     var btn = this; busy(btn, true);
+    var out = $('#su-gf-out');
     try {
       var body = { grafana_url: $('#su-gfurl').value.trim() };
       var t = $('#su-gftoken').value.trim();
       if (t) body.grafana_token = t;
       await api('/api/settings', body);
-      var h = await api('/api/grafana/health', {});
-      $('#su-gf-status').textContent = 'OK - Grafana ' +
-        (h.version || '');
-      toast('Grafana reachable' +
-            (h.version ? ' (v' + h.version + ')' : ''), 'ok');
+      var r = await api('/api/grafana/test-token', {});
+      var p = r.permissions || {};
+      var h = r.health || {};
+      out.innerHTML = '<div class="ai-box">' +
+        (r.ok ? chip('Grafana ' + (h.version || 'reachable'), 'ok')
+              : chip('health: ' + (h.error || 'unknown'), 'err')) +
+        ' ' + chip('role: ' + (p.role || '?'),
+                   p.role ? 'info' : 'dim') +
+        ' ' + chip('datasource admin', p.can_admin_datasources ?
+                   'ok' : 'warn') +
+        ' ' + chip('dashboard edit', p.can_edit_dashboards ?
+                   'ok' : 'warn') +
+        (p.detail ? '<div class="kv" style="margin-top:6px">' +
+          esc(p.detail) + '</div>' : '') + '</div>';
+      toast('Grafana token checked', 'ok');
     } catch (e) {
-      $('#su-gf-status').textContent = '';
+      out.innerHTML = '<div class="err-text">' + esc(e.message) +
+        '</div>';
       toast('Grafana: ' + e.message, 'err');
     }
     busy(btn, false); refreshState();
@@ -649,397 +1680,29 @@ async function vSetup(view) {
   };
 }
 
-/* ====================================================== DASHBOARDS */
-async function vDashboards(view) {
-  crumb('Dashboards');
-  view.innerHTML = '<h1>Dashboards</h1><p class="lead">Converted ' +
-    'dashboards in the local workspace.</p><div id="dash-area">' +
-    '<div class="empty">Loading...</div></div>';
-  var data = await api('/api/dashboards');
-  App.dashboards = data.dashboards || [];
-  var area = $('#dash-area');
-  if (!App.dashboards.length) {
-    area.innerHTML = '<div class="empty"><b>No dashboards yet.</b>' +
-      '<br>Fetch your New Relic dashboards and run ' +
-      '<a href="#/convert">Convert &amp; Package</a> to get started.' +
-      '</div>';
-    return;
-  }
-  var rows = App.dashboards.map(function (d) {
-    return '<tr class="click" data-slug="' + esc(d.slug) + '">' +
-      '<td><b>' + esc(d.title) + '</b><div class="kv mono">' +
-        esc(d.slug) + '</div></td>' +
-      '<td>' + (d.panels || 0) + '</td>' +
-      '<td>' + confChips(d.confidence) + '</td>' +
-      '<td>' + dsChips(d.datasources) + '</td>' +
-      '<td>' + dsChips(d.domains) + '</td>' +
-      '<td>' + (d.datatest_summary &&
-                Object.keys(d.datatest_summary).length ?
-        Object.keys(d.datatest_summary).map(function (k) {
-          return '<span class="chip ' + (TEST_CLS[k] || 'dim') +
-                 '">' + d.datatest_summary[k] + ' ' + esc(k) +
-                 '</span>';
-        }).join('') : '<span class="chip dim">not tested</span>') +
-      '</td></tr>';
-  }).join('');
-  area.innerHTML = '<div class="card"><div class="tablewrap">' +
-    '<table><thead><tr><th>Dashboard</th><th>Panels</th>' +
-    '<th>Confidence</th><th>Datasources</th><th>Domains</th>' +
-    '<th>Data test</th></tr></thead><tbody>' + rows +
-    '</tbody></table></div></div>';
-  $all('tr.click', area).forEach(function (tr) {
-    tr.onclick = function () {
-      location.hash = '#/dashboards/' +
-        encodeURIComponent(tr.getAttribute('data-slug'));
-    };
-  });
-}
-
-/* ====================================================== DETAIL */
-function reqStatusChip(items, ds) {
-  if (!items || !items.length)
-    return '<span class="chip dim">not checked</span>';
-  var m = null;
-  items.forEach(function (it) {
-    var name = String(it.item || '').toLowerCase();
-    if (name.indexOf(String(ds.family || '').toLowerCase()) >= 0 ||
-        (ds.plugin_id &&
-         name.indexOf(String(ds.plugin_id).toLowerCase()) >= 0)) {
-      m = it;
-    }
-  });
-  if (!m) return '<span class="chip dim">not checked</span>';
-  var cls = m.status === 'ok' ? 'ok' :
-            (m.status === 'missing' ? 'err' : 'warn');
-  var fix = m.status !== 'ok' && m.fix ?
-    '<div class="kv">' + esc(m.fix) + '</div>' : '';
-  return '<span class="chip ' + cls + '">' + esc(m.status) +
-         '</span>' + fix;
-}
-
-function worstStatus(tests) {
-  var vals = Object.keys(tests).map(function (k) {
-    return tests[k].status;
-  });
-  if (vals.indexOf('error') >= 0) return 'error';
-  if (vals.indexOf('no-data') >= 0) return 'no-data';
-  if (vals.indexOf('data') >= 0) return 'data';
-  return '';
-}
-
-async function vDetail(view, slug) {
-  crumb('Dashboard / ' + slug);
-  view.innerHTML = '<div class="empty">Loading ' + esc(slug) +
-    '...</div>';
-  var d = await api('/api/dashboards/' + encodeURIComponent(slug));
-  App.detail = d;
-
-  /* panel map from the (authoritative) dashboard json */
-  var panelMap = {};
-  (function walk(ps) {
-    (ps || []).forEach(function (p) {
-      panelMap[p.id] = p;
-      if (p.type === 'row') walk(p.panels);
-    });
-  })(d.dashboard.panels);
-
-  var tests = {};
-  ((d.datatest || {}).results || []).forEach(function (r) {
-    (tests[r.panel_id] = tests[r.panel_id] || {})[r.refId || 'A'] = r;
-  });
-
-  var reqs = d.requirements || {};
-  var checkItems = (d.check || {}).items || [];
-
-  var dsRows = (reqs.datasources || []).map(function (ds) {
-    return '<tr><td><b>' + esc(ds.family) + '</b>' +
-      (ds.required === false ?
-        ' <span class="chip dim">optional</span>' : '') + '</td>' +
-      '<td class="mono">' + esc(ds.plugin_id || '') + '</td>' +
-      '<td>' + esc(ds.purpose || '') + '</td>' +
-      '<td class="mono">' + esc(ds.uid_ref || '') + '</td>' +
-      '<td>' + reqStatusChip(checkItems, ds) + '</td></tr>';
-  }).join('');
-
-  var pluginRows = (reqs.plugins || []).map(function (p) {
-    return '<div class="kv" style="margin:4px 0"><b class="mono">' +
-      esc(p.id) + '</b> - ' + esc(p.reason || '') +
-      (p.grafana_cli ? '<pre>' + esc(p.grafana_cli) + '</pre>' : '') +
-      '</div>';
-  }).join('');
-
-  var domainRows = (reqs.domains || []).map(function (dm) {
-    var opts = (dm.options || []).map(function (o) {
-      return '<li>' + (o.plugin_id ? '<b class="mono">' +
-        esc(o.plugin_id) + '</b>: ' : '') + esc(o.note || '') +
-        '</li>';
-    }).join('');
-    return '<div style="margin:6px 0"><span class="chip info">' +
-      esc(dm.domain) + '</span> <span class="kv">panels ' +
-      esc((dm.panel_ids || []).join(', ')) + '</span>' +
-      (opts ? '<ul class="kv" style="margin:4px 0 0">' + opts +
-       '</ul>' : '') + '</div>';
-  }).join('');
-
-  var nrNative = (reqs.nr_native || []).map(function (n) {
-    return '<div class="kv" style="margin:4px 0">panel ' +
-      esc(n.panel_id) + ' <b>' + esc(n.widget || '') + '</b> - ' +
-      esc(n.why || '') + (n.equivalent ?
-      ' <i>Equivalent: ' + esc(n.equivalent) + '</i>' : '') +
-      '</div>';
-  }).join('');
-
-  var panelRows = (d.widget_report || []).map(function (w, i) {
-    var pt = tests[w.panel_id] || {};
-    var open = App.expanded[slug + ':' + w.panel_id];
-    var row = '<tr class="click" data-exp="' + esc(w.panel_id) +
-      '"><td>' + esc(w.panel_id) + '</td>' +
-      '<td><b>' + esc(w.widget || w.widget_title || '(untitled)') +
-      '</b>' +
-      '<div class="kv">' + esc(w.page || '') + '</div></td>' +
-      '<td class="mono">' + esc(w.panel_type || '') + '</td>' +
-      '<td>' + confChip(w.confidence) + '</td>' +
-      '<td>' + testChip(worstStatus(pt)) + '</td>' +
-      '<td>' + (open ? '&#9662;' : '&#9656;') + '</td></tr>';
-    if (open) {
-      row += '<tr class="expand-row"><td colspan="6">' +
-        panelDetailHtml(slug, w, panelMap[w.panel_id], pt) +
-        '</td></tr>';
-    }
-    return row;
-  }).join('');
-
-  view.innerHTML =
-    '<a class="backlink" href="#/dashboards">&larr; All dashboards' +
-    '</a>' +
-    '<h1>' + esc(d.title) + '</h1>' +
-    '<p class="lead mono">' + esc(slug) +
-    (d.package_dir ? ' &middot; package: ' + esc(d.package_dir) : '') +
-    '</p>' +
-    '<div class="btnbar" style="margin-bottom:16px">' +
-    '<button class="btn" id="dt-check">Check requirements</button>' +
-    '<button class="btn" id="dt-test">Run data tests</button>' +
-    '<button class="btn primary" id="dt-import">Import to Grafana' +
-    '</button></div>' +
-    '<div class="log" id="dt-log"></div>' +
-
-    '<div class="card"><h2>Install these first</h2>' +
-    (dsRows ?
-      '<div class="tablewrap"><table><thead><tr><th>Datasource</th>' +
-      '<th>Plugin</th><th>Purpose</th><th>Referenced as</th>' +
-      '<th>Live status</th></tr></thead><tbody>' + dsRows +
-      '</tbody></table></div>' :
-      '<div class="kv">No datasource requirements recorded. Re-run ' +
-      'Convert &amp; Package to generate them.</div>') +
-    (pluginRows ? '<h2 style="margin-top:14px">Plugins</h2>' +
-      pluginRows : '') +
-    (domainRows ? '<h2 style="margin-top:14px">Detected data ' +
-      'domains</h2>' + domainRows : '') +
-    (nrNative ? '<h2 style="margin-top:14px">New Relic-native ' +
-      'widgets</h2>' + nrNative : '') +
-    '</div>' +
-
-    '<div class="card"><h2>Panels</h2><div class="tablewrap">' +
-    '<table><thead><tr><th>Id</th><th>Panel</th><th>Type</th>' +
-    '<th>Confidence</th><th>Test</th><th></th></tr></thead>' +
-    '<tbody>' + (panelRows ||
-      '<tr><td colspan="6" class="kv">no widget report</td></tr>') +
-    '</tbody></table></div></div>';
-
-  /* actions */
-  $('#dt-check').onclick = async function () {
-    var btn = this; busy(btn, true);
-    try {
-      await api('/api/grafana/check', { slug: slug });
-      toast('Requirement check complete', 'ok');
-      vDetail(view, slug);
-    } catch (e) { toast(e.message, 'err'); busy(btn, false); }
-  };
-  $('#dt-test').onclick = async function () {
-    var btn = this; busy(btn, true);
-    try {
-      var job = await runJob('/api/grafana/test', { slug: slug },
-                             $('#dt-log'));
-      var s = job.result.summary || {};
-      toast('Tested: ' + Object.keys(s).map(function (k) {
-        return s[k] + ' ' + k; }).join(', '), 'ok');
-      vDetail(view, slug);
-    } catch (e) { toast(e.message, 'err'); busy(btn, false); }
-    refreshState();
-  };
-  $('#dt-import').onclick = async function () {
-    var folder = prompt('Grafana folder (empty = General):', '');
-    if (folder === null) return;
-    var btn = this; busy(btn, true);
-    try {
-      var job = await runJob('/api/grafana/import',
-        { slugs: [slug], folder: folder, overwrite: true },
-        $('#dt-log'));
-      var r = (job.result.results || [])[0] || {};
-      if (r.status === 'ok') {
-        toast('Imported' + (r.url ? ': ' + r.url : ''), 'ok');
-      } else { toast(r.error || 'import failed', 'err'); }
-    } catch (e) { toast(e.message, 'err'); }
-    busy(btn, false); refreshState();
-  };
-
-  /* expand/collapse + editor actions (event delegation) */
-  $all('tr[data-exp]', view).forEach(function (tr) {
-    tr.onclick = function (ev) {
-      if (ev.target.closest('button, textarea, input, select, a'))
-        return;
-      var key = slug + ':' + tr.getAttribute('data-exp');
-      App.expanded[key] = !App.expanded[key];
-      vDetail(view, slug);
-    };
-  });
-  bindEditors(view, slug);
-}
-
-function panelDetailHtml(slug, w, panel, pt) {
-  var html = '';
-  (w.nrql || []).forEach(function (q) {
-    html += '<div class="kv"><b>NRQL</b></div><pre>' +
-      esc(q.query || q) + '</pre>';
-  });
-  (w.notes || []).forEach(function (n) {
-    html += '<div class="kv">note: ' + esc(n) + '</div>';
-  });
-  var targets = (panel && panel.targets) || [];
-  if (!targets.length) {
-    html += '<div class="kv" style="margin-top:8px">This panel has ' +
-      'no query targets (text/placeholder panel)';
-    if (w.fallback) html += ' - fallback: ' + esc(w.fallback);
-    html += '.</div>';
-    return html;
-  }
-  targets.forEach(function (t) {
-    var ref = t.refId || 'A';
-    var tr = pt[ref];
-    var dsType = (t.datasource && t.datasource.type) || '';
-    var eid = 'ed-' + w.panel_id + '-' + ref;
-    html += '<div style="margin-top:12px">' +
-      '<div class="row"><span class="chip dim">' + esc(ref) +
-      '</span><span class="chip info">' + esc(dsType || 'unknown ds') +
-      '</span>' + testChip(tr && tr.status) + '</div>' +
-      (tr && tr.error ? '<div class="err-text">' + esc(tr.error) +
-        '</div>' : '') +
-      '<label>Query</label>' +
-      '<textarea id="' + eid + '" data-orig="1">' +
-      esc(t.expr || '') + '</textarea>' +
-      '<div class="btnbar">' +
-      btnA('test', w.panel_id, ref, 'Test') +
-      btnA('ai', w.panel_id, ref, 'Ask AI') +
-      btnA('save', w.panel_id, ref, 'Save') +
-      btnA('push', w.panel_id, ref, 'Save &amp; Push', 'primary') +
-      '</div>' +
-      '<div id="tres-' + w.panel_id + '-' + ref + '"></div>' +
-      '<div id="ai-' + w.panel_id + '-' + ref + '"></div>' +
-      '</div>';
-  });
-  return html;
-}
-
-function btnA(act, pid, ref, label, extra) {
-  return '<button class="btn small ' + (extra || '') +
-    '" data-act="' + act + '" data-pid="' + esc(pid) +
-    '" data-ref="' + esc(ref) + '">' + label + '</button>';
-}
-
-function bindEditors(view, slug) {
-  $all('button[data-act]', view).forEach(function (btn) {
-    btn.onclick = function (ev) {
-      ev.stopPropagation();
-      editorAction(view, slug, btn);
-    };
-  });
-}
-
-async function editorAction(view, slug, btn) {
-  var act = btn.getAttribute('data-act');
-  var pidRaw = btn.getAttribute('data-pid');
-  var pid = /^\d+$/.test(pidRaw) ? parseInt(pidRaw, 10) : pidRaw;
-  var ref = btn.getAttribute('data-ref');
-  var ta = $('#ed-' + pidRaw + '-' + ref, view);
-  var expr = ta ? ta.value : '';
-  var tres = $('#tres-' + pidRaw + '-' + ref, view);
-  busy(btn, true);
-  try {
-    if (act === 'test') {
-      var r = await api('/api/panel/test',
-        { slug: slug, panel_id: pid, refId: ref, expr: expr });
-      var res = (r.results || [])[0] || {};
-      tres.innerHTML = '<div style="margin-top:6px">' +
-        testChip(res.status) +
-        (res.frames != null ? ' <span class="kv">' + res.frames +
-          ' frames / ' + (res.points || 0) + ' points</span>' : '') +
-        (res.error ? '<div class="err-text">' + esc(res.error) +
-          '</div>' : '') + '</div>';
-    } else if (act === 'ai') {
-      var box = $('#ai-' + pidRaw + '-' + ref, view);
-      box.innerHTML = '<div class="ai-box">Asking Claude...</div>';
-      var a = await api('/api/ai/suggest',
-        { slug: slug, panel_id: pid, refId: ref, expr: expr });
-      var fixed = a.fixed_expr || '';
-      box.innerHTML = '<div class="ai-box">' +
-        '<span class="chip ' + (a.confidence === 'high' ? 'ok' :
-          a.confidence === 'low' ? 'warn' : 'info') +
-        ' conf">' + esc(a.confidence || 'suggestion') + '</span>' +
-        '<div>' + esc(a.explanation || '') + '</div>' +
-        (fixed ? '<label>Suggested query</label><pre>' + esc(fixed) +
-          '</pre><button class="btn small primary" id="apply-' +
-          pidRaw + '-' + ref + '">Apply suggestion</button>' : '') +
-        ((a.actions || []).length ? '<ul class="kv">' +
-          a.actions.map(function (x) {
-            return '<li>' + esc(x) + '</li>'; }).join('') +
-          '</ul>' : '') +
-        '</div>';
-      if (fixed) {
-        $('#apply-' + pidRaw + '-' + ref, view).onclick =
-          function (ev) {
-            ev.stopPropagation();
-            ta.value = fixed;
-            toast('Suggestion applied to the editor - Test then ' +
-                  'Save', 'ok');
-          };
-      }
-    } else if (act === 'save' || act === 'push') {
-      var why = prompt('Why this change? (recorded in the change ' +
-                       'log)', '') || '';
-      var body = { slug: slug, panel_id: pid, refId: ref,
-                   expr: expr, why: why, retest: false,
-                   push: act === 'push' };
-      var out = await api('/api/panel/update', body);
-      toast(act === 'push' ?
-            'Saved and pushed to Grafana' : 'Saved', 'ok');
-      if (out.test) { /* not requested, ignore */ }
-    }
-  } catch (e) {
-    toast(e.message, 'err');
-  }
-  busy(btn, false);
-}
-
 /* ====================================================== CONVERT */
 async function vConvert(view) {
-  crumb('Convert & Package');
+  crumb('Fetch & Convert');
   var ses = (App.state || {}).session || {};
   view.innerHTML =
-  '<h1>Convert &amp; Package</h1>' +
+  '<h1>Fetch &amp; Convert</h1>' +
   '<p class="lead">Fetch dashboards from New Relic, then convert ' +
   'them into Grafana dashboards with requirements analysis and ' +
   'per-dashboard packages.</p>' +
   '<div class="grid2">' +
-  '<div class="card"><h2>1. Fetch from New Relic</h2>' +
+  '<div class="card"><h2>1 &middot; Fetch from New Relic</h2>' +
   '<label>Write NR JSON exports to</label>' +
   '<input id="cv-fetchdir" value="' + esc(ses.input_dir || '') +
   '">' +
-  '<label>Dashboard GUIDs (optional, comma separated - empty = ' +
-  'all)</label>' +
+  '<label>Dashboard GUIDs (optional, comma separated &mdash; ' +
+  'empty = all)</label>' +
   '<input id="cv-guids" placeholder="all dashboards">' +
-  '<div class="btnbar"><button class="btn" id="cv-fetch">Fetch' +
-  '</button></div></div>' +
-  '<div class="card"><h2>2. Convert &amp; package</h2>' +
+  '<div class="btnbar"><button class="btn primary" id="cv-fetch">' +
+  'Fetch</button>' +
+  '<button class="btn" id="cv-browse">Browse &amp; pick&hellip;' +
+  '</button></div>' +
+  '<div id="cv-pick"></div></div>' +
+  '<div class="card"><h2>2 &middot; Convert &amp; package</h2>' +
   '<label>Input directory (NR JSON)</label>' +
   '<input id="cv-indir" value="' + esc(ses.input_dir || '') + '">' +
   '<label>Output directory</label>' +
@@ -1048,23 +1711,41 @@ async function vConvert(view) {
   '<input id="cv-cfg" value="' + esc(ses.config_path || '') +
   '" placeholder="config/mappings.json">' +
   '<div class="row" style="margin-top:10px">' +
-  '<input type="checkbox" id="cv-pkg" checked style="width:auto">' +
-  '<span>Package (requirements.json, README, test.sh per ' +
-  'dashboard)</span></div>' +
+  '<input type="checkbox" id="cv-pkg" checked>' +
+  '<span class="kv">Package (requirements.json, README, test.sh ' +
+  'per dashboard)</span></div>' +
   '<div class="btnbar"><button class="btn primary" id="cv-run">' +
   'Run convert</button></div></div>' +
   '</div>' +
-  '<div class="log" id="cv-log"></div>' +
+  '<div class="log" id="cv-log" aria-live="polite"></div>' +
   '<div id="cv-result"></div>';
+
+  $('#cv-browse').onclick = async function () {
+    var btn = this; busy(btn, true);
+    var box = $('#cv-pick');
+    try {
+      var job = await startJob('list New Relic dashboards',
+        '/api/nr/list', {}, logInto($('#cv-log')));
+      var list = (job.result || {}).dashboards || [];
+      if (!list.length) {
+        box.innerHTML = '<div class="kv" style="margin-top:8px">' +
+          'No dashboards visible to this API key.</div>';
+      } else {
+        renderNrPicker(box, list);
+      }
+    } catch (e) { toast(e.message, 'err'); }
+    busy(btn, false);
+  };
 
   $('#cv-fetch').onclick = async function () {
     var btn = this; busy(btn, true);
     var guids = $('#cv-guids').value.split(',').map(function (s) {
       return s.trim(); }).filter(Boolean);
     try {
-      var job = await runJob('/api/nr/fetch',
+      var job = await startJob('fetch from New Relic',
+        '/api/nr/fetch',
         { out: $('#cv-fetchdir').value.trim(), guids: guids },
-        $('#cv-log'));
+        logInto($('#cv-log')));
       toast('Fetched ' + (job.result.written || []).length +
             ' dashboards', 'ok');
     } catch (e) { toast(e.message, 'err'); }
@@ -1075,12 +1756,12 @@ async function vConvert(view) {
     var btn = this; busy(btn, true);
     $('#cv-result').innerHTML = '';
     try {
-      var job = await runJob('/api/convert', {
+      var job = await startJob('convert & package', '/api/convert', {
         input_dir: $('#cv-indir').value.trim(),
         out_dir: $('#cv-outdir').value.trim(),
         config_path: $('#cv-cfg').value.trim(),
         package: $('#cv-pkg').checked
-      }, $('#cv-log'));
+      }, logInto($('#cv-log')));
       renderConvertResult(job.result);
       toast('Converted ' + (job.result.dashboards || []).length +
             ' dashboard(s)', 'ok');
@@ -1089,9 +1770,78 @@ async function vConvert(view) {
   };
 }
 
+/* Checkbox picker over the NR dashboard list so a subset can be
+   fetched without ever hunting GUIDs down in the New Relic UI. */
+function renderNrPicker(box, list) {
+  function rows(filter) {
+    var needle = (filter || '').toLowerCase();
+    var shown = 0;
+    var html = list.map(function (e, i) {
+      var name = e.name || e.guid || '?';
+      if (needle && name.toLowerCase().indexOf(needle) < 0) {
+        return '';
+      }
+      shown++;
+      return '<div class="checkbox-row">' +
+        '<input type="checkbox" class="nrp-cb" data-i="' + i + '">' +
+        '<span>' + esc(name) + '</span>' +
+        (e.accountId ? '<span class="kv" style="margin-left:auto">' +
+          'account ' + esc(e.accountId) + '</span>' : '') + '</div>';
+    }).join('');
+    return html || '<div class="kv" style="padding:8px 4px">no ' +
+      'dashboard names match ' + esc('"' + (filter || '') + '"') +
+      '</div>';
+  }
+  box.innerHTML = '<div style="margin-top:10px">' +
+    '<input id="nrp-filter" placeholder="filter by name..." ' +
+    'autocomplete="off">' +
+    '<div id="nrp-rows" style="max-height:260px;overflow-y:auto;' +
+    'margin-top:6px">' + rows('') + '</div>' +
+    '<div class="btnbar">' +
+    '<button class="btn small" id="nrp-all">Select shown</button>' +
+    '<button class="btn small" id="nrp-none">Clear</button>' +
+    '<button class="btn small primary" id="nrp-use">Use selected' +
+    '</button><span class="kv" id="nrp-count"></span></div></div>';
+  function bindRows() {
+    $all('.nrp-cb', box).forEach(function (cb) {
+      cb.onchange = updateCount; });
+    updateCount();
+  }
+  function updateCount() {
+    var n = $all('.nrp-cb', box).filter(function (c) {
+      return c.checked; }).length;
+    $('#nrp-count').textContent = n ? n + ' selected' : '';
+  }
+  $('#nrp-filter').oninput = debounce(function () {
+    $('#nrp-rows').innerHTML = rows($('#nrp-filter').value.trim());
+    bindRows();
+  }, 200);
+  $('#nrp-all').onclick = function () {
+    $all('.nrp-cb', box).forEach(function (c) {
+      c.checked = true; });
+    updateCount();
+  };
+  $('#nrp-none').onclick = function () {
+    $all('.nrp-cb', box).forEach(function (c) {
+      c.checked = false; });
+    updateCount();
+  };
+  $('#nrp-use').onclick = function () {
+    var guids = $all('.nrp-cb', box).filter(function (c) {
+      return c.checked; }).map(function (c) {
+      return list[+c.getAttribute('data-i')].guid; });
+    $('#cv-guids').value = guids.join(',');
+    toast(guids.length ?
+          guids.length + ' dashboard(s) selected - hit Fetch' :
+          'Selection cleared - Fetch now grabs everything', 'ok');
+  };
+  bindRows();
+}
+
 function renderConvertResult(res) {
   var list = (res.dashboards || []).map(function (d) {
-    return '<tr class="click" data-slug="' + esc(d.slug) + '">' +
+    return '<tr class="click" tabindex="0" data-slug="' +
+      esc(d.slug) + '">' +
       '<td><b>' + esc(d.title) + '</b></td><td>' + d.panels +
       '</td><td>' + confChips(d.confidence) + '</td><td>' +
       dsChips(d.datasources) + '</td></tr>';
@@ -1109,107 +1859,1364 @@ function renderConvertResult(res) {
   $('#cv-result').innerHTML =
     '<div class="cards-row">' +
     '<div class="stat-card"><div class="num">' +
-      (res.dashboards || []).length +
-      '</div><div class="lbl">dashboards</div></div>' +
+    (res.dashboards || []).length +
+    '</div><div class="lbl">dashboards</div></div>' +
     '<div class="stat-card"><div class="num">' + totalPanels +
-      '</div><div class="lbl">panels</div></div>' +
+    '</div><div class="lbl">panels</div></div>' +
     '<div class="stat-card"><div class="num">' + review +
-      '</div><div class="lbl">need review</div></div>' +
+    '</div><div class="lbl">need review</div></div>' +
     '<div class="stat-card"><div class="num">' +
-      (res.failed || []).length +
-      '</div><div class="lbl">failed inputs</div></div></div>' +
+    (res.failed || []).length +
+    '</div><div class="lbl">failed inputs</div></div></div>' +
     (list ? '<div class="card"><div class="tablewrap"><table>' +
-      '<thead><tr><th>Dashboard</th><th>Panels</th>' +
-      '<th>Confidence</th><th>Datasources</th></tr></thead><tbody>' +
-      list + '</tbody></table></div></div>' : '') +
+    '<thead><tr><th>Dashboard</th><th>Panels</th>' +
+    '<th>Confidence</th><th>Datasources</th></tr></thead><tbody>' +
+    list + '</tbody></table></div></div>' : '') +
     (failed ? '<div class="card"><h2>Failed inputs</h2>' + failed +
-      '</div>' : '');
+    '</div>' : '');
   $all('#cv-result tr.click').forEach(function (tr) {
-    tr.onclick = function () {
-      location.hash = '#/dashboards/' +
+    var go = function () {
+      location.hash = '#/dash/' +
         encodeURIComponent(tr.getAttribute('data-slug'));
+    };
+    tr.onclick = go;
+    tr.onkeydown = function (ev) {
+      if (ev.key === 'Enter') go(); };
+  });
+}
+
+/* ====================================================== DATASOURCES */
+async function loadTemplates() {
+  if (!App.templates) {
+    App.templates = await api('/api/grafana/ds-templates');
+  }
+  return App.templates;
+}
+
+function healthChip(uid) {
+  var h = App.dsHealth[uid];
+  if (!h) return '<span class="chip dim"><span class="health-dot">' +
+    '</span>checking&hellip;</span>';
+  var cls = h.status === 'ok' ? 'ok' :
+    h.status === 'error' ? 'err' : 'warn';
+  return '<span class="chip ' + cls + '" title="' +
+    esc(h.message || '') + '"><span class="health-dot ' + cls +
+    '"></span>' + esc(h.status || 'unknown') + '</span>';
+}
+
+async function vDatasources(view) {
+  crumb('Datasources');
+  view.innerHTML = '<h1>Datasources</h1><p class="lead">The ' +
+    'datasources on the connected Grafana instance. Create the ' +
+    'ones your dashboards need, health-check them live, and ' +
+    'clean up mistakes.</p><div id="ds-area">' +
+    '<div class="empty">Loading&hellip;</div></div>';
+  var area = $('#ds-area');
+  var list;
+  try {
+    var r = await api('/api/grafana/datasources', {});
+    list = r.datasources || [];
+  } catch (e) {
+    area.innerHTML = '<div class="empty"><b>Cannot list ' +
+      'datasources.</b><br>' + esc(e.message) +
+      '<br><a href="#/connect">Check the Grafana connection</a>.' +
+      '</div>';
+    return;
+  }
+  renderDsTable(area, list);
+  /* Live health badges: kick off checks for every ds in parallel. */
+  list.forEach(function (ds) {
+    var uid = ds.uid || '';
+    if (!uid) return;
+    api('/api/grafana/datasource/' + encodeURIComponent(uid) +
+        '/health', {}).then(function (h) {
+      App.dsHealth[uid] = h;
+    }).catch(function (e) {
+      App.dsHealth[uid] = { status: 'error', message: e.message };
+    }).finally(function () {
+      var cell = $('#ds-h-' + cssId(uid));
+      if (cell) cell.innerHTML = healthChip(uid);
+    });
+  });
+}
+
+function cssId(s) {
+  return String(s).replace(/[^A-Za-z0-9_-]/g, '_');
+}
+
+function renderDsTable(area, list) {
+  var rows = list.map(function (ds) {
+    var uid = ds.uid || '';
+    return '<tr><td><b>' + esc(ds.name) + '</b>' +
+      (ds.isDefault ? ' ' + chip('default', 'purple') : '') +
+      '</td>' +
+      '<td class="mono">' + esc(ds.type || '') + '</td>' +
+      '<td class="mono">' + esc(uid) + '</td>' +
+      '<td class="mono kv">' + esc(ds.url || '') + '</td>' +
+      '<td id="ds-h-' + cssId(uid) + '">' + healthChip(uid) +
+      '</td>' +
+      '<td class="right" style="white-space:nowrap">' +
+      '<button class="btn small" data-dsact="health" data-uid="' +
+      esc(uid) + '">Re-check</button> ' +
+      '<button class="btn small" data-dsact="edit" data-uid="' +
+      esc(uid) + '">Edit</button> ' +
+      '<button class="btn small danger" data-dsact="del" ' +
+      'data-uid="' + esc(uid) + '" data-name="' + esc(ds.name) +
+      '">Delete</button></td></tr>';
+  }).join('');
+  area.innerHTML =
+    '<div class="btnbar" style="margin:0 0 12px">' +
+    '<button class="btn primary" id="ds-add">+ Add datasource' +
+    '</button>' +
+    '<button class="btn" id="ds-reload">Refresh</button></div>' +
+    '<div class="card"><div class="tablewrap"><table>' +
+    '<thead><tr><th>Name</th><th>Type</th><th>UID</th><th>URL</th>' +
+    '<th>Health</th><th class="right">Actions</th></tr></thead>' +
+    '<tbody>' + (rows ||
+    '<tr><td colspan="6" class="kv">No datasources on this ' +
+    'instance yet &mdash; add the first one.</td></tr>') +
+    '</tbody></table></div></div>';
+  $('#ds-add').onclick = function () { dsFlyout(null); };
+  $('#ds-reload').onclick = function () { route(); };
+  $all('button[data-dsact]', area).forEach(function (btn) {
+    btn.onclick = function () { dsAction(btn, list); };
+  });
+}
+
+async function dsAction(btn, list) {
+  var act = btn.getAttribute('data-dsact');
+  var uid = btn.getAttribute('data-uid');
+  var row = null;
+  list.forEach(function (d) { if (d.uid === uid) row = d; });
+  if (act === 'health') {
+    busy(btn, true);
+    try {
+      var h = await api('/api/grafana/datasource/' +
+                        encodeURIComponent(uid) + '/health', {});
+      App.dsHealth[uid] = h;
+      toast('Health: ' + (h.status || 'unknown') +
+            (h.message ? ' - ' + h.message : ''),
+            h.status === 'ok' ? 'ok' : 'err');
+    } catch (e) {
+      App.dsHealth[uid] = { status: 'error', message: e.message };
+      toast(e.message, 'err');
+    }
+    var cell = $('#ds-h-' + cssId(uid));
+    if (cell) cell.innerHTML = healthChip(uid);
+    busy(btn, false);
+  } else if (act === 'edit') {
+    dsFlyout(row);
+  } else if (act === 'del') {
+    var name = btn.getAttribute('data-name') || uid;
+    var yes = await typedConfirm({
+      title: 'Delete datasource',
+      html: 'This permanently deletes <b>' + esc(name) +
+        '</b> <span class="mono">(' + esc(uid) + ')</span> from ' +
+        'Grafana. Panels using it will stop working.',
+      expect: name, action: 'Delete datasource' });
+    if (!yes) return;
+    try {
+      await api('/api/grafana/datasource/' +
+                encodeURIComponent(uid), undefined, 'DELETE');
+      toast('Deleted ' + name, 'ok');
+      route();
+    } catch (e) { toast(e.message, 'err'); }
+  }
+}
+
+function tplFieldHtml(f, val) {
+  var id = 'dsf-' + esc(f.name);
+  var input;
+  var common = ' id="' + id + '" data-fname="' + esc(f.name) +
+    '" placeholder="' + esc(f.placeholder || '') +
+    '" autocomplete="off"';
+  if (f.multiline) {
+    input = '<textarea' + common + '>' + esc(val || '') +
+      '</textarea>';
+  } else if (f.secret) {
+    input = '<input type="password"' + common + ' value="">';
+  } else {
+    input = '<input' + common + ' value="' + esc(val || '') + '">';
+  }
+  return '<label for="' + id + '">' + esc(f.label || f.name) +
+    (f.required ? ' <span class="req">*</span>' : '') +
+    (f.secret ? ' ' + chip('secret', 'purple') : '') + '</label>' +
+    input +
+    (f.help ? '<div class="field-help">' + esc(f.help) + '</div>'
+            : '');
+}
+
+function tplValue(row, f) {
+  /* Prefill an edit form from the existing ds row via the field's
+     payload path. Secrets are never sent back by Grafana. */
+  if (!row || f.secret) return '';
+  var path = f.path || '';
+  if (path === 'url') return row.url || '';
+  if (path.indexOf('jsonData.') === 0) {
+    return ((row.jsonData || {})[path.slice(9)]) || '';
+  }
+  return '';
+}
+
+/* Add (row=null) or edit (row=existing ds) flyout, driven entirely
+   by /api/grafana/ds-templates. */
+async function dsFlyout(row) {
+  var templates;
+  try { templates = await loadTemplates(); }
+  catch (e) { toast('ds-templates: ' + e.message, 'err'); return; }
+  var types = Object.keys(templates);
+  var editing = !!row;
+  var curType = editing ?
+    (types.filter(function (t) {
+      return templates[t].plugin_id === row.type ||
+        t === row.type; })[0] || types[0]) : types[0];
+
+  function bodyHtml(tkey) {
+    var tpl = templates[tkey] || {};
+    var opts = types.map(function (t) {
+      return '<option value="' + esc(t) + '"' +
+        (t === tkey ? ' selected' : '') + '>' +
+        esc(templates[t].label || t) +
+        (templates[t].core ? '' : ' (plugin)') + '</option>';
+    }).join('');
+    return '<label for="ds-type">Type</label>' +
+      '<select id="ds-type"' + (editing ? ' disabled' : '') + '>' +
+      opts + '</select>' +
+      (tpl.core === false ? '<div class="field-help">' +
+        chip('plugin required', 'warn') + ' install <span ' +
+        'class="mono">' + esc(tpl.plugin_id || '') +
+        '</span> on the Grafana server first.</div>' : '') +
+      '<label for="ds-name">Name <span class="req">*</span>' +
+      '</label>' +
+      '<input id="ds-name" value="' +
+      esc(editing ? row.name : '') + '" autocomplete="off">' +
+      (tpl.fields || []).map(function (f) {
+        return tplFieldHtml(f, tplValue(row, f));
+      }).join('') +
+      (editing ? '<div class="field-help">Secret fields are ' +
+        'write-only: leave them empty to keep the current ' +
+        'value.</div>' : '') +
+      (tpl.notes ? '<div class="sec-note">' + esc(tpl.notes) +
+        '</div>' : '') +
+      '<div id="ds-fly-out"></div>';
+  }
+
+  var fly = openFlyout(
+    editing ? 'Edit datasource' : 'Add datasource',
+    bodyHtml(curType),
+    '<button class="btn" id="ds-cancel">Cancel</button>' +
+    '<button class="btn primary" id="ds-save">' +
+    (editing ? 'Save changes' : 'Create &amp; health-check') +
+    '</button>');
+
+  function bind() {
+    $('#ds-cancel', fly).onclick = closeFlyout;
+    var sel = $('#ds-type', fly);
+    if (sel && !editing) {
+      sel.onchange = function () {
+        curType = sel.value;
+        $('.flyout-body', fly).innerHTML = bodyHtml(curType);
+        bind();
+      };
+    }
+    $('#ds-save', fly).onclick = save;
+  }
+
+  async function save() {
+    var btn = $('#ds-save', fly);
+    var tpl = templates[curType] || {};
+    var name = ($('#ds-name', fly).value || '').trim();
+    var out = $('#ds-fly-out', fly);
+    if (!name) {
+      out.innerHTML = '<div class="err-text">A name is required.' +
+        '</div>';
+      return;
+    }
+    var values = {};
+    var missing = [];
+    (tpl.fields || []).forEach(function (f) {
+      var el = $('[data-fname="' + f.name + '"]', fly);
+      var v = el ? el.value.trim() : '';
+      if (v) values[f.name] = v;
+      else if (f.required && !editing) missing.push(f.label || f.name);
+    });
+    if (missing.length) {
+      out.innerHTML = '<div class="err-text">Required: ' +
+        esc(missing.join(', ')) + '</div>';
+      return;
+    }
+    busy(btn, true);
+    try {
+      if (editing) {
+        var payload = { name: name, type: row.type,
+                        access: row.access || 'proxy',
+                        jsonData: JSON.parse(JSON.stringify(
+                          row.jsonData || {})) };
+        if (row.url) payload.url = row.url;
+        var secure = {};
+        (tpl.fields || []).forEach(function (f) {
+          var v = values[f.name];
+          if (v == null) return;
+          var path = f.path || '';
+          if (path === 'url') payload.url = v;
+          else if (path.indexOf('jsonData.') === 0) {
+            payload.jsonData[path.slice(9)] = v;
+          } else if (path.indexOf('secureJsonData.') === 0) {
+            secure[path.slice(15)] = v;
+          }
+        });
+        if (Object.keys(secure).length) {
+          payload.secureJsonData = secure;
+        }
+        await api('/api/grafana/datasource/' +
+                  encodeURIComponent(row.uid), payload, 'PUT');
+        var h2 = await api('/api/grafana/datasource/' +
+                           encodeURIComponent(row.uid) + '/health',
+                           {});
+        App.dsHealth[row.uid] = h2;
+        out.innerHTML = '<div class="ai-box">' +
+          chip('saved', 'ok') + ' ' + healthChip(row.uid) +
+          (h2.message ? '<div class="kv" style="margin-top:6px">' +
+            esc(h2.message) + '</div>' : '') + '</div>';
+        toast('Datasource updated', 'ok');
+        setTimeout(function () { closeFlyout(); route(); }, 900);
+      } else {
+        var res = await api('/api/grafana/datasource',
+          { type: curType, name: name, values: values });
+        var h = res.health || {};
+        if (res.uid) App.dsHealth[res.uid] = h;
+        var cls = h.status === 'ok' ? 'ok' :
+          h.status === 'error' ? 'err' : 'warn';
+        out.innerHTML = '<div class="ai-box">' +
+          chip('created', 'ok') +
+          (res.uid ? ' <span class="mono kv">' + esc(res.uid) +
+            '</span>' : '') +
+          '<div style="margin-top:6px">' +
+          chip('health: ' + (h.status || 'unknown'), cls) +
+          (h.message ? '<div class="kv" style="margin-top:4px">' +
+            esc(h.message) + '</div>' : '') + '</div></div>';
+        toast('Datasource created' +
+              (h.status === 'ok' ? ' and healthy' :
+               ' - health: ' + (h.status || 'unknown')),
+              h.status === 'ok' ? 'ok' : 'err');
+        if (h.status === 'ok') {
+          setTimeout(function () { closeFlyout(); route(); }, 1100);
+        }
+      }
+    } catch (e) {
+      out.innerHTML = '<div class="err-text">' + esc(e.message) +
+        '</div>';
+    }
+    busy(btn, false);
+  }
+  bind();
+}
+
+/* ====================================================== WORKSPACE */
+async function loadDetail(slug) {
+  var d = await api('/api/dashboards/' + encodeURIComponent(slug));
+  /* index helpers */
+  d._tests = {};
+  ((d.datatest || {}).results || []).forEach(function (r) {
+    (d._tests[r.panel_id] = d._tests[r.panel_id] || {})[
+      r.refId || 'A'] = r;
+  });
+  d._parity = {};
+  ((d.parity || {}).panels || []).forEach(function (p) {
+    (d._parity[p.panel_id] = d._parity[p.panel_id] || {})[
+      p.refId || 'A'] = p;
+  });
+  d._samples = {};
+  ((d.samples || {}).panels || []).forEach(function (p) {
+    (d._samples[p.panel_id] = d._samples[p.panel_id] || {})[
+      p.refId || 'A'] = p;
+  });
+  d._reviews = {};
+  var rvs = (d.review || {}).reviews || {};
+  Object.keys(rvs).forEach(function (k) {
+    var r = rvs[k];
+    (d._reviews[r.panel_id] = d._reviews[r.panel_id] || {})[
+      r.refId || 'A'] = r;
+  });
+  d._findings = {};
+  ((d.diagnosis || {}).findings || []).forEach(function (f) {
+    if (f.panel_id != null) {
+      (d._findings[f.panel_id] = d._findings[f.panel_id] || [])
+        .push(f);
+    }
+  });
+  d._panelMap = {};
+  (function walk(ps) {
+    (ps || []).forEach(function (p) {
+      d._panelMap[p.id] = p;
+      if (p.type === 'row') walk(p.panels);
+    });
+  })((d.dashboard || {}).panels);
+  return d;
+}
+
+function wsTabs(slug, tab) {
+  var base = '#/dash/' + encodeURIComponent(slug);
+  var tabs = [['panels', 'Panels', base],
+              ['diagnostics', 'Diagnostics', base + '/diagnostics'],
+              ['verify', 'Verify & Download', base + '/verify']];
+  return '<div class="tabs" role="tablist">' +
+    tabs.map(function (t) {
+      return '<a href="' + t[2] + '" role="tab"' +
+        (t[0] === tab ? ' class="active" aria-selected="true"' :
+         ' aria-selected="false"') + '>' + esc(t[1]) + '</a>';
+    }).join('') + '</div>';
+}
+
+var STEP_FOR_TAB = { panels: 'validate', diagnostics: 'fix',
+                     verify: 'verify' };
+
+async function vWorkspace(view, slug, tab) {
+  crumb(slug);
+  view.innerHTML = '<div class="empty">Loading ' + esc(slug) +
+    '&hellip;</div>';
+  var d;
+  try { d = await loadDetail(slug); }
+  catch (e) {
+    view.innerHTML = '<div class="empty"><b>Cannot load ' +
+      esc(slug) + '</b><br>' + esc(e.message) +
+      '<br><a href="#/overview">Back to overview</a></div>';
+    return;
+  }
+  App.ws = { slug: slug, detail: d, tab: tab };
+  crumb(d.title || slug);
+  var head =
+    '<a class="backlink" href="#/overview">&larr; All dashboards' +
+    '</a>' +
+    '<h1>' + esc(d.title) + '</h1>' +
+    '<p class="lead mono">' + esc(slug) +
+    (d.package_dir ? ' &middot; ' + esc(d.package_dir) : '') +
+    '</p>' +
+    reviewProgressHtml(d) +
+    stepper(slug, d, STEP_FOR_TAB[tab] || 'validate') +
+    wsTabs(slug, tab);
+  if (tab === 'diagnostics') {
+    view.innerHTML = head + '<div id="ws-body"></div>';
+    renderDiagnostics($('#ws-body'), slug, d);
+  } else if (tab === 'verify') {
+    view.innerHTML = head + '<div id="ws-body"></div>';
+    renderVerify($('#ws-body'), slug, d);
+  } else {
+    view.innerHTML = head + '<div id="ws-body"></div>';
+    renderPanels($('#ws-body'), slug, d);
+  }
+}
+
+function rerenderWs() {
+  if (App.ws) {
+    vWorkspace($('#view'), App.ws.slug, App.ws.tab);
+  }
+}
+
+/* Human-review progress for a loaded dashboard detail. */
+function reviewCounts(d) {
+  var c = { confirmed: 0, rejected: 0, unsure: 0, total: 0 };
+  var rvs = (d.review || {}).reviews || {};
+  Object.keys(rvs).forEach(function (k) {
+    var v = (rvs[k] || {}).verdict;
+    if (c[v] != null) c[v]++;
+  });
+  Object.keys(d._panelMap || {}).forEach(function (id) {
+    var p = d._panelMap[id];
+    if (p.type === 'row' || p.type === 'text') return;
+    c.total += (p.targets || []).length;
+  });
+  return c;
+}
+
+function reviewProgressHtml(d) {
+  var c = reviewCounts(d);
+  if (!c.total) return '';
+  var html = chip(c.confirmed + '/' + c.total + ' confirmed',
+                  c.total && c.confirmed === c.total ? 'ok' : 'dim',
+                  'human sample review progress');
+  if (c.rejected) html += chip(c.rejected + ' rejected', 'err');
+  if (c.unsure) html += chip(c.unsure + ' not sure', 'warn');
+  return '<div style="margin:-6px 0 10px">' +
+    '<span class="kv" style="margin-right:6px">Human review:' +
+    '</span>' + html + '</div>';
+}
+
+/* ------------------------------------------------ panels tab */
+function reqStatusChip(items, ds) {
+  if (!items || !items.length) return chip('not checked', 'dim');
+  var m = null;
+  items.forEach(function (it) {
+    var name = String(it.item || '').toLowerCase();
+    if (name.indexOf(String(ds.family || '').toLowerCase()) >= 0 ||
+        (ds.plugin_id &&
+         name.indexOf(String(ds.plugin_id).toLowerCase()) >= 0)) {
+      m = it;
+    }
+  });
+  if (!m) return chip('not checked', 'dim');
+  var cls = m.status === 'ok' ? 'ok' :
+            (m.status === 'missing' ? 'err' : 'warn');
+  var fix = m.status !== 'ok' ?
+    '<div class="kv">' + (m.fix ? esc(m.fix) + ' ' : '') +
+    '<a href="#/datasources">Open Datasources &rarr;</a></div>' : '';
+  return chip(m.status, cls) + fix;
+}
+
+function worstStatus(tests) {
+  var vals = Object.keys(tests).map(function (k) {
+    return tests[k].status; });
+  if (vals.indexOf('error') >= 0) return 'error';
+  if (vals.indexOf('no-data') >= 0) return 'no-data';
+  if (vals.indexOf('data') >= 0) return 'data';
+  return '';
+}
+
+function worstVerdict(prow) {
+  var order = ['gf-error', 'nr-error', 'shape-mismatch',
+               'value-mismatch', 'gf-empty', 'both-empty',
+               'nr-empty', 'close', 'match'];
+  var best = '';
+  var rows = Object.keys(prow || {}).map(function (k) {
+    return prow[k]; });
+  order.forEach(function (v) {
+    if (!best && rows.some(function (r) {
+      return r.verdict === v; })) best = v;
+  });
+  return best ? rows.filter(function (r) {
+    return r.verdict === best; })[0] : null;
+}
+
+function requirementsCard(d) {
+  var reqs = d.requirements || {};
+  var checkItems = (d.check || {}).items || [];
+  var dsRows = (reqs.datasources || []).map(function (ds) {
+    return '<tr><td><b>' + esc(ds.family) + '</b>' +
+      (ds.required === false ? ' ' + chip('optional', 'dim') : '') +
+      '</td>' +
+      '<td class="mono">' + esc(ds.plugin_id || '') + '</td>' +
+      '<td>' + esc(ds.purpose || '') + '</td>' +
+      '<td class="mono">' + esc(ds.uid_ref || '') + '</td>' +
+      '<td>' + reqStatusChip(checkItems, ds) + '</td></tr>';
+  }).join('');
+  var pluginRows = (reqs.plugins || []).map(function (p) {
+    return '<div class="kv" style="margin:4px 0"><b class="mono">' +
+      esc(p.id) + '</b> &mdash; ' + esc(p.reason || '') +
+      (p.grafana_cli ? '<pre>' + esc(p.grafana_cli) + '</pre>' : '') +
+      '</div>';
+  }).join('');
+  var domainRows = (reqs.domains || []).map(function (dm) {
+    var opts = (dm.options || []).map(function (o) {
+      return '<li>' + (o.plugin_id ? '<b class="mono">' +
+        esc(o.plugin_id) + '</b>: ' : '') + esc(o.note || '') +
+        '</li>';
+    }).join('');
+    return '<div style="margin:6px 0">' + chip(dm.domain, 'info') +
+      ' <span class="kv">panels ' +
+      esc((dm.panel_ids || []).join(', ')) + '</span>' +
+      (opts ? '<ul class="kv" style="margin:4px 0 0">' + opts +
+       '</ul>' : '') + '</div>';
+  }).join('');
+  var nrNative = (reqs.nr_native || []).map(function (n) {
+    return '<div class="kv" style="margin:4px 0">panel ' +
+      esc(n.panel_id) + ' <b>' + esc(n.widget || '') +
+      '</b> &mdash; ' + esc(n.why || '') +
+      (n.equivalent ? ' <i>Equivalent: ' + esc(n.equivalent) +
+       '</i>' : '') + '</div>';
+  }).join('');
+  return '<div class="card"><h2>Requirements &mdash; install ' +
+    'these first</h2>' +
+    (dsRows ?
+      '<div class="tablewrap"><table><thead><tr><th>Datasource' +
+      '</th><th>Plugin</th><th>Purpose</th><th>Referenced as</th>' +
+      '<th>Live status</th></tr></thead><tbody>' + dsRows +
+      '</tbody></table></div>' :
+      '<div class="kv">No datasource requirements recorded. ' +
+      'Re-run Convert &amp; Package to generate them.</div>') +
+    (pluginRows ? '<h3 style="margin-top:14px">Plugins</h3>' +
+      pluginRows : '') +
+    (domainRows ? '<h3 style="margin-top:14px">Detected data ' +
+      'domains</h3>' + domainRows : '') +
+    (nrNative ? '<h3 style="margin-top:14px">New Relic-native ' +
+      'widgets</h3>' + nrNative : '') +
+    '</div>';
+}
+
+function renderPanels(el, slug, d) {
+  var panelRows = (d.widget_report || []).map(function (w) {
+    var pt = d._tests[w.panel_id] || {};
+    var pv = d._parity[w.panel_id] || {};
+    var wv = worstVerdict(pv);
+    var wr = worstReview(d._reviews[w.panel_id] || {});
+    var open = App.expanded[slug + ':' + w.panel_id];
+    var row = '<tr class="click" tabindex="0" data-exp="' +
+      esc(w.panel_id) + '" aria-expanded="' +
+      (open ? 'true' : 'false') + '">' +
+      '<td>' + esc(w.panel_id) + '</td>' +
+      '<td><b>' + esc(w.widget || w.widget_title || '(untitled)') +
+      '</b><div class="kv">' + esc(w.page || '') + '</div></td>' +
+      '<td class="mono">' + esc(w.panel_type || '') + '</td>' +
+      '<td>' + confChip(w.confidence) + '</td>' +
+      '<td>' + testChip(worstStatus(pt)) + '</td>' +
+      '<td>' + (wv ? verdictChip(wv.verdict, wv.ratio, wv.detail) :
+                chip('no parity', 'dim')) + '</td>' +
+      '<td>' + (wr ? reviewChip(wr) : chip('unreviewed', 'dim')) +
+      '</td>' +
+      '<td>' + (open ? '&#9662;' : '&#9656;') + '</td></tr>';
+    if (open) {
+      row += '<tr class="expand-row"><td colspan="8">' +
+        panelDetailHtml(slug, d, w) + '</td></tr>';
+    }
+    return row;
+  }).join('');
+
+  el.innerHTML =
+    '<div class="btnbar" style="margin:0 0 12px">' +
+    '<button class="btn" id="ws-check">Check requirements' +
+    '</button>' +
+    '<button class="btn primary" id="ws-test">Run data tests' +
+    '</button>' +
+    '<a class="btn" href="#/dash/' + encodeURIComponent(slug) +
+    '/diagnostics">Diagnose &rarr;</a></div>' +
+    '<div class="log" id="ws-log" aria-live="polite"></div>' +
+    requirementsCard(d) +
+    '<div class="card"><h2>Panels</h2><div class="tablewrap">' +
+    '<table><thead><tr><th>Id</th><th>Panel</th><th>Type</th>' +
+    '<th>Confidence</th><th>Test</th><th>Parity</th>' +
+    '<th>Review</th><th></th>' +
+    '</tr></thead><tbody>' + (panelRows ||
+    '<tr><td colspan="8" class="kv">no widget report</td></tr>') +
+    '</tbody></table></div></div>';
+
+  $('#ws-check').onclick = async function () {
+    var btn = this; busy(btn, true);
+    try {
+      await api('/api/grafana/check', { slug: slug });
+      toast('Requirement check complete', 'ok');
+      rerenderWs();
+    } catch (e) { toast(e.message, 'err'); busy(btn, false); }
+  };
+  $('#ws-test').onclick = async function () {
+    var btn = this; busy(btn, true);
+    try {
+      var job = await startJob('data tests: ' + slug,
+        '/api/grafana/test', { slug: slug }, logInto($('#ws-log')));
+      var s = job.result.summary || {};
+      toast('Tested: ' + Object.keys(s).map(function (k) {
+        return s[k] + ' ' + k; }).join(', '), 'ok');
+      rerenderWs();
+    } catch (e) { toast(e.message, 'err'); busy(btn, false); }
+    refreshState();
+  };
+
+  $all('tr[data-exp]', el).forEach(function (tr) {
+    var toggle = function (ev) {
+      if (ev && ev.target &&
+          ev.target.closest('button, textarea, input, select, a, ' +
+                            '.ac')) return;
+      var key = slug + ':' + tr.getAttribute('data-exp');
+      App.expanded[key] = !App.expanded[key];
+      renderPanels(el, slug, d);
+    };
+    tr.onclick = toggle;
+    tr.onkeydown = function (ev) {
+      if (ev.key === 'Enter' && ev.target === tr) {
+        ev.preventDefault(); toggle();
+      }
+    };
+  });
+  bindEditors(el, slug, d);
+  bindPanelFixes(el, slug, d);
+}
+
+function panelDetailHtml(slug, d, w) {
+  var html = '';
+  var panel = d._panelMap[w.panel_id];
+  var pt = d._tests[w.panel_id] || {};
+  var pv = d._parity[w.panel_id] || {};
+  (w.nrql || []).forEach(function (q) {
+    html += '<div class="kv"><b>Original NRQL</b></div><pre>' +
+      esc(q.query || q) + '</pre>';
+  });
+  (w.notes || []).forEach(function (n) {
+    html += '<div class="kv">note: ' + esc(n) + '</div>';
+  });
+  var targets = (panel && panel.targets) || [];
+  if (!targets.length) {
+    html += '<div class="kv" style="margin-top:8px">This panel ' +
+      'has no query targets (text/placeholder panel)';
+    if (w.fallback) html += ' &mdash; fallback: ' + esc(w.fallback);
+    html += '.</div>';
+  }
+  targets.forEach(function (t) {
+    var ref = t.refId || 'A';
+    var tr = pt[ref];
+    var srow = (d._samples[w.panel_id] || {})[ref];
+    var rv = (d._reviews[w.panel_id] || {})[ref];
+    var prow = pv[ref] ||
+      (Object.keys(pv).length === 1 ? pv[Object.keys(pv)[0]] : null);
+    var dsType = (t.datasource && t.datasource.type) || '';
+    var dsUid = (t.datasource && t.datasource.uid) || '';
+    var eid = 'ed-' + w.panel_id + '-' + ref;
+    html += '<div style="margin-top:16px">' +
+      '<div class="row">' + chip(ref, 'dim') +
+      chip(dsType || 'unknown ds', 'info') +
+      testChip(tr && tr.status) +
+      (prow ? verdictChip(prow.verdict, prow.ratio, prow.detail)
+            : '') +
+      (tr && tr.frames != null ?
+        '<span class="kv">' + tr.frames + ' frames / ' +
+        (tr.points || 0) + ' points</span>' : '') +
+      '</div>' +
+      (tr && tr.error ? '<div class="err-text">' + esc(tr.error) +
+        '</div>' : '') +
+      (prow && prow.detail && prow.verdict !== 'match' ?
+        '<div class="kv" style="margin:4px 0">parity: ' +
+        esc(prow.detail) + '</div>' : '') +
+      '<div class="side-by-side">' +
+      sideCard('New Relic', prow, 'nr') +
+      sideCard('Grafana', prow, 'gf') +
+      '</div>' +
+      '<h3 style="margin-top:14px">Samples &mdash; actual raw ' +
+      'data, side by side</h3>' +
+      '<div class="side-by-side">' +
+      sampleCard('New Relic', srow ? srow.nr : null) +
+      sampleCard('Grafana', srow ? srow.grafana : null) +
+      '</div>' +
+      '<div class="btnbar" style="margin-top:4px">' +
+      btnA('samples', w.panel_id, ref,
+           srow ? 'Refresh samples' : 'Pull samples') +
+      (srow ?
+        '<span class="kv">pulled ' +
+        esc((d.samples || {}).generated_at || '') + '</span>' :
+        '<span class="kv">pulls a handful of raw rows / log ' +
+        'lines from each source so you can verify this is the ' +
+        'data you expect</span>') +
+      '</div>' +
+      signoffHtml(w.panel_id, ref, rv) +
+      '<label for="' + eid + '">Translated query</label>' +
+      '<div class="editor-wrap">' +
+      '<textarea id="' + eid + '" data-uid="' + esc(dsUid) +
+      '" spellcheck="false">' +
+      esc(t.expr || t.query || t.queryText || '') + '</textarea>' +
+      '<div class="ac" id="ac-' + w.panel_id + '-' + ref +
+      '"></div></div>' +
+      '<label for="why-' + w.panel_id + '-' + ref + '">Change ' +
+      'note (recorded in the change log)</label>' +
+      '<input id="why-' + w.panel_id + '-' + ref +
+      '" placeholder="why this edit?" autocomplete="off">' +
+      '<div class="btnbar">' +
+      btnA('test', w.panel_id, ref, 'Test') +
+      btnA('ai', w.panel_id, ref, 'Ask AI') +
+      btnA('save', w.panel_id, ref, 'Save') +
+      btnA('push', w.panel_id, ref, 'Save &amp; Push', 'primary') +
+      '</div>' +
+      '<div id="tres-' + w.panel_id + '-' + ref + '"></div>' +
+      '<div id="ai-' + w.panel_id + '-' + ref + '"></div>' +
+      '</div>';
+  });
+  /* diagnosis findings for this panel */
+  var flist = d._findings[w.panel_id] || [];
+  if (flist.length) {
+    html += '<h3 style="margin-top:16px">Findings for this panel' +
+      '</h3>' + flist.map(function (f) {
+        return findingHtml(f, true);
+      }).join('');
+  }
+  return html;
+}
+
+function btnA(act, pid, ref, label, extra) {
+  return '<button class="btn small ' + (extra || '') +
+    '" data-act="' + act + '" data-pid="' + esc(pid) +
+    '" data-ref="' + esc(ref) + '">' + label + '</button>';
+}
+
+function bindEditors(el, slug, d) {
+  $all('button[data-act]', el).forEach(function (btn) {
+    btn.onclick = function (ev) {
+      ev.stopPropagation();
+      editorAction(el, slug, d, btn);
+    };
+  });
+  /* metric-name autocomplete on every editor */
+  $all('textarea[id^="ed-"]', el).forEach(function (ta) {
+    attachAutocomplete(ta, el);
+  });
+}
+
+function attachAutocomplete(ta, root) {
+  var uid = ta.getAttribute('data-uid') || '';
+  if (!uid || uid.indexOf('$') === 0) return;
+  var box = document.getElementById('ac-' + ta.id.slice(3));
+  if (!box) return;
+  var items = [], sel = -1;
+
+  function hide() { box.classList.remove('show');
+    box.innerHTML = ''; items = []; sel = -1; }
+
+  function token() {
+    var pos = ta.selectionStart || 0;
+    var head = ta.value.slice(0, pos);
+    var m = head.match(/[A-Za-z_:][A-Za-z0-9_:]*$/);
+    return m ? { word: m[0], start: pos - m[0].length, end: pos }
+             : null;
+  }
+
+  var lookup = debounce(async function () {
+    var tk = token();
+    if (!tk || tk.word.length < 2) { hide(); return; }
+    var r;
+    try {
+      r = await api('/api/metrics?uid=' + encodeURIComponent(uid) +
+                    '&q=' + encodeURIComponent(tk.word));
+    } catch (e) { hide(); return; }
+    items = (r.metrics || []).slice(0, 12);
+    if (!items.length) { hide(); return; }
+    sel = -1;
+    box.innerHTML = items.map(function (m, i) {
+      return '<button type="button" data-i="' + i + '">' + esc(m) +
+        '</button>';
+    }).join('');
+    box.classList.add('show');
+    $all('button', box).forEach(function (b) {
+      b.onmousedown = function (ev) {
+        ev.preventDefault();
+        apply(items[+b.getAttribute('data-i')]);
+      };
+    });
+  }, 250);
+
+  function apply(name) {
+    var tk = token();
+    if (!tk) { hide(); return; }
+    ta.value = ta.value.slice(0, tk.start) + name +
+      ta.value.slice(tk.end);
+    var p = tk.start + name.length;
+    ta.setSelectionRange(p, p);
+    ta.focus();
+    hide();
+  }
+
+  ta.addEventListener('input', lookup);
+  ta.addEventListener('blur', function () {
+    setTimeout(hide, 150); });
+  ta.addEventListener('keydown', function (ev) {
+    if (!box.classList.contains('show')) return;
+    if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+      ev.preventDefault();
+      sel = ev.key === 'ArrowDown' ?
+        Math.min(sel + 1, items.length - 1) : Math.max(sel - 1, 0);
+      $all('button', box).forEach(function (b, i) {
+        b.classList.toggle('sel', i === sel);
+      });
+    } else if (ev.key === 'Enter' && sel >= 0) {
+      ev.preventDefault(); apply(items[sel]);
+    } else if (ev.key === 'Escape') { hide(); }
+  });
+}
+
+async function editorAction(el, slug, d, btn) {
+  var act = btn.getAttribute('data-act');
+  var pidRaw = btn.getAttribute('data-pid');
+  var pid = /^\d+$/.test(pidRaw) ? parseInt(pidRaw, 10) : pidRaw;
+  var ref = btn.getAttribute('data-ref');
+  var ta = document.getElementById('ed-' + pidRaw + '-' + ref);
+  var expr = ta ? ta.value : '';
+  var tres = document.getElementById('tres-' + pidRaw + '-' + ref);
+  busy(btn, true);
+  try {
+    if (act === 'test') {
+      var r = await api('/api/panel/test',
+        { slug: slug, panel_id: pid, refId: ref, expr: expr });
+      var res = (r.results || [])[0] || {};
+      tres.innerHTML = '<div style="margin-top:6px">' +
+        testChip(res.status) +
+        (res.frames != null ? ' <span class="kv">' + res.frames +
+          ' frames / ' + (res.points || 0) + ' points</span>' : '') +
+        (res.error ? '<div class="err-text">' + esc(res.error) +
+          '</div>' : '') + '</div>';
+    } else if (act === 'samples') {
+      await startJob('samples: ' + slug + ' panel ' + pidRaw,
+        '/api/samples', { slug: slug, panel_id: pid, limit: 5 },
+        null);
+      toast('Samples pulled - compare the two sides, then ' +
+            'Confirm or Reject', 'ok');
+      rerenderWs();
+    } else if (act.indexOf('rv-') === 0) {
+      var noteEl = document.getElementById(
+        'rvnote-' + pidRaw + '-' + ref);
+      var verdict = act.slice(3);
+      var rr = await api('/api/review',
+        { slug: slug, panel_id: pid, refId: ref, verdict: verdict,
+          note: noteEl ? noteEl.value.trim() : '' });
+      var sm = rr.summary || {};
+      toast('Recorded: ' + verdict + ' (' + (sm.confirmed || 0) +
+            ' confirmed, ' + (sm.rejected || 0) + ' rejected)',
+            verdict === 'rejected' ? 'err' : 'ok');
+      rerenderWs();
+    } else if (act === 'ai') {
+      var box = document.getElementById('ai-' + pidRaw + '-' + ref);
+      box.innerHTML = '<div class="ai-box">Asking Claude&hellip;' +
+        '</div>';
+      var aiBody = { slug: slug, panel_id: pid, refId: ref,
+                     expr: expr };
+      var rvRow = ((d._reviews || {})[pid] || {})[ref];
+      if (rvRow && rvRow.verdict === 'rejected') {
+        aiBody.context = { human_review:
+          'A human reviewer REJECTED this panel\'s data samples' +
+          (rvRow.note ? ': ' + rvRow.note : '') +
+          '. Take that verdict into account.' };
+      }
+      var a = await api('/api/ai/suggest', aiBody);
+      var fixed = a.fixed_expr || '';
+      box.innerHTML = '<div class="ai-box">' +
+        '<span class="chip ' + (a.confidence === 'high' ? 'ok' :
+          a.confidence === 'low' ? 'warn' : 'info') +
+        ' conf">' + esc(a.confidence || 'suggestion') + '</span>' +
+        '<div>' + esc(a.explanation || '') + '</div>' +
+        (fixed ? '<label>Suggested query</label><pre>' + esc(fixed) +
+          '</pre><button class="btn small primary" id="apply-' +
+          pidRaw + '-' + ref + '">Apply to editor</button>' : '') +
+        ((a.actions || []).length ? '<ul class="kv">' +
+          a.actions.map(function (x) {
+            return '<li>' + esc(x) + '</li>'; }).join('') +
+          '</ul>' : '') +
+        '</div>';
+      if (fixed) {
+        document.getElementById('apply-' + pidRaw + '-' + ref)
+          .onclick = function (ev) {
+            ev.stopPropagation();
+            ta.value = fixed;
+            toast('Suggestion applied to the editor - Test then ' +
+                  'Save', 'ok');
+          };
+      }
+    } else if (act === 'save' || act === 'push') {
+      var whyEl = document.getElementById(
+        'why-' + pidRaw + '-' + ref);
+      var body = { slug: slug, panel_id: pid, refId: ref,
+                   expr: expr, why: whyEl ? whyEl.value.trim() : '',
+                   retest: false, push: act === 'push' };
+      await api('/api/panel/update', body);
+      toast(act === 'push' ?
+            'Saved and pushed to Grafana' : 'Saved', 'ok');
+    }
+  } catch (e) {
+    toast(e.message, 'err');
+  }
+  busy(btn, false);
+}
+
+/* ------------------------------------------------ diagnostics tab */
+function findingHtml(f, compact) {
+  var fix = f.fix || {};
+  var hasApply = fix.kind && fix.kind !== 'none';
+  return '<div class="finding ' + esc(f.severity || 'info') +
+    '" data-fid="' + esc(f.id) + '">' +
+    '<div class="f-head">' + sevChip(f.severity) +
+    chip(f.area || '', 'dim') +
+    (f.panel_id != null && !compact ?
+      chip('panel ' + f.panel_id, 'purple') : '') +
+    '<span class="f-problem">' + esc(f.problem || '') + '</span>' +
+    (hasApply ?
+      '<button class="btn small" data-fixbtn="' + esc(f.id) +
+      '">Fix&hellip;</button>' : '') +
+    '</div>' +
+    (f.evidence ? '<div class="f-evidence"><pre style="margin:0">' +
+      esc(f.evidence) + '</pre></div>' : '') +
+    (fix.description ? '<div class="kv" style="margin-top:6px">' +
+      '<b>Remediation:</b> ' + esc(fix.description) + '</div>' :
+      '') +
+    '<div class="fix-slot" id="fixslot-' + cssId(String(f.id)) +
+    '"></div></div>';
+}
+
+/* Inline inputs for an add-datasource fix that still needs values
+   (e.g. the datasource URL). Field labels/placeholders come from the
+   ds-templates cache when it is loaded; names otherwise. */
+function needsInputHtml(fix) {
+  var action = fix.action || {};
+  var needs = (fix.kind === 'add-datasource' &&
+               action.needs_input) || [];
+  if (!needs.length) return '';
+  var tpl = (App.templates || {})[action.type] || {};
+  var fieldOf = {};
+  (tpl.fields || []).forEach(function (fd) {
+    fieldOf[fd.name] = fd; });
+  return '<div class="kv" style="margin-top:6px"><b>Fill in the ' +
+    'missing value(s) to create it right here:</b></div>' +
+    needs.map(function (n) {
+      var fd = fieldOf[n] || {};
+      var secret = fd.secret ||
+        /key|secret|password|token/i.test(n);
+      return '<label>' + esc(fd.label || n) +
+        (secret ? ' ' + chip('secret', 'purple') : '') +
+        '</label><input ' + (secret ? 'type="password" ' : '') +
+        'data-dsfx="' + esc(n) + '" autocomplete="off" ' +
+        'placeholder="' + esc(fd.placeholder || '') + '">' +
+        (fd.help ? '<div class="field-help">' + esc(fd.help) +
+          '</div>' : '');
+    }).join('') +
+    '<div class="kv" style="margin-top:4px">or use the full form: ' +
+    '<a href="#/datasources">open Datasources &rarr;</a></div>';
+}
+
+/* Preview-before-apply: expands the exact change, then Apply. */
+function bindFixButtons(root, slug, findings, onDone) {
+  loadTemplates().catch(function () {});  /* warm the ds-templates
+    cache so needs-input fields get proper labels */
+  $all('button[data-fixbtn]', root).forEach(function (btn) {
+    btn.onclick = function (ev) {
+      ev.stopPropagation();
+      var fid = btn.getAttribute('data-fixbtn');
+      var f = null;
+      findings.forEach(function (x) {
+        if (String(x.id) === String(fid)) f = x; });
+      if (!f) return;
+      var slot = document.getElementById('fixslot-' +
+        cssId(String(fid)));
+      if (!slot) return;
+      if (slot.innerHTML) { slot.innerHTML = ''; return; }
+      var fix = f.fix || {};
+      slot.innerHTML = '<div class="fix-preview">' +
+        '<div class="kv"><b>This fix will:</b> ' +
+        esc(fix.description || fix.kind || '') + ' ' +
+        chip(fix.kind || '', 'info') + '</div>' +
+        (fix.action ? '<pre>' +
+          esc(JSON.stringify(fix.action, null, 2)) + '</pre>' :
+          '<div class="kv">No machine action payload &mdash; ' +
+          'follow the remediation text manually.</div>') +
+        needsInputHtml(fix) +
+        (fix.action ?
+          '<div class="btnbar">' +
+          '<button class="btn small primary" data-applyfix="' +
+          esc(fid) + '">Apply</button>' +
+          '<button class="btn small" data-applyfix="' + esc(fid) +
+          '" data-push="1">Apply &amp; Push live</button>' +
+          '<button class="btn small ghost" data-cancelfix="1">' +
+          'Cancel</button></div>' : '') +
+        '<div class="fix-result"></div></div>';
+      $all('button[data-applyfix]', slot).forEach(function (ab) {
+        ab.onclick = async function () {
+          busy(ab, true);
+          var out = $('.fix-result', slot);
+          try {
+            var body = { slug: slug, finding_id: f.id,
+                         push: !!ab.getAttribute('data-push') };
+            var vals = {};
+            $all('input[data-dsfx]', slot).forEach(function (inp) {
+              var v = inp.value.trim();
+              if (v) vals[inp.getAttribute('data-dsfx')] = v;
+            });
+            if (Object.keys(vals).length) body.values = vals;
+            var res = await api('/api/fix', body);
+            out.innerHTML = '<div style="margin-top:8px">' +
+              (res.applied ? chip('applied', 'ok') :
+               chip('not applied', 'warn')) +
+              ' <span class="kv">' + esc(res.detail || '') +
+              '</span></div>';
+            toast(res.applied ? 'Fix applied' :
+                  'Fix not applied: ' + (res.detail || ''),
+                  res.applied ? 'ok' : 'err');
+            if (res.applied && onDone) {
+              setTimeout(onDone, 900);
+            }
+          } catch (e) {
+            out.innerHTML = '<div class="err-text">' +
+              esc(e.message) + '</div>';
+          }
+          busy(ab, false);
+        };
+      });
+      var cancel = $('button[data-cancelfix]', slot);
+      if (cancel) {
+        cancel.onclick = function () { slot.innerHTML = ''; };
+      }
     };
   });
 }
 
-/* ====================================================== TEST */
-async function vTest(view) {
-  crumb('Validate & Test');
-  var data = await api('/api/dashboards');
-  App.dashboards = data.dashboards || [];
-  var opts = App.dashboards.map(function (d) {
-    return '<option value="' + esc(d.slug) + '">' + esc(d.title) +
-      '</option>';
-  }).join('');
-  view.innerHTML =
-    '<h1>Validate &amp; Test</h1>' +
-    '<p class="lead">Check that the target Grafana has the ' +
-    'required datasources, then run every panel query against ' +
-    'live data.</p>' +
-    (opts ? '<div class="card"><div class="row">' +
-      '<select id="vt-slug" style="min-width:280px">' + opts +
-      '</select>' +
-      '<button class="btn" id="vt-check">Check requirements' +
-      '</button>' +
-      '<button class="btn primary" id="vt-test">Run data tests' +
-      '</button></div></div>' +
-      '<div class="log" id="vt-log"></div><div id="vt-out"></div>' :
-      '<div class="empty"><b>Nothing to test yet.</b><br>Convert ' +
-      'dashboards first on the <a href="#/convert">Convert</a> ' +
-      'page.</div>');
-  if (!opts) return;
+function bindPanelFixes(el, slug, d) {
+  var all = ((d.diagnosis || {}).findings) || [];
+  bindFixButtons(el, slug, all, rerenderWs);
+}
 
-  $('#vt-check').onclick = async function () {
+function renderDiagnostics(el, slug, d) {
+  var diag = d.diagnosis;
+  var findings = ((diag || {}).findings || []).slice();
+  findings.sort(function (a, b) {
+    return (SEV_ORDER[a.severity] != null ?
+            SEV_ORDER[a.severity] : 3) -
+           (SEV_ORDER[b.severity] != null ?
+            SEV_ORDER[b.severity] : 3);
+  });
+  var sum = (diag || {}).summary || {};
+  var sumChips = ['blocker', 'warn', 'info'].map(function (k) {
+    return sum[k] ? chip(sum[k] + ' ' + k, SEV_CLS[k]) : '';
+  }).join('');
+  el.innerHTML =
+    '<div class="btnbar" style="margin:0 0 12px">' +
+    '<button class="btn primary" id="dg-run">Run diagnose' +
+    '</button>' +
+    '<span class="row" style="gap:6px">' +
+    '<input type="checkbox" id="dg-push">' +
+    '<span class="kv">push safe fixes live</span></span>' +
+    '<button class="btn" id="dg-heal">Auto-heal</button>' +
+    '<span class="kv" style="margin-left:auto">' + sumChips +
+    (diag && diag.generated_at ? ' <span class="kv">generated ' +
+      esc(diag.generated_at) + '</span>' : '') + '</span></div>' +
+    '<div class="log" id="dg-log" aria-live="polite"></div>' +
+    '<div id="dg-heal-out"></div>' +
+    '<div id="dg-list">' +
+    (findings.length ? findings.map(function (f) {
+      return findingHtml(f, false); }).join('') :
+     diag ? '<div class="empty"><b>No findings.</b><br>The last ' +
+       'diagnosis came back clean. Re-run after changes to ' +
+       'confirm.</div>' :
+     '<div class="empty"><b>Not diagnosed yet.</b><br>Run ' +
+     'diagnose to get root causes and one-click fixes for every ' +
+     'failing panel.</div>') +
+    '</div>';
+
+  $('#dg-run').onclick = async function () {
     var btn = this; busy(btn, true);
     try {
-      var r = await api('/api/grafana/check',
-        { slug: $('#vt-slug').value });
-      var rows = (r.items || []).map(function (it) {
-        var cls = it.status === 'ok' ? 'ok' :
-          (it.status === 'missing' ? 'err' : 'warn');
-        return '<tr><td>' + esc(it.item) + '</td><td>' +
-          '<span class="chip ' + cls + '">' + esc(it.status) +
-          '</span></td><td>' + esc(it.detail || '') + '</td><td>' +
-          esc(it.fix || '') + '</td></tr>';
-      }).join('');
-      $('#vt-out').innerHTML = '<div class="card">' +
-        '<h2>Requirement check</h2><div class="tablewrap"><table>' +
-        '<thead><tr><th>Item</th><th>Status</th><th>Detail</th>' +
-        '<th>Fix</th></tr></thead><tbody>' +
-        (rows || '<tr><td colspan="4" class="kv">nothing to check' +
-         '</td></tr>') + '</tbody></table></div></div>';
-    } catch (e) { toast(e.message, 'err'); }
-    busy(btn, false); refreshState();
+      var job = await startJob('diagnose: ' + slug, '/api/diagnose',
+        { slug: slug }, logInto($('#dg-log')));
+      var n = ((job.result || {}).findings || []).length;
+      toast('Diagnosis complete: ' + n + ' finding(s)', 'ok');
+      rerenderWs();
+    } catch (e) { toast(e.message, 'err'); busy(btn, false); }
   };
 
-  $('#vt-test').onclick = async function () {
+  $('#dg-heal').onclick = async function () {
     var btn = this; busy(btn, true);
-    var slug = $('#vt-slug').value;
+    var out = $('#dg-heal-out');
+    out.innerHTML = '';
     try {
-      var job = await runJob('/api/grafana/test', { slug: slug },
-                             $('#vt-log'));
-      var res = job.result;
-      var rows = (res.results || []).map(function (r) {
-        return '<tr><td>' + esc(r.panel_id) + '</td><td>' +
-          esc(r.panel_title || '') + ' <span class="chip dim">' +
-          esc(r.refId || '') + '</span></td><td class="mono">' +
-          esc(r.datasource || '') + '</td><td>' +
-          testChip(r.status) + '</td><td>' +
-          (r.error ? '<span class="err-text">' + esc(r.error) +
-            '</span>' : (r.frames != null ?
-            r.frames + ' frames' : '')) + '</td></tr>';
+      var job = await startJob('auto-heal: ' + slug, '/api/heal',
+        { slug: slug, push: $('#dg-push').checked },
+        logInto($('#dg-log')));
+      var res = job.result || {};
+      var rounds = (res.rounds || []).map(function (r, i) {
+        var applied = (r.applied || []).map(function (a) {
+          return '<div class="kv">' +
+            (a.applied ? chip('fixed', 'ok') :
+             chip('skipped', 'dim')) + ' ' +
+            esc(a.detail || a.kind || '') + '</div>';
+        }).join('');
+        return '<div style="margin:8px 0"><b class="kv">Round ' +
+          (r.round || i + 1) + '</b> &mdash; ' +
+          chip((r.fixed || 0) + ' fixed', r.fixed ? 'ok' : 'dim') +
+          (applied || '<div class="kv">no safe fixes found</div>') +
+          '</div>';
       }).join('');
-      $('#vt-out').innerHTML = '<div class="card"><h2>Data test: ' +
-        esc(slug) + '</h2><div class="tablewrap"><table><thead>' +
-        '<tr><th>Panel</th><th>Title</th><th>Datasource</th>' +
-        '<th>Status</th><th>Detail</th></tr></thead><tbody>' + rows +
-        '</tbody></table></div>' +
-        '<div class="btnbar"><a class="btn small" ' +
-        'href="#/dashboards/' + encodeURIComponent(slug) +
-        '">Open dashboard to fix panels &rarr;</a></div></div>';
-      var s = res.summary || {};
-      toast('Tested: ' + Object.keys(s).map(function (k) {
-        return s[k] + ' ' + k; }).join(', '), 'ok');
+      out.innerHTML = '<div class="card"><h2>Auto-heal result' +
+        '</h2>' + chip(res.fixed + ' total fix(es)',
+                       res.fixed ? 'ok' : 'dim') + ' ' +
+        chip((res.remaining_findings || []).length + ' remaining',
+             (res.remaining_findings || []).length ? 'warn' : 'ok') +
+        rounds +
+        '<div class="btnbar"><button class="btn small" ' +
+        'id="dg-rediag">Re-run diagnose</button></div></div>';
+      $('#dg-rediag').onclick = function () {
+        $('#dg-run').click(); };
+      toast('Auto-heal: ' + (res.fixed || 0) + ' fix(es) applied',
+            'ok');
+      refreshState();
+    } catch (e) { toast(e.message, 'err'); }
+    busy(btn, false);
+  };
+
+  bindFixButtons(el, slug, findings, rerenderWs);
+}
+
+/* ------------------------------------------------ verify tab */
+function signoffCardHtml(slug, d) {
+  var c = reviewCounts(d);
+  var rvs = (d.review || {}).reviews || {};
+  var rejected = [];
+  Object.keys(rvs).forEach(function (k) {
+    if ((rvs[k] || {}).verdict === 'rejected') rejected.push(rvs[k]);
+  });
+  var chips = '';
+  if (c.confirmed || c.rejected || c.unsure) {
+    chips = chip(c.confirmed + ' confirmed', 'ok') +
+      chip(c.rejected + ' rejected', c.rejected ? 'err' : 'dim') +
+      chip(c.unsure + ' not sure', c.unsure ? 'warn' : 'dim') +
+      (c.total ? chip(Math.max(0, c.total - c.confirmed -
+        c.rejected - c.unsure) + ' unreviewed', 'dim') : '');
+  }
+  var rejList = rejected.map(function (r) {
+    var p = (d._panelMap || {})[r.panel_id] || {};
+    return '<div class="err-text">' + chip('blocker', 'err') +
+      ' panel ' + esc(r.panel_id) + ' [' + esc(r.refId || 'A') +
+      '] ' + esc(p.title || '') +
+      (r.note ? ' &mdash; ' + esc(r.note) : '') + '</div>';
+  }).join('');
+  var body;
+  if (!c.confirmed && !c.rejected && !c.unsure) {
+    body = '<div class="kv">No panels reviewed yet. On the ' +
+      '<a href="#/dash/' + encodeURIComponent(slug) +
+      '">Panels tab</a>, expand a panel, hit <b>Pull samples</b> ' +
+      'to see actual New Relic rows next to the same data in ' +
+      'Grafana (e.g. CloudWatch logs via NR vs Loki), then ' +
+      'Confirm or Reject. A fully confirmed dashboard is graded ' +
+      'human-verified; rejected panels block readiness.</div>';
+  } else {
+    body = '<div style="margin-bottom:6px">' + chips + '</div>' +
+      (rejList ||
+       (c.total && c.confirmed === c.total ?
+        '<div class="kv">' + chip('human-verified', 'ok') +
+        ' every panel\'s live samples were confirmed.</div>' :
+        '<div class="kv">Keep going: unreviewed panels are ' +
+        'listed on the Panels tab.</div>'));
+  }
+  return '<div class="card"><h2>Human sign-off</h2>' + body +
+    '</div>';
+}
+
+function renderVerify(el, slug, d) {
+  var par = d.parity;
+  var parityRows = ((par || {}).panels || []).map(function (p) {
+    return '<tr><td>' + esc(p.panel_id) + '</td>' +
+      '<td><b>' + esc(p.panel_title || '') + '</b> ' +
+      chip(p.refId || '', 'dim') + '</td>' +
+      '<td>' + verdictChip(p.verdict, p.ratio, '') + '</td>' +
+      '<td>' + fmtNum((p.nr_summary || {}).last) + ' vs ' +
+      fmtNum((p.gf_summary || {}).last) + '</td>' +
+      '<td class="kv">' + esc(p.detail || '') + '</td></tr>';
+  }).join('');
+  var sum = (par || {}).summary || {};
+  var sumChips = Object.keys(sum).sort().map(function (k) {
+    return chip(sum[k] + ' ' + k, VERDICT_CLS[k] || 'dim');
+  }).join('');
+
+  el.innerHTML =
+    '<div class="card"><h2>Verify: New Relic vs Grafana</h2>' +
+    '<p class="kv">Runs every panel query on BOTH sides over the ' +
+    'same time range and compares the numbers.</p>' +
+    '<div class="row">' +
+    '<label style="margin:0">From</label>' +
+    '<input id="vf-from" value="now-1h" style="max-width:110px">' +
+    '<label style="margin:0">To</label>' +
+    '<input id="vf-to" value="now" style="max-width:110px">' +
+    '<button class="btn primary" id="vf-run">Run parity</button>' +
+    '<span style="margin-left:auto">' + sumChips + '</span>' +
+    '</div>' +
+    '<div class="log" id="vf-log" aria-live="polite"></div>' +
+    (parityRows ?
+      '<div class="tablewrap" style="margin-top:12px"><table>' +
+      '<thead><tr><th>Id</th><th>Panel</th><th>Verdict</th>' +
+      '<th>Last NR vs GF</th><th>Detail</th></tr></thead><tbody>' +
+      parityRows + '</tbody></table></div>' :
+      '<div class="empty" style="margin-top:12px">Not compared ' +
+      'yet. Run parity to prove the migrated panels show the ' +
+      'same data.</div>') +
+    '</div>' +
+    signoffCardHtml(slug, d) +
+    '<div class="grid2">' +
+    '<div class="card"><h2>Readiness</h2><div id="vf-ready">' +
+    '<div class="kv">Loading readiness&hellip;</div></div></div>' +
+    '<div class="card"><h2>Import to Grafana</h2>' +
+    '<label>Folder (empty = General)</label>' +
+    '<input id="vf-folder" placeholder="General">' +
+    '<div class="row" style="margin-top:8px">' +
+    '<input type="checkbox" id="vf-ow" checked>' +
+    '<span class="kv">overwrite existing</span></div>' +
+    '<div class="btnbar"><button class="btn primary" id="vf-imp">' +
+    'Import dashboard</button></div>' +
+    '<div id="vf-imp-out"></div></div>' +
+    '</div>' +
+    '<div class="card"><h2>Download</h2>' +
+    '<p class="kv">Grab the current (post-fix) dashboard JSON or ' +
+    'the full package.</p>' +
+    '<div class="btnbar" id="vf-dl">' +
+    '<a class="btn" id="dl-json" href="/download/dashboard/' +
+    encodeURIComponent(slug) + '.json" download>Dashboard JSON' +
+    '</a>' +
+    '<a class="btn" id="dl-pkg" href="/download/package/' +
+    encodeURIComponent(slug) + '.zip" download>Package .zip</a>' +
+    '<a class="btn" id="dl-all" href="/download/all.zip" download>' +
+    'Everything .zip</a></div></div>';
+
+  /* readiness ring + armed download buttons */
+  api('/api/readiness?slug=' + encodeURIComponent(slug))
+    .then(function (r) {
+      var box = $('#vf-ready');
+      if (!box) return;
+      box.innerHTML = '<div class="row" style="gap:16px">' +
+        ring(r.score, r.grade, 84) +
+        '<div><div style="font-weight:700;font-size:16px">' +
+        chip(r.grade || 'unknown',
+             r.grade === 'ready' ? 'ok' :
+             r.grade === 'almost' ? 'warn' :
+             r.grade === 'blocked' ? 'err' : 'dim') + '</div>' +
+        ((r.reasons || []).length ? '<ul class="kv" ' +
+          'style="margin:8px 0 0;padding-left:18px">' +
+          r.reasons.map(function (x) {
+            return '<li>' + esc(x) + '</li>'; }).join('') +
+          '</ul>' : '<div class="kv" style="margin-top:6px">No ' +
+          'outstanding issues.</div>') + '</div></div>';
+      var armed = r.grade === 'ready' || r.grade === 'almost';
+      ['#dl-json', '#dl-pkg', '#dl-all'].forEach(function (id) {
+        var a = $(id);
+        if (!a) return;
+        if (armed) { a.classList.add('armed'); a.title = ''; }
+        else {
+          a.title = 'Readiness is ' + (r.grade || 'unknown') +
+            ' - the download still works, but imported panels ' +
+            'may show no data. Fix blockers first.';
+        }
+      });
+    }).catch(function (e) {
+      var box = $('#vf-ready');
+      if (box) {
+        box.innerHTML = '<div class="kv">Readiness unavailable: ' +
+          esc(e.message) + '</div>';
+      }
+      ['#dl-json', '#dl-pkg', '#dl-all'].forEach(function (id) {
+        var a = $(id);
+        if (a) a.title = 'Readiness could not be computed yet - ' +
+          'run data tests and parity first.';
+      });
+    });
+
+  $('#vf-run').onclick = async function () {
+    var btn = this; busy(btn, true);
+    try {
+      var job = await startJob('parity: ' + slug, '/api/parity',
+        { slug: slug, from: $('#vf-from').value.trim() || 'now-1h',
+          to: $('#vf-to').value.trim() || 'now' },
+        logInto($('#vf-log')));
+      toast('Parity score: ' + (job.result || {}).score, 'ok');
+      rerenderWs();
+    } catch (e) { toast(e.message, 'err'); busy(btn, false); }
+    refreshState();
+  };
+
+  $('#vf-imp').onclick = async function () {
+    var btn = this; busy(btn, true);
+    var out = $('#vf-imp-out');
+    try {
+      var job = await startJob('import: ' + slug,
+        '/api/grafana/import',
+        { slugs: [slug], folder: $('#vf-folder').value.trim(),
+          overwrite: $('#vf-ow').checked }, logInto($('#vf-log')));
+      var r = (job.result.results || [])[0] || {};
+      if (r.status === 'ok') {
+        out.innerHTML = '<div style="margin-top:8px">' +
+          chip('imported', 'ok') +
+          (r.url ? ' <a href="' + esc(r.url) +
+           '" target="_blank" rel="noopener">open in Grafana ' +
+           '&rarr;</a>' : '') + '</div>';
+        toast('Imported' + (r.url ? ': ' + r.url : ''), 'ok');
+      } else {
+        out.innerHTML = '<div class="err-text">' +
+          esc(r.error || 'import failed') + '</div>';
+        toast(r.error || 'import failed', 'err');
+      }
     } catch (e) { toast(e.message, 'err'); }
     busy(btn, false); refreshState();
   };
@@ -1223,7 +3230,7 @@ async function vImport(view) {
   if (!App.dashboards.length) {
     view.innerHTML = '<h1>Import</h1><div class="empty"><b>No ' +
       'dashboards to import.</b><br>Run <a href="#/convert">' +
-      'Convert &amp; Package</a> first.</div>';
+      'Fetch &amp; Convert</a> first.</div>';
     return;
   }
   var rows = App.dashboards.map(function (d) {
@@ -1242,11 +3249,16 @@ async function vImport(view) {
     '<div class="btnbar" style="margin-top:14px">' +
     '<input id="imp-folder" placeholder="Folder (empty = General)"' +
     ' style="max-width:260px">' +
-    '<span class="row"><input type="checkbox" id="imp-ow" checked ' +
-    'style="width:auto"> overwrite</span>' +
+    '<span class="row" style="gap:6px">' +
+    '<input type="checkbox" id="imp-ow" checked>' +
+    '<span class="kv">overwrite</span></span>' +
     '<button class="btn primary" id="imp-run">Import selected' +
     '</button></div>' +
-    '<div class="log" id="imp-log"></div></div>';
+    '<div class="log" id="imp-log" aria-live="polite"></div></div>' +
+    '<div class="card"><h2>Bulk download</h2>' +
+    '<div class="btnbar">' +
+    '<a class="btn" href="/download/all.zip" download>' +
+    'Everything .zip</a></div></div>';
 
   $('#imp-run').onclick = async function () {
     var btn = this;
@@ -1255,19 +3267,19 @@ async function vImport(view) {
     if (!slugs.length) { toast('Nothing selected', 'err'); return; }
     busy(btn, true);
     try {
-      var job = await runJob('/api/grafana/import', {
-        slugs: slugs, folder: $('#imp-folder').value.trim(),
-        overwrite: $('#imp-ow').checked
-      }, $('#imp-log'));
+      var job = await startJob('bulk import',
+        '/api/grafana/import', {
+          slugs: slugs, folder: $('#imp-folder').value.trim(),
+          overwrite: $('#imp-ow').checked
+        }, logInto($('#imp-log')));
       (job.result.results || []).forEach(function (r) {
-        var el = $('#imp-res-' + CSS.escape(r.slug));
+        var el = document.getElementById('imp-res-' + r.slug);
         if (!el) return;
         el.innerHTML = r.status === 'ok' ?
-          '<span class="chip ok">imported</span>' +
+          chip('imported', 'ok') +
           (r.url ? ' <a href="' + esc(r.url) +
            '" target="_blank" rel="noopener">open</a>' : '') :
-          '<span class="chip err" title="' + esc(r.error) +
-          '">failed</span>';
+          chip('failed', 'err', r.error);
       });
       toast('Imported ' + job.result.ok + '/' + job.result.total,
             job.result.ok === job.result.total ? 'ok' : 'err');
@@ -1299,16 +3311,17 @@ async function vChanges(view) {
 
   function renderTable(list) {
     if (!list.length) {
-      $('#ch-table').innerHTML = '<div class="empty"><b>No changes ' +
-        'recorded yet.</b><br>Edits made in the dashboard detail ' +
-        'view (Save / Save &amp; Push) land here.</div>';
+      $('#ch-table').innerHTML = '<div class="empty"><b>No ' +
+        'changes recorded yet.</b><br>Edits made in the panel ' +
+        'editor (Save / Save &amp; Push) and applied fixes land ' +
+        'here.</div>';
       return;
     }
     var rows = list.map(function (c) {
       return '<tr><td class="kv">' +
         esc(String(c.ts || '').replace('T', ' ').slice(0, 19)) +
         '</td><td class="mono">' + esc(c.slug || '') + '</td>' +
-        '<td><span class="chip dim">' + esc(c.action) + '</span>' +
+        '<td>' + chip(c.action, 'dim') +
         '<div class="kv">' + esc(c.target || '') + '</div></td>' +
         '<td><pre style="margin:0">' + esc(shorten(c.before)) +
         '</pre><pre style="margin:4px 0 0">' + esc(shorten(c.after)) +
@@ -1339,7 +3352,8 @@ async function vChanges(view) {
     try {
       var s = $('#ch-slug').value;
       var cfg = await api('/api/changes/suggest-config' +
-                          (s ? '?slug=' + encodeURIComponent(s) : ''));
+                          (s ? '?slug=' + encodeURIComponent(s)
+                             : ''));
       var txt = JSON.stringify(cfg, null, 2);
       $('#ch-cfg').innerHTML = '<div class="card"><h2>Suggested ' +
         'config overlay</h2><div class="kv">Merge this into your ' +
@@ -1396,8 +3410,8 @@ async function vAI(view) {
     'migration.</p>' +
     (!enabled ?
       '<div class="empty"><b>AI is not configured.</b><br>Add an ' +
-      'Anthropic API key in <a href="#/setup">Setup</a> to enable ' +
-      'the assistant.</div>' :
+      'Anthropic API key in <a href="#/connect">Connect</a> to ' +
+      'enable the assistant.</div>' :
       '<div class="card"><div id="chatlog">' + (msgs ||
         '<div class="kv">Try: &quot;Why would ' +
         'http_server_request_duration_seconds_bucket return no ' +
@@ -1458,11 +3472,21 @@ $('#themebtn').onclick = function () {
 };
 
 /* ====================================================== boot */
+$('#jobsbtn').onclick = function () { openDrawer(); };
+$('#drawer-close').onclick = function () { openDrawer(false); };
+document.addEventListener('keydown', function (ev) {
+  if (ev.key === 'Escape') {
+    if ($('#flyout-slot').innerHTML) closeFlyout();
+    else if (Jobs.open) openDrawer(false);
+  }
+});
+
 applyTheme(localStorage.getItem('nr2g-theme') || 'auto');
 window.addEventListener('hashchange', route);
 (async function boot() {
   await refreshState();
   setInterval(refreshState, 8000);
+  renderJobsBtn();
   route();
 })();
 </script>

@@ -112,6 +112,17 @@ class TraceqlTests(unittest.TestCase):
         t = tr("SELECT * FROM Span WHERE service.name = '{{svc}}'")
         self.assertEqual(t.expr, '{ resource.service.name = "$svc" }')
 
+    def test_facet_dropped_with_note(self):
+        t = tr("SELECT * FROM Span WHERE service.name = 'x' FACET name")
+        self.assertEqual(t.expr, '{ resource.service.name = "x" }')
+        self.assertTrue(any("FACET has no effect" in n for n in t.notes))
+
+    def test_compare_with_dropped_with_note(self):
+        t = tr("SELECT * FROM Span WHERE service.name = 'x' "
+               "COMPARE WITH 1 day ago")
+        self.assertTrue(any("COMPARE WITH is not applicable" in n
+                            for n in t.notes))
+
 
 if __name__ == "__main__":
     unittest.main()

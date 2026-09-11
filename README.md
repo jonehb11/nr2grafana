@@ -2,10 +2,13 @@
 
 Converts New Relic dashboards into importable Grafana dashboards for an
 LGTM stack (Mimir/Prometheus, Loki, Tempo, fed by OpenTelemetry) — and
-since 1.1, sees the migration through: it tells you what each dashboard
-needs before import, tests that data actually flows on your Grafana,
-tracks every fix you make, and folds those fixes back into config so
-the next dashboard converts right the first time.
+sees the migration through: it tells you what each dashboard needs
+before import, creates and health-checks the datasources, tests that
+data actually flows on your Grafana, **proves the migrated panels show
+the same numbers New Relic does**, explains the root cause of every
+failure with one-click (or fully automatic) fixes, and folds those
+fixes back into config so the next dashboard converts right the first
+time.
 
 - **Runs on your workstation** — this is a local CLI (plus a localhost
   web UI), not something you deploy into a cluster. The live check,
@@ -17,8 +20,9 @@ the next dashboard converts right the first time.
 - **Interactive by default** — run `n2g` (or `g2n` / `nr2grafana`) with
   no arguments and a guided wizard walks you through the whole
   migration with arrow-key menus: fetch → convert & package → validate
-  → live check/test → import. It remembers your answers (dirs, URLs,
-  region) between runs; secrets are never stored.
+  → live check/test → parity → diagnose/heal → import. It remembers
+  your answers (dirs, URLs, region) between runs; secrets are never
+  stored.
 
 What it does:
 
@@ -37,12 +41,37 @@ What it does:
   directories with a README, requirements manifest, and smoke test.
 - **Live testing**: verify requirements and pull real data through your
   Grafana with a service account token.
-- **Web UI** (`web`): the whole flow in a browser, with a per-panel
-  query editor.
+- **Data parity** (`grafana parity`): run the original NRQL and the
+  translated query side by side and compare the actual numbers —
+  match/close/mismatch per panel, with unit-ratio hints (~1000× means
+  ms vs s) and a 0–100 readiness score.
+- **Human sample review** (`grafana samples` / web UI sign-off): pull
+  actual raw samples from both sides — NR events vs the same log
+  lines in Loki, NR aggregates vs Prometheus datapoints — side by
+  side, then Confirm/Reject each panel; rejections block readiness,
+  a fully confirmed dashboard is graded *human-verified*.
+- **Root-cause diagnostics** (`grafana diagnose`): *why* is a panel
+  empty — bad token role, missing datasource, renamed metric ("did
+  you mean"), wrong label value, or a whole missing ingestion
+  pipeline — each finding with a concrete, often machine-applicable
+  fix.
+- **Auto-heal** (`grafana heal`): test → diagnose → apply the safe
+  fixes → re-test, automatically. Never creates datasources, never
+  pushes without `--push`.
+- **Datasource management**: list/health-check/create/edit/delete
+  Grafana datasources from the CLI or web UI, with guided templates
+  for Prometheus/Mimir, Loki, Tempo, CloudWatch, Google Cloud
+  Monitoring, Azure Monitor, and the New Relic passthrough plugin.
+- **Web UI** (`web`): the whole flow in a browser — stepper workflow,
+  per-panel NR-vs-Grafana comparison, one-click fixes, downloads of
+  the validated JSON.
 - **Change tracking**: every fix is logged locally and can be codified
   back into the mapping config.
 - **Optional AI assistance**: Claude diagnoses and fixes failing panels
   when you provide an Anthropic API key.
+- **Mock stack** (`python3 tools/mock_stack.py`): a stdlib fake
+  Grafana + NerdGraph, so the whole product can be demoed and e2e
+  tested offline.
 
 ## Install
 
@@ -64,6 +93,28 @@ Prefer a browser? `n2g web` opens the same flow as a localhost app —
 see [Web UI](#web-ui). The subcommands below remain for scripting and
 CI.
 
+## Zero-touch workflow
+
+Since 1.2 the web UI is a one-stop shop: the only things you type are
+two API keys.
+
+1. `n2g web`, then on the **Connect** step paste a New Relic USER key
+   and a Grafana service-account token. Both are tested on the spot —
+   including exactly what the Grafana token's role can do.
+2. Everything else happens in the app: fetch and convert your
+   dashboards, create the datasources the requirements analysis says
+   are missing (guided forms, immediate health checks), run the data
+   tests and the NR-vs-Grafana parity comparison, and work through
+   the diagnosis — every finding has a one-click Fix, or press
+   **Auto-heal** and let the safe fixes apply themselves.
+3. When the readiness ring goes green, **Download** the validated
+   dashboard JSON (single file, package zip, or everything) — or push
+   straight into Grafana from the app.
+
+No New Relic UI, no Grafana admin pages, no editing JSON by hand. To
+try the whole loop without any real infrastructure, use the bundled
+[mock stack](docs/mock-stack.md).
+
 ## Quick start (scripted)
 
 ```bash
@@ -82,12 +133,21 @@ python3 -m nr2grafana convert ./newrelic-dashboards -o ./out --package \
 export GRAFANA_URL=https://grafana.example.com
 export GRAFANA_TOKEN=glsa_...
 
-# 4. Check requirements, import, test that data flows
+# 4. Check requirements; create whatever is missing
 python3 -m nr2grafana grafana check ./out/*/          # exit 1 if anything is missing
-python3 -m nr2grafana grafana import ./out --folder "Migrated from NR"
-python3 -m nr2grafana grafana test ./out/*/           # exit 1 on error panels
+python3 -m nr2grafana grafana add-datasource --type loki --name Loki \
+    --set url=http://loki.monitoring.svc:3100         # guided, health-checked
 
-# 5. Fix flagged panels (web UI is easiest), then codify the fixes
+# 5. Test that data flows, auto-heal the safe failures, diagnose the rest
+python3 -m nr2grafana grafana test ./out/*/           # exit 1 on error panels
+python3 -m nr2grafana grafana heal ./out/*/           # safe fixes, applied
+python3 -m nr2grafana grafana diagnose ./out/*/       # root cause per failure
+
+# 6. Import, then prove the panels show the same data New Relic does
+python3 -m nr2grafana grafana import ./out --folder "Migrated from NR"
+python3 -m nr2grafana grafana parity ./out/*/ --account-id 1234567
+
+# 7. Codify the fixes so the next conversion is right the first time
 python3 -m nr2grafana changes suggest-config          # -> config overlay to merge
 ```
 
@@ -142,11 +202,25 @@ through a Grafana service account token (`GRAFANA_URL` /
   (warning — the metric/labels don't exist in your stack yet), or
   `error` (with Grafana's actual error text). Writes
   `datatest-results.json` into the package; exit 1 only on errors.
+- `grafana parity <package-dir...>` — the proof: original NRQL via
+  NerdGraph vs translated query via Grafana, values compared per
+  panel. `match` / `close` (with unit-ratio hints like "~1000× —
+  likely ms vs s") / mismatch / empty verdicts, a 0–100 score, and a
+  ready/almost/blocked readiness grade.
+- `grafana diagnose <package-dir...>` — names the root cause of every
+  failure (auth, datasources, metric/label renames, missing
+  pipelines) with machine-applicable fixes; exit 1 on blockers.
+- `grafana heal <package-dir...>` — applies the safe subset of those
+  fixes in a test→diagnose→fix loop. `--push` to update Grafana.
+- `grafana datasources` / `grafana add-datasource` — live datasource
+  inventory with health, and guided creation
+  ([docs/datasource-management.md](docs/datasource-management.md)).
 - `grafana import <dir> [--folder F] [--overwrite]` — bulk import.
 
 Each package also ships `test.sh` — the same smoke test in portable
 `curl` + `python3` form, so any operator can run it without installing
-nr2grafana. Details: [docs/live-testing.md](docs/live-testing.md).
+nr2grafana. Details: [docs/live-testing.md](docs/live-testing.md) and
+[docs/parity-and-diagnostics.md](docs/parity-and-diagnostics.md).
 
 ## Web UI
 
@@ -154,12 +228,16 @@ nr2grafana. Details: [docs/live-testing.md](docs/live-testing.md).
 python3 -m nr2grafana web    # 127.0.0.1:8765, opens your browser
 ```
 
-The whole migration in a browser: setup (keys stay in process memory,
-never on disk), fetch/convert as background jobs with live logs,
-per-panel confidence badges and test status, an inline query editor
-with **Test** / **Ask AI** / **Save & Push**, a "install these first"
-requirements card, bulk import, and the change log with its suggested
-config overlay. Localhost-only by default; `--port`, `--host`,
+The whole migration in a browser, as a stepper: Connect → Fetch →
+Convert → Datasources → Validate → Fix → Import → Verify → Download.
+Keys stay in process memory, never on disk; long jobs stream logs
+live. Per panel you get confidence, test and parity badges, the NR
+result next to the Grafana result (sparklines), the diagnosis
+findings with one-click Fix buttons, and a query editor with
+metric-name autocomplete, **Test** / **Ask AI** / **Save & Push**.
+Plus a datasources manager with guided "Add datasource" forms,
+**Auto-heal**, a readiness score, and download buttons for the
+validated JSON. Localhost-only by default; `--port`, `--host`,
 `--no-browser` to taste. Details: [docs/web-ui.md](docs/web-ui.md).
 
 ## AI assistance
@@ -198,6 +276,11 @@ never fix that panel again. Details:
 | `validate` | Statically validate Grafana dashboard JSON (schema requirements, unique panel ids, balanced query expressions, datasource variable wiring, grid bounds). |
 | `grafana check` | Verify required datasources/plugins exist on a live instance; exit 1 on missing. |
 | `grafana test` | Pull real data for every panel query; writes `datatest-results.json`; exit 1 on error panels. |
+| `grafana parity` | Compare real data New Relic vs Grafana per panel; writes `parity-results.json` + readiness. `--account-id`, `--from`, `--to`. |
+| `grafana diagnose` | Root-cause failing/empty panels (auth, datasources, renames, pipelines); writes `diagnosis.json`; exit 1 on blockers. |
+| `grafana heal` | Auto-apply the safe fixes in a test→diagnose→fix loop. `--push`, `--max-rounds`. |
+| `grafana datasources` | List the instance's datasources with live health. |
+| `grafana add-datasource` | Create a datasource from a guided template. `--type`, `--name`, `--set field=value`. |
 | `grafana import` | Bulk import dashboards. `--folder`, `--overwrite`. |
 | `changes report` | Show the recorded change log. `--slug`, `--markdown`. |
 | `changes suggest-config` | Infer a config overlay from recorded fixes. |
@@ -298,11 +381,16 @@ Project layout: `nr2grafana/nrql/` (NRQL parser), `nr2grafana/translate/`
 (PromQL/LogQL/TraceQL translators + router), `nr2grafana/grafana/` (panel
 builder, validator, live client), `nr2grafana/requirements.py` +
 `artifacts.py` (analysis + packaging), `nr2grafana/store.py` +
-`changelog.py` (local persistence), `nr2grafana/web/` (localhost UI),
-`nr2grafana/ai.py` (Claude client), `nr2grafana/nerdgraph.py` (bulk
-export client), `nr2grafana/cli.py`. More docs in
-[docs/](docs/): [translation-spec.md](docs/translation-spec.md),
+`changelog.py` (local persistence), `nr2grafana/parity.py` +
+`diagnose.py` + `remediate.py` (data parity, root-cause engine,
+fix application), `nr2grafana/web/` (localhost UI), `nr2grafana/ai.py`
+(Claude client), `nr2grafana/nerdgraph.py` (bulk export client),
+`nr2grafana/cli.py`. More docs in [docs/](docs/):
+[translation-spec.md](docs/translation-spec.md),
 [requirements-analysis.md](docs/requirements-analysis.md),
-[live-testing.md](docs/live-testing.md), [web-ui.md](docs/web-ui.md),
-[ai-assist.md](docs/ai-assist.md),
-[changes-and-codify.md](docs/changes-and-codify.md).
+[live-testing.md](docs/live-testing.md),
+[parity-and-diagnostics.md](docs/parity-and-diagnostics.md),
+[datasource-management.md](docs/datasource-management.md),
+[web-ui.md](docs/web-ui.md), [ai-assist.md](docs/ai-assist.md),
+[changes-and-codify.md](docs/changes-and-codify.md),
+[mock-stack.md](docs/mock-stack.md).

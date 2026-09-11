@@ -565,6 +565,20 @@ def _report(b: _Build, page: str, widget: NRWidget, panel: Dict[str, Any],
         "queries": [],
         "notes": [],
     }
+    account_ids: List[int] = []
+    for nq in widget.nrql_queries:
+        raw = nq.get("accountIds")
+        if not raw and nq.get("accountId") is not None:
+            raw = [nq.get("accountId")]
+        for v in raw or []:
+            try:
+                iv = int(v)
+            except (TypeError, ValueError):
+                continue
+            if iv not in account_ids:
+                account_ids.append(iv)
+    if account_ids:
+        entry["account_ids"] = account_ids
     for t in trans:
         for x in [t] + t.extra:
             entry["queries"].append(

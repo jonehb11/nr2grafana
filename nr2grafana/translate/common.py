@@ -380,7 +380,9 @@ def _status_class_matcher(label: str, op: str, val: Any,
     ranges = {(">=", 400): "4..|5..", (">=", 500): "5..",
               (">", 399): "4..|5..", (">", 499): "5..",
               ("<", 400): "[123]..", ("<", 500): "[1234]..",
-              ("<=", 399): "[123]..", ("<=", 499): "[1234]..", }
+              ("<=", 399): "[123]..", ("<=", 499): "[1234]..",
+              ("<", 300): "[12]..", ("<=", 299): "[12]..",
+              (">=", 300): "[345]..", (">", 299): "[345]..", }
     pattern = ranges.get((op, n))
     if not pattern:
         return None
@@ -410,6 +412,28 @@ def facet_labels(query: NrqlQuery, cfg: Dict[str, Any],
         else:
             t.note("unsupported FACET expression dropped", NEEDS_REVIEW)
     return labels
+
+
+def cond_text(cond: Optional[Cond]) -> str:
+    """Human-readable rendering of a WHERE condition (legends, notes)."""
+    if cond is None:
+        return ""
+    if isinstance(cond, BoolOp):
+        joiner = " %s " % cond.op.upper()
+        return "(" + joiner.join(cond_text(c) for c in cond.items) + ")"
+    if isinstance(cond, NotOp):
+        return "NOT %s" % cond_text(cond.item)
+    if isinstance(cond, Cmp):
+        return "%s %s %s" % (_lit_str(cond.left), cond.op,
+                             _lit_str(cond.right))
+    if isinstance(cond, InList):
+        return "%s %sIN (%s)" % (_lit_str(cond.left),
+                                 "NOT " if cond.negated else "",
+                                 ", ".join(_lit_str(v) for v in cond.values))
+    if isinstance(cond, NullCheck):
+        return "%s IS %sNULL" % (_lit_str(cond.left),
+                                 "NOT " if cond.negated else "")
+    return repr(cond)
 
 
 def legend_for(labels: List[str], alias: Optional[str] = None) -> str:
