@@ -16,6 +16,11 @@ time.
   (an ingress URL or a `kubectl port-forward`); fetch and convert need
   no connectivity beyond the New Relic API (or none at all with
   exported JSON files).
+- **New Relic is never modified** — the tool only *reads* from New
+  Relic (dashboard export and NRQL queries for parity/samples). This
+  is enforced in code: the NerdGraph client refuses to send any
+  GraphQL mutation. All changes happen on the Grafana side, and only
+  the ones you ask for.
 - **Zero dependencies** — Python 3.9+ standard library only.
 - **Interactive by default** — run `n2g` (or `g2n` / `nr2grafana`) with
   no arguments and a guided wizard walks you through the whole

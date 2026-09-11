@@ -16,7 +16,16 @@ Layout of the embedded app (all vanilla JS):
   ``#/changes``, ``#/ai`` (legacy 1.1 hashes are aliased).
 * per-view render functions plus small component helpers: ``chip()``,
   ``ring()`` (SVG readiness ring), ``sparkline()`` (inline SVG
-  polyline), ``statStrip()``, ``stepper()``.
+  polyline), ``statStrip()``, ``stepper()``, ``ico()`` (inline SVG
+  icon set), ``errorCard()`` (the one reusable error component:
+  what failed / exact detail / next action), ``consoleHtml()`` +
+  ``consoleUpdate()`` (structured job-log console with level-tinted
+  lines, timestamps, follow pin and copy), ``jsonDetails()``
+  (collapsible pretty-printed JSON with copy) and ``truncHtml()``
+  (long strings truncate with an expand toggle).
+* AI backend picker in Connect -- "Anthropic API" or "Local console
+  AI" (command template, POST /api/ai/test probe); the header AI
+  pill reflects the active backend from /api/state.
 * global job drawer -- long operations (fetch/convert/test/parity/
   diagnose/heal/import) poll ``/api/jobs/<id>`` and stream their logs
   into a drawer that survives navigation, plus toasts.
@@ -33,29 +42,36 @@ PAGE = r"""<!DOCTYPE html>
 <style>
 /* =================================================== design tokens */
 :root {
-  --bg: #0d1117;
-  --bg2: #151b23;
-  --bg3: #1c2430;
-  --bg4: #232d3b;
-  --border: #2a3341;
-  --border-soft: #222b38;
-  --text: #dfe5ee;
-  --muted: #8b96a7;
-  --faint: #5d6879;
-  --accent: #4c9aff;
-  --accent-dim: #1d3a5f;
-  --green: #34c26b;
-  --green-bg: #10301d;
-  --amber: #e2a33c;
-  --amber-bg: #33270e;
-  --red: #ef6363;
-  --red-bg: #371618;
-  --blue: #5aa2e8;
-  --blue-bg: #142a40;
-  --purple: #a78bfa;
-  --purple-bg: #241d3d;
-  --shadow: 0 1px 2px rgba(0,0,0,.35), 0 4px 14px rgba(0,0,0,.22);
-  --shadow-sm: 0 1px 2px rgba(0,0,0,.3);
+  /* layered dark surfaces: page -> chrome -> card -> raised -> active */
+  --bg: #0b0f16;
+  --bg2: #121824;
+  --bg3: #1a2231;
+  --bg4: #222c3e;
+  --border: #2a3547;
+  --border-soft: #212a3a;
+  --zebra: rgba(255,255,255,.022);
+  --text: #e3e9f2;
+  --muted: #939eb1;
+  --faint: #5f6a7d;
+  --accent: #549bff;
+  --accent-dim: rgba(84,155,255,.16);
+  --accent-soft: rgba(84,155,255,.09);
+  --green: #3fc873;
+  --green-bg: rgba(63,200,115,.13);
+  --amber: #e8ab44;
+  --amber-bg: rgba(232,171,68,.13);
+  --red: #f0716f;
+  --red-bg: rgba(240,113,111,.12);
+  --blue: #63a9ec;
+  --blue-bg: rgba(99,169,236,.13);
+  --purple: #ab90fa;
+  --purple-bg: rgba(171,144,250,.13);
+  --console-bg: #0a0d13;
+  --console-fg: #c9d2de;
+  --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.28);
+  --shadow-sm: 0 1px 2px rgba(0,0,0,.28);
+  --shadow-card: 0 1px 0 rgba(255,255,255,.02) inset,
+                 0 1px 3px rgba(0,0,0,.25);
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
           Helvetica, Arial, sans-serif;
@@ -64,58 +80,69 @@ PAGE = r"""<!DOCTYPE html>
   --s6: 32px;
   --fs-xs: 11px; --fs-sm: 12px; --fs-md: 13px; --fs-lg: 14px;
   --fs-xl: 16px; --fs-h1: 20px;
+  --t-fast: .13s ease;
 }
 [data-theme="light"] {
-  --bg: #f5f7fa;
+  --bg: #f4f6f9;
   --bg2: #ffffff;
-  --bg3: #eef1f6;
-  --bg4: #e5eaf1;
-  --border: #d6dde6;
-  --border-soft: #e2e8f0;
-  --text: #1b2430;
-  --muted: #5b6878;
-  --faint: #93a0b1;
-  --accent: #1a6ed8;
-  --accent-dim: #dcedff;
-  --green: #178a45;
-  --green-bg: #ddf3e5;
-  --amber: #9c6608;
-  --amber-bg: #faf0d5;
-  --red: #c23434;
-  --red-bg: #fbe3e3;
-  --blue: #21639f;
-  --blue-bg: #e0eefb;
-  --purple: #6d4fd2;
-  --purple-bg: #ece7fb;
-  --shadow: 0 1px 2px rgba(25,35,55,.08), 0 4px 14px rgba(25,35,55,.07);
-  --shadow-sm: 0 1px 2px rgba(25,35,55,.08);
+  --bg3: #edf1f6;
+  --bg4: #e2e8f0;
+  --border: #d5dce6;
+  --border-soft: #e4e9f0;
+  --zebra: rgba(15,30,60,.024);
+  --text: #1a2330;
+  --muted: #5a6879;
+  --faint: #97a3b4;
+  --accent: #1665cf;
+  --accent-dim: rgba(22,101,207,.14);
+  --accent-soft: rgba(22,101,207,.07);
+  --green: #148544;
+  --green-bg: rgba(20,133,68,.11);
+  --amber: #96620a;
+  --amber-bg: rgba(150,98,10,.12);
+  --red: #c03434;
+  --red-bg: rgba(192,52,52,.09);
+  --blue: #1f639f;
+  --blue-bg: rgba(31,99,159,.10);
+  --purple: #6947d0;
+  --purple-bg: rgba(105,71,208,.10);
+  --console-bg: #171c26;
+  --console-fg: #cfd7e2;
+  --shadow: 0 1px 2px rgba(25,35,55,.08), 0 8px 24px rgba(25,35,55,.09);
+  --shadow-sm: 0 1px 2px rgba(25,35,55,.07);
+  --shadow-card: 0 1px 3px rgba(25,35,55,.06);
 }
 @media (prefers-color-scheme: light) {
   :root:not([data-theme="dark"]) {
-    --bg: #f5f7fa;
+    --bg: #f4f6f9;
     --bg2: #ffffff;
-    --bg3: #eef1f6;
-    --bg4: #e5eaf1;
-    --border: #d6dde6;
-    --border-soft: #e2e8f0;
-    --text: #1b2430;
-    --muted: #5b6878;
-    --faint: #93a0b1;
-    --accent: #1a6ed8;
-    --accent-dim: #dcedff;
-    --green: #178a45;
-    --green-bg: #ddf3e5;
-    --amber: #9c6608;
-    --amber-bg: #faf0d5;
-    --red: #c23434;
-    --red-bg: #fbe3e3;
-    --blue: #21639f;
-    --blue-bg: #e0eefb;
-    --purple: #6d4fd2;
-    --purple-bg: #ece7fb;
+    --bg3: #edf1f6;
+    --bg4: #e2e8f0;
+    --border: #d5dce6;
+    --border-soft: #e4e9f0;
+    --zebra: rgba(15,30,60,.024);
+    --text: #1a2330;
+    --muted: #5a6879;
+    --faint: #97a3b4;
+    --accent: #1665cf;
+    --accent-dim: rgba(22,101,207,.14);
+    --accent-soft: rgba(22,101,207,.07);
+    --green: #148544;
+    --green-bg: rgba(20,133,68,.11);
+    --amber: #96620a;
+    --amber-bg: rgba(150,98,10,.12);
+    --red: #c03434;
+    --red-bg: rgba(192,52,52,.09);
+    --blue: #1f639f;
+    --blue-bg: rgba(31,99,159,.10);
+    --purple: #6947d0;
+    --purple-bg: rgba(105,71,208,.10);
+    --console-bg: #171c26;
+    --console-fg: #cfd7e2;
     --shadow: 0 1px 2px rgba(25,35,55,.08),
-              0 4px 14px rgba(25,35,55,.07);
-    --shadow-sm: 0 1px 2px rgba(25,35,55,.08);
+              0 8px 24px rgba(25,35,55,.09);
+    --shadow-sm: 0 1px 2px rgba(25,35,55,.07);
+    --shadow-card: 0 1px 3px rgba(25,35,55,.06);
   }
 }
 /* ======================================================== base */
@@ -128,6 +155,8 @@ body {
 }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
+svg.i { width: 16px; height: 16px; flex: 0 0 auto;
+  vertical-align: -3px; }
 :focus-visible {
   outline: 2px solid var(--accent); outline-offset: 2px;
   border-radius: 4px;
@@ -144,7 +173,7 @@ a:hover { text-decoration: underline; }
 /* ======================================================== sidebar */
 #sidebar {
   width: 224px; flex: 0 0 224px; background: var(--bg2);
-  border-right: 1px solid var(--border);
+  border-right: 1px solid var(--border-soft);
   padding: var(--s4) var(--s3); position: sticky; top: 0;
   height: 100vh; display: flex; flex-direction: column;
 }
@@ -167,17 +196,20 @@ a:hover { text-decoration: underline; }
   display: flex; align-items: center; gap: 10px;
   padding: 7px 10px; border-radius: var(--r-sm); color: var(--text);
   font-weight: 500; margin-bottom: 2px; font-size: var(--fs-md);
+  transition: background var(--t-fast), color var(--t-fast);
 }
 .nav a:hover { background: var(--bg3); text-decoration: none; }
-.nav a.active { background: var(--accent-dim); color: var(--accent); }
-.nav .ico { width: 18px; text-align: center; opacity: .8;
-  font-size: 13px; }
+.nav a.active { background: var(--accent-dim); color: var(--accent);
+  font-weight: 600; }
+.nav .ico { width: 18px; display: inline-flex;
+  align-items: center; justify-content: center; opacity: .75; }
+.nav a.active .ico, .nav a:hover .ico { opacity: 1; }
 .nav .cnt { margin-left: auto; font-size: var(--fs-xs);
   color: var(--muted); background: var(--bg3); border-radius: 999px;
-  padding: 0 7px; }
+  padding: 0 7px; font-variant-numeric: tabular-nums; }
 .nav a.active .cnt { background: transparent; color: var(--accent); }
 .sidebar-foot { margin-top: auto; padding: var(--s3) var(--s2) 0;
-  font-size: var(--fs-xs); color: var(--muted); line-height: 1.5; }
+  font-size: var(--fs-xs); color: var(--faint); line-height: 1.5; }
 
 /* ======================================================== topbar */
 #mainwrap { flex: 1; min-width: 0; display: flex;
@@ -186,7 +218,7 @@ a:hover { text-decoration: underline; }
   position: sticky; top: 0; z-index: 30;
   display: flex; align-items: center; gap: var(--s2);
   padding: var(--s2) var(--s5); background: var(--bg2);
-  border-bottom: 1px solid var(--border); min-height: 52px;
+  border-bottom: 1px solid var(--border-soft); min-height: 52px;
 }
 #crumb { font-weight: 600; font-size: var(--fs-lg); flex: 1;
   min-width: 0; overflow: hidden; text-overflow: ellipsis;
@@ -196,12 +228,16 @@ a:hover { text-decoration: underline; }
   border: 1px solid var(--border); border-radius: 999px;
   padding: 3px 10px; font-size: var(--fs-sm); color: var(--muted);
   background: var(--bg); white-space: nowrap; cursor: default;
+  transition: border-color var(--t-fast), color var(--t-fast);
 }
 .pill .dot { width: 7px; height: 7px; border-radius: 50%;
-  background: var(--faint); flex: 0 0 7px; }
-.pill.ok { color: var(--green); border-color: var(--green); }
+  background: var(--faint); flex: 0 0 7px;
+  transition: background var(--t-fast); }
+.pill.ok { color: var(--green); border-color: var(--green);
+  background: var(--green-bg); }
 .pill.ok .dot { background: var(--green); }
-.pill.err { color: var(--red); border-color: var(--red); }
+.pill.err { color: var(--red); border-color: var(--red);
+  background: var(--red-bg); }
 .pill.err .dot { background: var(--red); }
 button.pill { font: inherit; font-size: var(--fs-sm);
   cursor: pointer; }
@@ -219,28 +255,29 @@ main { padding: var(--s5); max-width: 1240px; width: 100%;
 h1 { font-size: var(--fs-h1); margin: 0 0 var(--s1);
   letter-spacing: -.01em; }
 h2 { font-size: var(--fs-lg); margin: 0 0 var(--s3);
-  font-weight: 650; }
-h3 { font-size: var(--fs-md); margin: 0 0 var(--s2);
-  font-weight: 650; color: var(--muted);
-  text-transform: uppercase; letter-spacing: .05em;
+  font-weight: 650; display: flex; align-items: center; gap: 8px; }
+h2 svg.i { color: var(--muted); }
+h3 { margin: 0 0 var(--s2); font-weight: 700; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .06em;
   font-size: var(--fs-xs); }
 .lead { color: var(--muted); margin: 0 0 var(--s4);
   font-size: var(--fs-md); }
 .card {
-  background: var(--bg2); border: 1px solid var(--border);
+  background: var(--bg2); border: 1px solid var(--border-soft);
   border-radius: var(--r-lg); padding: var(--s4);
-  box-shadow: var(--shadow-sm); margin-bottom: var(--s4);
+  box-shadow: var(--shadow-card); margin-bottom: var(--s4);
 }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr;
   gap: var(--s4); align-items: start; }
 @media (max-width: 960px) { .grid2 { grid-template-columns: 1fr; } }
 .cards-row { display: flex; gap: var(--s3); flex-wrap: wrap;
   margin-bottom: var(--s4); }
-.stat-card { background: var(--bg2); border: 1px solid var(--border);
+.stat-card { background: var(--bg2);
+  border: 1px solid var(--border-soft);
   border-radius: var(--r-lg); padding: var(--s3) var(--s4);
-  min-width: 128px; box-shadow: var(--shadow-sm); }
+  min-width: 128px; box-shadow: var(--shadow-card); }
 .stat-card .num { font-size: 22px; font-weight: 700;
-  font-variant-numeric: tabular-nums; }
+  font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
 .stat-card .lbl { font-size: var(--fs-sm); color: var(--muted); }
 
 /* ======================================================== forms */
@@ -252,12 +289,14 @@ input, select, textarea {
   border: 1px solid var(--border); border-radius: var(--r-sm);
   padding: 7px 10px; font: inherit; font-size: var(--fs-md);
   outline: none;
+  transition: border-color var(--t-fast), box-shadow var(--t-fast);
 }
 textarea { font-family: var(--mono); font-size: 12.5px;
   min-height: 72px; resize: vertical; }
 input:focus, select:focus, textarea:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-dim); }
+input::placeholder, textarea::placeholder { color: var(--faint); }
 input[type="checkbox"] { width: auto; accent-color: var(--accent); }
 .row { display: flex; gap: var(--s2); align-items: center;
   flex-wrap: wrap; }
@@ -267,6 +306,20 @@ input[type="checkbox"] { width: auto; accent-color: var(--accent); }
 .field-help { font-size: var(--fs-xs); color: var(--faint);
   margin-top: 3px; line-height: 1.4; }
 
+/* segmented control (AI backend picker etc.) */
+.seg { display: inline-flex; background: var(--bg);
+  border: 1px solid var(--border); border-radius: var(--r-md);
+  padding: 2px; gap: 2px; }
+.seg button { border: 0; background: transparent;
+  color: var(--muted); font: inherit; font-size: var(--fs-md);
+  font-weight: 600; padding: 5px 12px; border-radius: var(--r-sm);
+  cursor: pointer; display: inline-flex; align-items: center;
+  gap: 6px;
+  transition: background var(--t-fast), color var(--t-fast); }
+.seg button:hover { color: var(--text); }
+.seg button.on { background: var(--bg3); color: var(--text);
+  box-shadow: var(--shadow-sm); }
+
 /* ======================================================== buttons */
 .btn {
   display: inline-flex; align-items: center; gap: 6px;
@@ -274,19 +327,24 @@ input[type="checkbox"] { width: auto; accent-color: var(--accent); }
   border: 1px solid var(--border); border-radius: var(--r-sm);
   padding: 6px 14px; font: inherit; font-size: var(--fs-md);
   font-weight: 600; cursor: pointer; white-space: nowrap;
-  transition: border-color .12s, background .12s, color .12s;
+  transition: border-color var(--t-fast), background var(--t-fast),
+              color var(--t-fast), box-shadow var(--t-fast);
 }
+.btn svg.i { width: 14px; height: 14px; }
 .btn:hover { border-color: var(--accent); color: var(--accent);
   text-decoration: none; }
+.btn:active { transform: translateY(.5px); }
 .btn.primary { background: var(--accent); border-color: var(--accent);
-  color: #fff; }
+  color: #fff; box-shadow: var(--shadow-sm); }
 .btn.primary:hover { filter: brightness(1.12); color: #fff; }
-.btn.danger { color: var(--red); border-color: var(--red); }
+.btn.danger { color: var(--red); border-color: var(--red);
+  background: transparent; }
 .btn.danger:hover { background: var(--red-bg); }
 .btn.ghost { background: transparent; border-color: transparent;
   color: var(--muted); }
-.btn.ghost:hover { color: var(--accent); }
+.btn.ghost:hover { color: var(--accent); background: var(--bg3); }
 .btn.small { padding: 3px 10px; font-size: var(--fs-sm); }
+.btn.iconbtn { padding: 3px 7px; }
 .btn:disabled { opacity: .45; cursor: default;
   pointer-events: none; }
 .btn.busy::after { content: ""; width: 11px; height: 11px;
@@ -296,16 +354,25 @@ input[type="checkbox"] { width: auto; accent-color: var(--accent); }
 a.btn.armed { background: var(--green); border-color: var(--green);
   color: #fff; }
 a.btn.armed:hover { filter: brightness(1.1); color: #fff; }
+.linklike { background: none; border: 0; padding: 0;
+  color: var(--accent); font: inherit; font-size: inherit;
+  cursor: pointer; }
+.linklike:hover { text-decoration: underline; }
 
 /* ======================================================== tables */
 table { width: 100%; border-collapse: collapse;
   font-size: var(--fs-md); }
 .tablewrap { overflow-x: auto; }
+.tablewrap.tall { max-height: 440px; overflow-y: auto; }
 th { text-align: left; font-size: 10.5px; text-transform: uppercase;
   letter-spacing: .07em; color: var(--muted); font-weight: 650;
-  padding: var(--s2) 10px; border-bottom: 1px solid var(--border); }
+  padding: var(--s2) 10px; border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; background: var(--bg2); z-index: 2; }
 td { padding: 9px 10px; border-bottom: 1px solid var(--border-soft);
   vertical-align: top; }
+td.num, th.num { text-align: right;
+  font-variant-numeric: tabular-nums; }
+table.zebra tbody tr:nth-child(even) td { background: var(--zebra); }
 tbody tr:last-child td { border-bottom: 0; }
 tr.click { cursor: pointer; }
 tr.click:hover td, tr.click:focus-visible td {
@@ -315,11 +382,13 @@ tr.expand-row td { background: var(--bg);
 
 /* ======================================================== chips */
 .chip {
-  display: inline-block; border-radius: 5px; padding: 1px 8px;
+  display: inline-flex; align-items: center; gap: 4px;
+  border-radius: 5px; padding: 1px 8px;
   font-size: 11.5px; font-weight: 600; margin: 1px 3px 1px 0;
   border: 1px solid transparent; white-space: nowrap;
   vertical-align: middle;
 }
+.chip svg.i { width: 11px; height: 11px; }
 .chip.ok    { color: var(--green);  background: var(--green-bg); }
 .chip.warn  { color: var(--amber);  background: var(--amber-bg); }
 .chip.err   { color: var(--red);    background: var(--red-bg); }
@@ -334,15 +403,75 @@ pre {
   border-radius: var(--r-sm); padding: 10px 12px; overflow-x: auto;
   margin: var(--s2) 0; white-space: pre-wrap; word-break: break-word;
 }
-.log {
-  background: #0b0e13; color: #c7d0dc;
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm); font-family: var(--mono);
-  font-size: var(--fs-sm); padding: 10px 12px; max-height: 280px;
-  overflow-y: auto; white-space: pre-wrap; word-break: break-word;
-  display: none; margin-top: var(--s3);
+
+/* =================================================== console panel */
+.console {
+  border: 1px solid var(--border); border-radius: var(--r-md);
+  background: var(--console-bg); margin-top: var(--s3);
+  display: none; overflow: hidden;
 }
-.log.show { display: block; }
+.console.show { display: block; }
+.console-bar { display: flex; align-items: center; gap: var(--s2);
+  padding: 4px 6px 4px 12px;
+  border-bottom: 1px solid rgba(255,255,255,.07);
+  background: rgba(255,255,255,.025); }
+.console-bar .ct { font-size: 10.5px; font-weight: 700;
+  letter-spacing: .08em; text-transform: uppercase;
+  color: var(--faint); display: inline-flex; align-items: center;
+  gap: 6px; }
+.console-bar .cn { font-size: var(--fs-xs); color: var(--faint);
+  font-variant-numeric: tabular-nums; margin-left: auto; }
+.console-bar .btn { background: transparent; border-color:
+  transparent; color: var(--faint); }
+.console-bar .btn:hover { color: var(--accent); }
+.console-bar .btn.on { color: var(--accent); }
+.console-body { font-family: var(--mono); font-size: var(--fs-sm);
+  color: var(--console-fg); max-height: 280px; overflow-y: auto;
+  padding: 8px 12px; line-height: 1.65; }
+.cline { white-space: pre-wrap; word-break: break-word; }
+.cline .cts { color: var(--faint); margin-right: 10px;
+  font-size: var(--fs-xs); user-select: none; }
+.cline.err  { color: var(--red); }
+.cline.warn { color: var(--amber); }
+.cline.ok   { color: var(--green); }
+
+/* ==================================================== error card */
+.ecard { border: 1px solid var(--border);
+  border-left: 3px solid var(--red); border-radius: var(--r-md);
+  background: var(--bg2); padding: var(--s3) var(--s4);
+  margin: var(--s2) 0; box-shadow: var(--shadow-sm); }
+.ecard.warn { border-left-color: var(--amber); }
+.ecard-head { display: flex; align-items: flex-start; gap: 8px;
+  font-weight: 600; font-size: var(--fs-md); }
+.ecard-head svg.i { color: var(--red); margin-top: 2px; }
+.ecard.warn .ecard-head svg.i { color: var(--amber); }
+.ecard-detail { margin-top: 6px; font-family: var(--mono);
+  font-size: var(--fs-sm); color: var(--muted);
+  white-space: pre-wrap; word-break: break-word; }
+.ecard-detail details summary { cursor: pointer;
+  color: var(--accent); font-family: var(--sans);
+  font-size: var(--fs-sm); }
+.ecard-act { margin-top: var(--s2); }
+
+/* ================================================== json details */
+details.jd { border: 1px solid var(--border-soft);
+  border-radius: var(--r-md); background: var(--bg);
+  margin: var(--s2) 0; }
+details.jd > summary { cursor: pointer; list-style: none;
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 12px; font-size: var(--fs-sm); font-weight: 600;
+  color: var(--muted); user-select: none; }
+details.jd > summary::-webkit-details-marker { display: none; }
+details.jd > summary:hover { color: var(--text); }
+details.jd > summary .chev { transition: transform var(--t-fast);
+  display: inline-flex; }
+details.jd[open] > summary .chev { transform: rotate(90deg); }
+details.jd > summary .btn { margin-left: auto; }
+details.jd pre { margin: 0; border: 0;
+  border-top: 1px solid var(--border-soft); border-radius: 0;
+  max-height: 340px; overflow: auto; }
+
+.trunc-rest[hidden] { display: none; }
 
 .empty {
   border: 1px dashed var(--border); border-radius: var(--r-lg);
@@ -350,6 +479,9 @@ pre {
   color: var(--muted); font-size: var(--fs-md);
 }
 .empty b { color: var(--text); }
+.empty .eico { display: flex; justify-content: center;
+  margin-bottom: var(--s2); color: var(--faint); }
+.empty .eico svg.i { width: 26px; height: 26px; }
 .helper { font-size: var(--fs-sm); color: var(--muted);
   margin-top: 6px; }
 .kv { font-size: var(--fs-sm); color: var(--muted); }
@@ -358,16 +490,19 @@ pre {
   font-size: var(--fs-sm); white-space: pre-wrap;
   word-break: break-word; margin: var(--s1) 0; }
 .sec-note { font-size: var(--fs-sm); color: var(--muted);
-  border-left: 3px solid var(--accent); padding-left: 10px;
-  margin: var(--s3) 0; }
-.ai-box { border: 1px solid var(--border); border-radius: var(--r-md);
+  border-left: 3px solid var(--accent); padding: 2px 0 2px 10px;
+  margin: var(--s3) 0; background: var(--accent-soft);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0; }
+.ai-box { border: 1px solid var(--border-soft);
+  border-radius: var(--r-md);
   padding: var(--s3); background: var(--bg); margin-top: var(--s2); }
 .ai-box .conf { float: right; }
-.backlink { font-size: var(--fs-sm); display: inline-block;
-  margin-bottom: var(--s2); }
+.backlink { font-size: var(--fs-sm); display: inline-flex;
+  align-items: center; gap: 4px; margin-bottom: var(--s2); }
 .checkbox-row { display: flex; gap: var(--s2); align-items: center;
   padding: 6px var(--s1); border-bottom: 1px solid var(--border-soft);
 }
+.checkbox-row:hover { background: var(--zebra); }
 .right { text-align: right; }
 
 /* ======================================================== stepper */
@@ -383,7 +518,8 @@ pre {
 .step .bubble { width: 26px; height: 26px; border-radius: 50%;
   border: 2px solid var(--border); background: var(--bg2);
   display: flex; align-items: center; justify-content: center;
-  font-size: var(--fs-xs); font-weight: 700; color: var(--muted); }
+  font-size: var(--fs-xs); font-weight: 700; color: var(--muted);
+  transition: border-color var(--t-fast), box-shadow var(--t-fast); }
 .step.done .bubble { border-color: var(--green);
   color: var(--green); background: var(--green-bg); }
 .step.attn .bubble { border-color: var(--amber);
@@ -420,11 +556,13 @@ pre {
 .ov-grid { display: grid;
   grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
   gap: var(--s4); }
-.ov-card { background: var(--bg2); border: 1px solid var(--border);
+.ov-card { background: var(--bg2);
+  border: 1px solid var(--border-soft);
   border-radius: var(--r-lg); padding: var(--s4);
-  box-shadow: var(--shadow-sm); display: flex; gap: var(--s4);
-  transition: border-color .12s; }
-.ov-card:hover { border-color: var(--accent); }
+  box-shadow: var(--shadow-card); display: flex; gap: var(--s4);
+  transition: border-color var(--t-fast), box-shadow var(--t-fast); }
+.ov-card:hover { border-color: var(--accent);
+  box-shadow: var(--shadow); }
 .ov-main { flex: 1; min-width: 0; }
 .ov-title { font-weight: 650; font-size: var(--fs-lg);
   margin-bottom: 2px; overflow: hidden; text-overflow: ellipsis;
@@ -463,6 +601,7 @@ pre {
 .sample-lines .ts { color: var(--faint); margin-right: 8px; }
 .sample-tbl { font-size: 12px; margin-top: 4px; }
 .sample-tbl td { padding: 2px 8px 2px 0; border-bottom: 0; }
+.sample-tbl th { position: static; background: transparent; }
 .signoff { display: flex; gap: var(--s2); align-items: center;
   flex-wrap: wrap; margin-top: var(--s2);
   padding: var(--s2) var(--s3); border: 1px dashed var(--border);
@@ -473,7 +612,7 @@ pre {
   padding: var(--s1) 0; }
 .statstrip .st { text-align: left; }
 .statstrip .st .v { font-family: var(--mono); font-weight: 700;
-  font-size: var(--fs-md); }
+  font-size: var(--fs-md); font-variant-numeric: tabular-nums; }
 .statstrip .st .k { font-size: 10px; color: var(--faint);
   text-transform: uppercase; letter-spacing: .06em; }
 
@@ -482,16 +621,17 @@ pre {
   var(--border); margin-bottom: var(--s4); }
 .tabs a { padding: var(--s2) var(--s3); color: var(--muted);
   font-weight: 600; font-size: var(--fs-md);
-  border-bottom: 2px solid transparent; margin-bottom: -1px; }
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+  transition: color var(--t-fast), border-color var(--t-fast); }
 .tabs a:hover { color: var(--text); text-decoration: none; }
 .tabs a.active { color: var(--accent);
   border-bottom-color: var(--accent); }
 
 /* ======================================================== findings */
-.finding { border: 1px solid var(--border);
+.finding { border: 1px solid var(--border-soft);
   border-left-width: 3px; border-radius: var(--r-md);
   background: var(--bg2); padding: var(--s3) var(--s4);
-  margin-bottom: var(--s3); }
+  margin-bottom: var(--s3); box-shadow: var(--shadow-sm); }
 .finding.blocker { border-left-color: var(--red); }
 .finding.warn { border-left-color: var(--amber); }
 .finding.info { border-left-color: var(--blue); }
@@ -545,12 +685,12 @@ pre {
 .job-head { display: flex; align-items: center; gap: var(--s2);
   padding: var(--s2) var(--s3); cursor: pointer;
   background: var(--bg3); font-size: var(--fs-md);
-  font-weight: 600; }
+  font-weight: 600; transition: background var(--t-fast); }
 .job-head:hover { background: var(--bg4); }
 .job-log { font-family: var(--mono); font-size: var(--fs-xs);
-  background: var(--bg); color: var(--muted);
+  background: var(--console-bg); color: var(--console-fg);
   max-height: 220px; overflow-y: auto; padding: var(--s2) var(--s3);
-  white-space: pre-wrap; word-break: break-word; display: none; }
+  display: none; line-height: 1.6; }
 .job-item.open .job-log { display: block; }
 
 /* ======================================================== ds view */
@@ -591,9 +731,18 @@ pre {
 .toast { background: var(--bg2); border: 1px solid var(--border);
   border-left: 4px solid var(--accent); border-radius: var(--r-md);
   padding: 10px 14px; box-shadow: var(--shadow);
-  font-size: var(--fs-md); word-break: break-word; }
+  font-size: var(--fs-md); word-break: break-word;
+  display: flex; gap: 8px; align-items: flex-start;
+  animation: toast-in .15s ease-out; }
+.toast svg.i { margin-top: 2px; color: var(--accent); }
 .toast.err { border-left-color: var(--red); }
+.toast.err svg.i { color: var(--red); }
 .toast.ok { border-left-color: var(--green); }
+.toast.ok svg.i { color: var(--green); }
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
 </style>
 </head>
 <body>
@@ -609,21 +758,63 @@ pre {
     <nav class="nav" id="nav">
       <div class="nav-sec">Migrate</div>
       <a href="#/overview" data-r="overview">
-        <span class="ico">&#9638;</span> Overview
+        <span class="ico"><svg class="i" viewBox="0 0 24 24"
+          fill="none" stroke="currentColor" stroke-width="1.7"
+          stroke-linecap="round" stroke-linejoin="round"
+          aria-hidden="true"><rect x="3" y="3" width="7" height="7"
+          rx="1"></rect><rect x="14" y="3" width="7" height="7"
+          rx="1"></rect><rect x="3" y="14" width="7" height="7"
+          rx="1"></rect><rect x="14" y="14" width="7" height="7"
+          rx="1"></rect></svg></span> Overview
         <span class="cnt" id="nav-cnt"></span></a>
       <a href="#/connect" data-r="connect">
-        <span class="ico">&#9096;</span> Connect</a>
+        <span class="ico"><svg class="i" viewBox="0 0 24 24"
+          fill="none" stroke="currentColor" stroke-width="1.7"
+          stroke-linecap="round" stroke-linejoin="round"
+          aria-hidden="true"><path d="M15 7h2a5 5 0 0 1 0 10h-2">
+          </path><path d="M9 17H7A5 5 0 0 1 7 7h2"></path>
+          <line x1="8" y1="12" x2="16" y2="12"></line></svg>
+        </span> Connect</a>
       <a href="#/convert" data-r="convert">
-        <span class="ico">&#8635;</span> Fetch &amp; Convert</a>
+        <span class="ico"><svg class="i" viewBox="0 0 24 24"
+          fill="none" stroke="currentColor" stroke-width="1.7"
+          stroke-linecap="round" stroke-linejoin="round"
+          aria-hidden="true"><polyline points="23 4 23 10 17 10">
+          </polyline><polyline points="1 20 1 14 7 14"></polyline>
+          <path d="M3.5 9a9 9 0 0 1 14.9-3.4L23 10M1 14l4.6 4.4A9 9 0
+          0 0 20.5 15"></path></svg></span> Fetch &amp; Convert</a>
       <a href="#/datasources" data-r="datasources">
-        <span class="ico">&#9723;</span> Datasources</a>
+        <span class="ico"><svg class="i" viewBox="0 0 24 24"
+          fill="none" stroke="currentColor" stroke-width="1.7"
+          stroke-linecap="round" stroke-linejoin="round"
+          aria-hidden="true"><ellipse cx="12" cy="5" rx="9" ry="3">
+          </ellipse><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3">
+          </path><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5">
+          </path></svg></span> Datasources</a>
       <a href="#/import" data-r="import">
-        <span class="ico">&#8682;</span> Import</a>
+        <span class="ico"><svg class="i" viewBox="0 0 24 24"
+          fill="none" stroke="currentColor" stroke-width="1.7"
+          stroke-linecap="round" stroke-linejoin="round"
+          aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2
+          2H5a2 2 0 0 1-2-2v-4"></path><polyline
+          points="17 8 12 3 7 8"></polyline><line x1="12" y1="3"
+          x2="12" y2="15"></line></svg></span> Import</a>
       <div class="nav-sec">Review</div>
       <a href="#/changes" data-r="changes">
-        <span class="ico">&#916;</span> Changes</a>
+        <span class="ico"><svg class="i" viewBox="0 0 24 24"
+          fill="none" stroke="currentColor" stroke-width="1.7"
+          stroke-linecap="round" stroke-linejoin="round"
+          aria-hidden="true"><circle cx="12" cy="12" r="9"></circle>
+          <polyline points="12 7 12 12 15.5 14"></polyline></svg>
+        </span> Changes</a>
       <a href="#/ai" data-r="ai">
-        <span class="ico">&#10024;</span> AI Assistant</a>
+        <span class="ico"><svg class="i" viewBox="0 0 24 24"
+          fill="none" stroke="currentColor" stroke-width="1.7"
+          stroke-linecap="round" stroke-linejoin="round"
+          aria-hidden="true"><path d="M12 3l1.9 5.1L19 10l-5.1
+          1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"></path><path d="M19
+          15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9z">
+          </path></svg></span> AI Assistant</a>
     </nav>
     <div class="sidebar-foot">
       Local only &mdash; API keys stay in server memory,
@@ -638,7 +829,7 @@ pre {
       <span class="pill" id="pill-gf"><span class="dot"></span>
         Grafana</span>
       <span class="pill" id="pill-ai"><span class="dot"></span>
-        AI</span>
+        <span id="pill-ai-lbl">AI</span></span>
       <button class="pill" id="jobsbtn" type="button"
         title="Background jobs" aria-label="Background jobs">
         <span class="spin"></span>Jobs
@@ -714,7 +905,9 @@ function toast(msg, kind) {
   var el = document.createElement('div');
   el.className = 'toast ' + (kind || '');
   el.setAttribute('role', 'status');
-  el.textContent = msg;
+  el.innerHTML = ico(kind === 'err' ? 'xcircle' :
+                     kind === 'ok' ? 'checkcircle' : 'info', 15);
+  el.appendChild(document.createTextNode(msg));
   $('#toasts').appendChild(el);
   setTimeout(function () { el.remove(); },
              kind === 'err' ? 9000 : 5000);
@@ -748,6 +941,247 @@ function debounce(fn, ms) {
   };
 }
 
+/* ====================================================== icons */
+/* Tiny inline SVG icon set -- one stroke style everywhere. */
+var ICONS = {
+  alert: '<path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 ' +
+    '1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"></path>' +
+    '<line x1="12" y1="9" x2="12" y2="13"></line>' +
+    '<line x1="12" y1="17" x2="12.01" y2="17"></line>',
+  xcircle: '<circle cx="12" cy="12" r="9"></circle>' +
+    '<line x1="15" y1="9" x2="9" y2="15"></line>' +
+    '<line x1="9" y1="9" x2="15" y2="15"></line>',
+  check: '<polyline points="20 6 9 17 4 12"></polyline>',
+  checkcircle: '<circle cx="12" cy="12" r="9"></circle>' +
+    '<polyline points="8 12.5 11 15.5 16 9.5"></polyline>',
+  info: '<circle cx="12" cy="12" r="9"></circle>' +
+    '<line x1="12" y1="11" x2="12" y2="16"></line>' +
+    '<line x1="12" y1="8" x2="12.01" y2="8"></line>',
+  copy: '<rect x="9" y="9" width="12" height="12" rx="2"></rect>' +
+    '<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 ' +
+    '2 2v1"></path>',
+  chevron: '<polyline points="9 6 15 12 9 18"></polyline>',
+  pin: '<line x1="12" y1="17" x2="12" y2="22"></line>' +
+    '<path d="M7 4h10l-1.5 7.5 2.5 3.5H6l2.5-3.5z"></path>',
+  terminal: '<polyline points="4 17 10 11 4 5"></polyline>' +
+    '<line x1="12" y1="19" x2="20" y2="19"></line>',
+  play: '<polygon points="7 4 19 12 7 20 7 4"></polygon>',
+  download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4">' +
+    '</path><polyline points="7 10 12 15 17 10"></polyline>' +
+    '<line x1="12" y1="15" x2="12" y2="3"></line>',
+  zap: '<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2">' +
+    '</polygon>',
+  inbox: '<polyline points="22 12 16 12 14 15 10 15 8 12 2 12">' +
+    '</polyline><path d="M5.5 5.1 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 ' +
+    '0 2-2v-6l-3.5-6.9A2 2 0 0 0 16.7 4H7.3a2 2 0 0 0-1.8 1.1z">' +
+    '</path>',
+  search: '<circle cx="11" cy="11" r="7"></circle>' +
+    '<line x1="21" y1="21" x2="16.2" y2="16.2"></line>',
+  arrow: '<line x1="5" y1="12" x2="19" y2="12"></line>' +
+    '<polyline points="12 5 19 12 12 19"></polyline>',
+  sparkle: '<path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1' +
+    'L5 10l5.1-1.9z"></path><path d="M19 15l.9 2.1L22 18l-2.1.9' +
+    'L19 21l-.9-2.1L16 18l2.1-.9z"></path>',
+  database: '<ellipse cx="12" cy="5" rx="9" ry="3"></ellipse>' +
+    '<path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path>' +
+    '<path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path>',
+  wrench: '<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 ' +
+    '1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 ' +
+    '1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>'
+};
+
+function ico(name, size) {
+  var body = ICONS[name];
+  if (!body) return '';
+  var s = size || 16;
+  return '<svg class="i" style="width:' + s + 'px;height:' + s +
+    'px" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+    'stroke-width="1.7" stroke-linecap="round" ' +
+    'stroke-linejoin="round" aria-hidden="true">' + body + '</svg>';
+}
+
+/* ====================================================== copy/trunc */
+function copyText(text, btn) {
+  var done = function () {
+    toast('Copied to clipboard', 'ok');
+    if (btn) {
+      btn.classList.add('on');
+      setTimeout(function () { btn.classList.remove('on'); }, 900);
+    }
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(done, function () {
+      fallbackCopy(text); done(); });
+  } else { fallbackCopy(text); done(); }
+}
+
+/* Copy button markup: copies textContent of #<targetId>. Wired once
+   via the delegated click handler in boot. */
+function copyBtn(targetId, label) {
+  return '<button class="btn small ghost iconbtn" type="button" ' +
+    'data-copy="' + esc(targetId) + '" title="Copy" ' +
+    'aria-label="Copy ' + esc(label || 'text') + '">' +
+    ico('copy', 13) + '</button>';
+}
+
+var _uidSeq = 0;
+function uid() { _uidSeq += 1; return 'u' + _uidSeq; }
+
+/* Long strings: show the head, expand the rest on demand. */
+function truncHtml(s, n) {
+  s = s == null ? '' : String(s);
+  n = n || 280;
+  if (s.length <= n) return esc(s);
+  var more = 'show all (' + (s.length - n) + ' more chars)';
+  return '<span>' + esc(s.slice(0, n)) +
+    '<span class="trunc-rest" hidden>' + esc(s.slice(n)) +
+    '</span> <button class="linklike" type="button" ' +
+    'data-expand="1" data-more="' + esc(more) + '">&hellip; ' +
+    esc(more) + '</button></span>';
+}
+
+/* Collapsible pretty-printed JSON block with a copy button. */
+function jsonDetails(title, obj, open) {
+  var txt = typeof obj === 'string' ? obj :
+    JSON.stringify(obj, null, 2);
+  var id = 'jd-' + uid();
+  return '<details class="jd"' + (open ? ' open' : '') + '>' +
+    '<summary><span class="chev">' + ico('chevron', 12) +
+    '</span>' + esc(title) +
+    ' <span class="chip dim">json</span>' + copyBtn(id, title) +
+    '</summary><pre id="' + id + '">' + esc(txt) +
+    '</pre></details>';
+}
+
+/* ================================================= error cards */
+/* One error component everywhere: WHAT failed, the exact detail,
+   and the NEXT ACTION (a real link when one can be derived). */
+function errAction(msg) {
+  var m = String(msg || '').toLowerCase();
+  if (m.indexOf('grafana url') >= 0 || m.indexOf('token') >= 0 ||
+      m.indexOf('unauthorized') >= 0 || m.indexOf('401') >= 0) {
+    return { label: 'Open Connect', href: '#/connect' };
+  }
+  if (m.indexOf('new relic api key') >= 0 ||
+      m.indexOf('nrak') >= 0 || m.indexOf('nerdgraph') >= 0) {
+    return { label: 'Open Connect', href: '#/connect' };
+  }
+  if (m.indexOf('anthropic') >= 0 || m.indexOf('ai backend') >= 0 ||
+      m.indexOf('ai command') >= 0) {
+    return { label: 'Configure AI in Connect', href: '#/connect' };
+  }
+  if (m.indexOf('datasource') >= 0) {
+    return { label: 'Open Datasources', href: '#/datasources' };
+  }
+  if (m.indexOf('run convert') >= 0 ||
+      m.indexOf('convert first') >= 0) {
+    return { label: 'Open Fetch & Convert', href: '#/convert' };
+  }
+  if (m.indexOf('diagnose') >= 0) return null;
+  return null;
+}
+
+/* what: plain sentence (may contain safe HTML from our own code);
+   detail: raw server/error text (escaped, collapsible when long);
+   action: {label, href} | {label, id} (button wired by caller) |
+   null (auto-derived from detail when possible). */
+function errorCard(what, detail, action, severity) {
+  var act = action === undefined ? errAction(detail) : action;
+  var d = detail == null ? '' : String(detail);
+  var detailHtml = '';
+  if (d) {
+    if (d.length > 220) {
+      detailHtml = '<div class="ecard-detail"><details>' +
+        '<summary>Show full error (' + d.length +
+        ' chars)</summary><pre style="margin:6px 0 0">' + esc(d) +
+        '</pre></details><span>' + esc(d.slice(0, 220)) +
+        '&hellip;</span></div>';
+    } else {
+      detailHtml = '<div class="ecard-detail">' + esc(d) + '</div>';
+    }
+  }
+  var actHtml = '';
+  if (act && act.href) {
+    actHtml = '<div class="ecard-act"><a class="btn small" href="' +
+      esc(act.href) + '">' + esc(act.label) + ' ' +
+      ico('arrow', 12) + '</a></div>';
+  } else if (act && act.id) {
+    actHtml = '<div class="ecard-act"><button class="btn small" ' +
+      'type="button" id="' + esc(act.id) + '">' + esc(act.label) +
+      '</button></div>';
+  }
+  return '<div class="ecard' +
+    (severity === 'warn' ? ' warn' : '') + '" role="alert">' +
+    '<div class="ecard-head">' +
+    ico(severity === 'warn' ? 'alert' : 'xcircle', 15) +
+    '<span>' + what + '</span></div>' + detailHtml + actHtml +
+    '</div>';
+}
+
+/* ================================================ console panel */
+/* Structured log console: mono, level-tinted lines, receive-time
+   stamps, auto-scroll with a follow pin, copy button. */
+function consoleHtml(id, title) {
+  return '<div class="console" id="' + esc(id) + '">' +
+    '<div class="console-bar"><span class="ct">' +
+    ico('terminal', 12) + esc(title || 'Log') + '</span>' +
+    '<span class="cn"></span>' +
+    '<button class="btn small ghost iconbtn on" type="button" ' +
+    'data-cpin="1" title="Follow output (auto-scroll)" ' +
+    'aria-label="Toggle auto-scroll" aria-pressed="true">' +
+    ico('pin', 13) + '</button>' +
+    '<button class="btn small ghost iconbtn" type="button" ' +
+    'data-ccopy="1" title="Copy log" aria-label="Copy log">' +
+    ico('copy', 13) + '</button></div>' +
+    '<div class="console-body" aria-live="polite"></div></div>';
+}
+
+function clineClass(line) {
+  if (/^(FAIL|ERROR)\b/i.test(line) ||
+      /\bFAILED\b/.test(line)) return ' err';
+  if (/^(WARN|WARNING)\b/i.test(line) ||
+      /\bcould not\b/i.test(line)) return ' warn';
+  if (/^(ok\b|Done\b|done:)/i.test(line) ||
+      /^Imported \d/.test(line)) return ' ok';
+  return '';
+}
+
+/* Append only lines not yet rendered; stamp them with the time we
+   received them. Auto-scrolls while the pin is on. */
+function consoleUpdate(root, lines) {
+  if (!root || !root.isConnected) return;
+  root.classList.add('show');
+  var body = $('.console-body', root);
+  if (!body) return;
+  var have = body.childElementCount;
+  var now = new Date().toTimeString().slice(0, 8);
+  var add = '';
+  for (var i = have; i < lines.length; i++) {
+    var ln = String(lines[i] == null ? '' : lines[i]);
+    add += '<div class="cline' + clineClass(ln) + '">' +
+      '<span class="cts">' + now + '</span>' + esc(ln) + '</div>';
+  }
+  if (have > lines.length) {  /* new job reusing the panel */
+    body.innerHTML = '';
+    add = lines.map(function (ln) {
+      ln = String(ln == null ? '' : ln);
+      return '<div class="cline' + clineClass(ln) + '">' +
+        '<span class="cts">' + now + '</span>' + esc(ln) +
+        '</div>';
+    }).join('');
+  }
+  if (add) body.insertAdjacentHTML('beforeend', add);
+  var cn = $('.cn', root);
+  if (cn) {
+    cn.textContent = lines.length ?
+      lines.length + ' line' + (lines.length === 1 ? '' : 's') : '';
+  }
+  var pin = $('button[data-cpin]', root);
+  if (!pin || pin.classList.contains('on')) {
+    body.scrollTop = body.scrollHeight;
+  }
+}
+
 /* ====================================================== jobs */
 function renderJobsBtn() {
   var running = Jobs.items.filter(function (j) {
@@ -760,7 +1194,8 @@ function renderJobsBtn() {
 function renderDrawer() {
   var body = $('#drawer-body');
   if (!Jobs.items.length) {
-    body.innerHTML = '<div class="empty">No background jobs yet.' +
+    body.innerHTML = '<div class="empty"><span class="eico">' +
+      ico('inbox', 26) + '</span>No background jobs yet.' +
       '<br>Long operations (fetch, convert, tests, parity, ' +
       'diagnose, heal) appear here with their live logs.</div>';
     return;
@@ -768,17 +1203,27 @@ function renderDrawer() {
   body.innerHTML = Jobs.items.map(function (j, i) {
     var st = j.status === 'running' ?
       '<span class="chip info">running</span>' :
-      j.status === 'error' ? '<span class="chip err">error</span>' :
-      '<span class="chip ok">done</span>';
+      j.status === 'error' ?
+      '<span class="chip err">' + ico('xcircle', 11) +
+      'error</span>' :
+      '<span class="chip ok">' + ico('check', 11) + 'done</span>';
+    var lines = (j.log || []).map(function (ln) {
+      ln = String(ln == null ? '' : ln);
+      return '<div class="cline' + clineClass(ln) + '">' +
+        esc(ln) + '</div>';
+    }).join('') || '<div class="cline">(no output yet)</div>';
+    if (j.error) {
+      lines += '<div class="cline err">ERROR: ' + esc(j.error) +
+        '</div>';
+    }
     return '<div class="job-item' + (j.open ? ' open' : '') +
       '" data-ji="' + i + '">' +
-      '<div class="job-head" role="button" tabindex="0">' +
+      '<div class="job-head" role="button" tabindex="0" ' +
+      'aria-expanded="' + (j.open ? 'true' : 'false') + '">' +
       '<span>' + esc(j.kind) + '</span>' + st +
       '<span class="kv" style="margin-left:auto">' +
       esc(j.started) + '</span></div>' +
-      '<div class="job-log">' + esc((j.log || []).join('\n') ||
-      '(no output yet)') +
-      (j.error ? '\nERROR: ' + esc(j.error) : '') + '</div></div>';
+      '<div class="job-log">' + lines + '</div></div>';
   }).join('');
   $all('.job-head', body).forEach(function (h) {
     var toggle = function () {
@@ -839,10 +1284,7 @@ async function startJob(kind, path, body, onUpdate) {
 
 function logInto(el) {
   return function (job) {
-    if (!el || !el.isConnected) return;
-    el.classList.add('show');
-    el.textContent = (job.log || []).join('\n');
-    el.scrollTop = el.scrollHeight;
+    consoleUpdate(el, job.log || []);
   };
 }
 
@@ -1218,6 +1660,15 @@ function pillSet(id, status, title) {
   el.title = title || '';
 }
 
+/* Active AI backend: "api" | "local" | "none". Falls back to the
+   pre-1.2 key flag when the server does not send ai_backend yet. */
+function aiBackend(ses) {
+  ses = ses || {};
+  if (ses.ai_backend) return ses.ai_backend;
+  if (ses.ai_command_set) return 'local';
+  return ses.anthropic_key_set ? 'api' : 'none';
+}
+
 function renderPills() {
   var s = App.state; if (!s) return;
   var d = s.status_detail || {};
@@ -1227,9 +1678,18 @@ function renderPills() {
   pillSet('#pill-gf', s.status.grafana,
           d.grafana || (s.session.grafana_url ?
           s.session.grafana_url : 'no Grafana URL configured'));
-  pillSet('#pill-ai', s.status.ai,
-          d.ai || (s.session.anthropic_key_set ?
-          'key set' : 'no Anthropic key configured'));
+  var backend = aiBackend(s.session);
+  var lbl = $('#pill-ai-lbl');
+  if (lbl) {
+    lbl.textContent = backend === 'api' ? 'AI: API' :
+      backend === 'local' ? 'AI: local' : 'AI';
+  }
+  pillSet('#pill-ai',
+          backend === 'none' ? 'unset' : s.status.ai,
+          d.ai || (backend === 'api' ? 'Anthropic API key set' :
+                   backend === 'local' ?
+                   'local console AI command configured' :
+                   'no AI backend configured'));
 }
 
 /* ====================================================== router */
@@ -1272,8 +1732,8 @@ async function route() {
       await (VIEWS[name] || vOverview)(view);
     }
   } catch (e) {
-    view.innerHTML = '<div class="empty"><b>Something went wrong' +
-      '</b><br>' + esc(e.message) + '</div>';
+    view.innerHTML = errorCard('This view could not load.',
+                               e.message);
   }
 }
 
@@ -1457,7 +1917,8 @@ async function vOverview(view) {
   App.dashboards = data.dashboards || [];
   var area = $('#ov-area');
   if (!App.dashboards.length) {
-    area.innerHTML = '<div class="empty"><b>No dashboards yet.' +
+    area.innerHTML = '<div class="empty"><span class="eico">' +
+      ico('inbox', 26) + '</span><b>No dashboards yet.' +
       '</b><br>1. <a href="#/connect">Connect</a> New Relic and ' +
       'Grafana &middot; 2. <a href="#/convert">Fetch &amp; ' +
       'Convert</a> your dashboards.<br>They will appear here with ' +
@@ -1525,7 +1986,7 @@ async function vConnect(view) {
   view.innerHTML =
   '<h1>Connect</h1>' +
   '<p class="lead">Connect New Relic (source), Grafana (target) ' +
-  'and optionally Claude for AI help.</p>' +
+  'and optionally an AI backend for automated help.</p>' +
   '<div class="sec-note">API keys are held in the server process ' +
   'memory only. They are never written to the database, to disk, ' +
   'or to logs, and are gone when the server stops.</div>' +
@@ -1559,7 +2020,19 @@ async function vConnect(view) {
   '<button class="btn" id="su-gf-test">Test token</button></div>' +
   '<div id="su-gf-out"></div></div>' +
 
-  '<div class="card"><h2>AI assistance (optional)</h2>' +
+  '<div class="card"><h2>' + ico('sparkle', 14) +
+  'AI assistance (optional)</h2>' +
+  '<div class="kv" style="margin-bottom:4px">Powers &quot;Ask ' +
+  'AI&quot; on failing panels and the assistant chat.</div>' +
+  '<label id="su-ai-backend-lbl">Backend</label>' +
+  '<div class="seg" role="group" ' +
+  'aria-labelledby="su-ai-backend-lbl">' +
+  '<button type="button" id="su-ai-mode-api">Anthropic API' +
+  '</button>' +
+  '<button type="button" id="su-ai-mode-local">Local console AI' +
+  '</button></div>' +
+
+  '<div id="su-ai-api">' +
   '<label>Anthropic API key</label>' +
   '<input type="password" id="su-aikey" autocomplete="off" ' +
   'placeholder="' + (ses.anthropic_key_set ? '**** key set' :
@@ -1567,10 +2040,25 @@ async function vConnect(view) {
   '<label>Model</label>' +
   '<input id="su-aimodel" placeholder="claude-sonnet-5 (default)"' +
   ' value="' + esc(ses.ai_model) + '">' +
+  '</div>' +
+
+  '<div id="su-ai-local">' +
+  '<label>Command template</label>' +
+  '<input id="su-aicmd" autocomplete="off" spellcheck="false" ' +
+  'class="mono" value="' + esc(ses.ai_command || '') +
+  '" placeholder="claude -p {prompt}">' +
+  '<div class="field-help">Examples: <span class="mono">claude ' +
+  '-p {prompt}</span> &middot; <span class="mono">kiro-cli</span> ' +
+  '&middot; plain commands read the prompt on stdin.</div>' +
+  '<div class="field-help">Runs locally with your user ' +
+  'permissions; panel/query/error text is sent to it.</div>' +
+  '</div>' +
+
   '<div class="btnbar">' +
   '<button class="btn primary" id="su-ai-save">Save</button>' +
-  '<span class="kv">Powers &quot;Ask AI&quot; on failing panels ' +
-  'and the assistant chat.</span></div></div>' +
+  '<button class="btn" id="su-ai-test">Test connection</button>' +
+  '</div>' +
+  '<div id="su-ai-out"></div></div>' +
 
   '<div class="card"><h2>Workspace</h2>' +
   '<label>New Relic export directory (fetch writes here)</label>' +
@@ -1625,8 +2113,9 @@ async function vConnect(view) {
       toast('New Relic key OK (' + (r.accounts || []).length +
             ' account(s))', 'ok');
     } catch (e) {
-      out.innerHTML = '<div class="err-text">' + esc(e.message) +
-        '</div>';
+      out.innerHTML = errorCard(
+        'The New Relic key test failed. Check the key (NRAK-...) ' +
+        'and region above, then test again.', e.message, null);
       toast('New Relic: ' + e.message, 'err');
     }
     busy(btn, false); refreshState();
@@ -1661,17 +2150,77 @@ async function vConnect(view) {
           esc(p.detail) + '</div>' : '') + '</div>';
       toast('Grafana token checked', 'ok');
     } catch (e) {
-      out.innerHTML = '<div class="err-text">' + esc(e.message) +
-        '</div>';
+      out.innerHTML = errorCard(
+        'The Grafana connection test failed. Check the URL and ' +
+        'service-account token above, then test again.',
+        e.message, null);
       toast('Grafana: ' + e.message, 'err');
     }
     busy(btn, false); refreshState();
   };
-  $('#su-ai-save').onclick = function () {
-    var body = { ai_model: $('#su-aimodel').value.trim() };
+  /* AI backend picker: Anthropic API vs local console command. */
+  var aiMode = aiBackend(ses) === 'local' ? 'local' : 'api';
+  function renderAiMode() {
+    $('#su-ai-mode-api').classList.toggle('on', aiMode === 'api');
+    $('#su-ai-mode-local').classList.toggle('on',
+                                            aiMode === 'local');
+    $('#su-ai-api').style.display =
+      aiMode === 'api' ? '' : 'none';
+    $('#su-ai-local').style.display =
+      aiMode === 'local' ? '' : 'none';
+  }
+  $('#su-ai-mode-api').onclick = function () {
+    aiMode = 'api'; renderAiMode(); };
+  $('#su-ai-mode-local').onclick = function () {
+    aiMode = 'local'; renderAiMode(); };
+  renderAiMode();
+
+  function aiSettingsBody() {
+    /* The picker is exclusive: saving one backend clears the
+       other (the server prefers the API key when both are set). */
+    if (aiMode === 'local') {
+      var cmd = $('#su-aicmd').value.trim();
+      var b = { ai_command: cmd };  /* empty clears */
+      if (cmd) b.anthropic_api_key = '';
+      return b;
+    }
+    var body = { ai_model: $('#su-aimodel').value.trim(),
+                 ai_command: '' };
     var k = $('#su-aikey').value.trim();
     if (k) body.anthropic_api_key = k;
-    saveSettings(body, this);
+    return body;
+  }
+  $('#su-ai-save').onclick = function () {
+    saveSettings(aiSettingsBody(), this);
+  };
+  $('#su-ai-test').onclick = async function () {
+    var btn = this; busy(btn, true);
+    var out = $('#su-ai-out');
+    out.innerHTML = '';
+    try {
+      await api('/api/settings', aiSettingsBody());
+      var r = await api('/api/ai/test', {});
+      if (r.ok) {
+        out.innerHTML = '<div class="ai-box">' +
+          chip('AI reachable', 'ok') +
+          (r.backend ? ' ' + chip(r.backend === 'local' ?
+            'local console' : 'Anthropic API', 'info') : '') +
+          (r.latency_ms != null ? ' <span class="kv mono">' +
+            Math.round(r.latency_ms) + ' ms</span>' : '') +
+          (r.reply_excerpt ? '<pre style="margin:8px 0 0">' +
+            esc(r.reply_excerpt) + '</pre>' : '') + '</div>';
+        toast('AI backend responded', 'ok');
+      } else {
+        out.innerHTML = errorCard('The AI backend test failed.',
+          r.error || 'no reply from the AI backend', null);
+        toast('AI test failed', 'err');
+      }
+    } catch (e) {
+      out.innerHTML = errorCard('The AI backend test failed.',
+                                e.message, null);
+      toast('AI test failed: ' + e.message, 'err');
+    }
+    busy(btn, false); refreshState();
   };
   $('#su-ws-save').onclick = function () {
     saveSettings({ input_dir: $('#su-indir').value.trim(),
@@ -1698,7 +2247,7 @@ async function vConvert(view) {
   'empty = all)</label>' +
   '<input id="cv-guids" placeholder="all dashboards">' +
   '<div class="btnbar"><button class="btn primary" id="cv-fetch">' +
-  'Fetch</button>' +
+  ico('download', 14) + 'Fetch</button>' +
   '<button class="btn" id="cv-browse">Browse &amp; pick&hellip;' +
   '</button></div>' +
   '<div id="cv-pick"></div></div>' +
@@ -1715,9 +2264,9 @@ async function vConvert(view) {
   '<span class="kv">Package (requirements.json, README, test.sh ' +
   'per dashboard)</span></div>' +
   '<div class="btnbar"><button class="btn primary" id="cv-run">' +
-  'Run convert</button></div></div>' +
+  ico('play', 14) + 'Run convert</button></div></div>' +
   '</div>' +
-  '<div class="log" id="cv-log" aria-live="polite"></div>' +
+  consoleHtml('cv-log', 'Fetch / convert log') +
   '<div id="cv-result"></div>';
 
   $('#cv-browse').onclick = async function () {
@@ -1842,13 +2391,16 @@ function renderConvertResult(res) {
   var list = (res.dashboards || []).map(function (d) {
     return '<tr class="click" tabindex="0" data-slug="' +
       esc(d.slug) + '">' +
-      '<td><b>' + esc(d.title) + '</b></td><td>' + d.panels +
+      '<td><b>' + esc(d.title) + '</b></td><td class="num">' +
+      d.panels +
       '</td><td>' + confChips(d.confidence) + '</td><td>' +
       dsChips(d.datasources) + '</td></tr>';
   }).join('');
   var failed = (res.failed || []).map(function (f) {
-    return '<div class="err-text">' + esc(f.source) + ': ' +
-      esc(f.error) + '</div>';
+    return errorCard('Could not convert <span class="mono">' +
+      esc(f.source) + '</span>.', f.error,
+      { label: 'Check the export, then re-run convert',
+        href: '#/convert' });
   }).join('');
   var totalPanels = (res.dashboards || []).reduce(function (a, d) {
     return a + (d.panels || 0); }, 0);
@@ -1868,8 +2420,9 @@ function renderConvertResult(res) {
     '<div class="stat-card"><div class="num">' +
     (res.failed || []).length +
     '</div><div class="lbl">failed inputs</div></div></div>' +
-    (list ? '<div class="card"><div class="tablewrap"><table>' +
-    '<thead><tr><th>Dashboard</th><th>Panels</th>' +
+    (list ? '<div class="card"><div class="tablewrap">' +
+    '<table class="zebra">' +
+    '<thead><tr><th>Dashboard</th><th class="num">Panels</th>' +
     '<th>Confidence</th><th>Datasources</th></tr></thead><tbody>' +
     list + '</tbody></table></div></div>' : '') +
     (failed ? '<div class="card"><h2>Failed inputs</h2>' + failed +
@@ -1917,10 +2470,10 @@ async function vDatasources(view) {
     var r = await api('/api/grafana/datasources', {});
     list = r.datasources || [];
   } catch (e) {
-    area.innerHTML = '<div class="empty"><b>Cannot list ' +
-      'datasources.</b><br>' + esc(e.message) +
-      '<br><a href="#/connect">Check the Grafana connection</a>.' +
-      '</div>';
+    area.innerHTML = errorCard(
+      'Could not list the datasources on this Grafana instance.',
+      e.message,
+      { label: 'Check the Grafana connection', href: '#/connect' });
     return;
   }
   renderDsTable(area, list);
@@ -1969,7 +2522,8 @@ function renderDsTable(area, list) {
     '<button class="btn primary" id="ds-add">+ Add datasource' +
     '</button>' +
     '<button class="btn" id="ds-reload">Refresh</button></div>' +
-    '<div class="card"><div class="tablewrap"><table>' +
+    '<div class="card"><div class="tablewrap">' +
+    '<table class="zebra">' +
     '<thead><tr><th>Name</th><th>Type</th><th>UID</th><th>URL</th>' +
     '<th>Health</th><th class="right">Actions</th></tr></thead>' +
     '<tbody>' + (rows ||
@@ -2204,8 +2758,9 @@ async function dsFlyout(row) {
         }
       }
     } catch (e) {
-      out.innerHTML = '<div class="err-text">' + esc(e.message) +
-        '</div>';
+      out.innerHTML = errorCard(
+        'Grafana rejected this datasource change.', e.message,
+        null);
     }
     busy(btn, false);
   }
@@ -2278,9 +2833,9 @@ async function vWorkspace(view, slug, tab) {
   var d;
   try { d = await loadDetail(slug); }
   catch (e) {
-    view.innerHTML = '<div class="empty"><b>Cannot load ' +
-      esc(slug) + '</b><br>' + esc(e.message) +
-      '<br><a href="#/overview">Back to overview</a></div>';
+    view.innerHTML = errorCard('Cannot load the workspace for ' +
+      '<span class="mono">' + esc(slug) + '</span>.', e.message,
+      { label: 'Back to overview', href: '#/overview' });
     return;
   }
   App.ws = { slug: slug, detail: d, tab: tab };
@@ -2424,10 +2979,11 @@ function requirementsCard(d) {
       (n.equivalent ? ' <i>Equivalent: ' + esc(n.equivalent) +
        '</i>' : '') + '</div>';
   }).join('');
-  return '<div class="card"><h2>Requirements &mdash; install ' +
-    'these first</h2>' +
+  return '<div class="card"><h2>' + ico('database', 14) +
+    'Requirements &mdash; install these first</h2>' +
     (dsRows ?
-      '<div class="tablewrap"><table><thead><tr><th>Datasource' +
+      '<div class="tablewrap"><table class="zebra"><thead><tr>' +
+      '<th>Datasource' +
       '</th><th>Plugin</th><th>Purpose</th><th>Referenced as</th>' +
       '<th>Live status</th></tr></thead><tbody>' + dsRows +
       '</tbody></table></div>' :
@@ -2439,6 +2995,8 @@ function requirementsCard(d) {
       'domains</h3>' + domainRows : '') +
     (nrNative ? '<h3 style="margin-top:14px">New Relic-native ' +
       'widgets</h3>' + nrNative : '') +
+    (Object.keys(reqs).length ?
+      jsonDetails('requirements.json', reqs) : '') +
     '</div>';
 }
 
@@ -2474,11 +3032,12 @@ function renderPanels(el, slug, d) {
     '<div class="btnbar" style="margin:0 0 12px">' +
     '<button class="btn" id="ws-check">Check requirements' +
     '</button>' +
-    '<button class="btn primary" id="ws-test">Run data tests' +
+    '<button class="btn primary" id="ws-test">' +
+    ico('play', 14) + 'Run data tests' +
     '</button>' +
     '<a class="btn" href="#/dash/' + encodeURIComponent(slug) +
     '/diagnostics">Diagnose &rarr;</a></div>' +
-    '<div class="log" id="ws-log" aria-live="polite"></div>' +
+    consoleHtml('ws-log', 'Data test log') +
     requirementsCard(d) +
     '<div class="card"><h2>Panels</h2><div class="tablewrap">' +
     '<table><thead><tr><th>Id</th><th>Panel</th><th>Type</th>' +
@@ -2568,8 +3127,12 @@ function panelDetailHtml(slug, d, w) {
         '<span class="kv">' + tr.frames + ' frames / ' +
         (tr.points || 0) + ' points</span>' : '') +
       '</div>' +
-      (tr && tr.error ? '<div class="err-text">' + esc(tr.error) +
-        '</div>' : '') +
+      (tr && tr.error ? errorCard(
+        'The last data test failed for target ' + esc(ref) +
+        '. Edit the query below, then Test again — or run ' +
+        'Diagnose for a root cause.', tr.error,
+        { label: 'Run Diagnose', href: '#/dash/' +
+          encodeURIComponent(slug) + '/diagnostics' }) : '') +
       (prow && prow.detail && prow.verdict !== 'match' ?
         '<div class="kv" style="margin:4px 0">parity: ' +
         esc(prow.detail) + '</div>' : '') +
@@ -2734,8 +3297,10 @@ async function editorAction(el, slug, d, btn) {
         testChip(res.status) +
         (res.frames != null ? ' <span class="kv">' + res.frames +
           ' frames / ' + (res.points || 0) + ' points</span>' : '') +
-        (res.error ? '<div class="err-text">' + esc(res.error) +
-          '</div>' : '') + '</div>';
+        (res.error ? errorCard(
+          'Grafana could not run this query.', res.error,
+          { label: 'Check the datasource',
+            href: '#/datasources' }) : '') + '</div>';
     } else if (act === 'samples') {
       await startJob('samples: ' + slug + ' panel ' + pidRaw,
         '/api/samples', { slug: slug, panel_id: pid, limit: 5 },
@@ -2757,8 +3322,8 @@ async function editorAction(el, slug, d, btn) {
       rerenderWs();
     } else if (act === 'ai') {
       var box = document.getElementById('ai-' + pidRaw + '-' + ref);
-      box.innerHTML = '<div class="ai-box">Asking Claude&hellip;' +
-        '</div>';
+      box.innerHTML = '<div class="ai-box">' + ico('sparkle', 13) +
+        ' Asking the AI backend&hellip;</div>';
       var aiBody = { slug: slug, panel_id: pid, refId: ref,
                      expr: expr };
       var rvRow = ((d._reviews || {})[pid] || {})[ref];
@@ -2803,6 +3368,15 @@ async function editorAction(el, slug, d, btn) {
             'Saved and pushed to Grafana' : 'Saved', 'ok');
     }
   } catch (e) {
+    var ACT_LBL = { test: 'Test', samples: 'Pull samples',
+                    ai: 'Ask AI', save: 'Save',
+                    push: 'Save & Push' };
+    var lbl = ACT_LBL[act] ||
+      (act.indexOf('rv-') === 0 ? 'Record review' : act);
+    if (tres && tres.isConnected) {
+      tres.innerHTML = errorCard('&quot;' + esc(lbl) +
+        '&quot; failed for this panel.', e.message);
+    }
     toast(e.message, 'err');
   }
   busy(btn, false);
@@ -2883,8 +3457,8 @@ function bindFixButtons(root, slug, findings, onDone) {
         '<div class="kv"><b>This fix will:</b> ' +
         esc(fix.description || fix.kind || '') + ' ' +
         chip(fix.kind || '', 'info') + '</div>' +
-        (fix.action ? '<pre>' +
-          esc(JSON.stringify(fix.action, null, 2)) + '</pre>' :
+        (fix.action ?
+          jsonDetails('Exact change payload', fix.action, true) :
           '<div class="kv">No machine action payload &mdash; ' +
           'follow the remediation text manually.</div>') +
         needsInputHtml(fix) +
@@ -2923,8 +3497,8 @@ function bindFixButtons(root, slug, findings, onDone) {
               setTimeout(onDone, 900);
             }
           } catch (e) {
-            out.innerHTML = '<div class="err-text">' +
-              esc(e.message) + '</div>';
+            out.innerHTML = errorCard(
+              'The fix could not be applied.', e.message);
           }
           busy(ab, false);
         };
@@ -2957,24 +3531,29 @@ function renderDiagnostics(el, slug, d) {
   }).join('');
   el.innerHTML =
     '<div class="btnbar" style="margin:0 0 12px">' +
-    '<button class="btn primary" id="dg-run">Run diagnose' +
+    '<button class="btn primary" id="dg-run">' +
+    ico('search', 14) + 'Run diagnose' +
     '</button>' +
     '<span class="row" style="gap:6px">' +
     '<input type="checkbox" id="dg-push">' +
     '<span class="kv">push safe fixes live</span></span>' +
-    '<button class="btn" id="dg-heal">Auto-heal</button>' +
+    '<button class="btn" id="dg-heal">' + ico('zap', 14) +
+    'Auto-heal</button>' +
     '<span class="kv" style="margin-left:auto">' + sumChips +
     (diag && diag.generated_at ? ' <span class="kv">generated ' +
       esc(diag.generated_at) + '</span>' : '') + '</span></div>' +
-    '<div class="log" id="dg-log" aria-live="polite"></div>' +
+    consoleHtml('dg-log', 'Diagnose / heal log') +
     '<div id="dg-heal-out"></div>' +
     '<div id="dg-list">' +
     (findings.length ? findings.map(function (f) {
       return findingHtml(f, false); }).join('') :
-     diag ? '<div class="empty"><b>No findings.</b><br>The last ' +
+     diag ? '<div class="empty"><span class="eico">' +
+       ico('checkcircle', 26) + '</span><b>No findings.</b>' +
+       '<br>The last ' +
        'diagnosis came back clean. Re-run after changes to ' +
        'confirm.</div>' :
-     '<div class="empty"><b>Not diagnosed yet.</b><br>Run ' +
+     '<div class="empty"><span class="eico">' + ico('search', 26) +
+     '</span><b>Not diagnosed yet.</b><br>Run ' +
      'diagnose to get root causes and one-click fixes for every ' +
      'failing panel.</div>') +
     '</div>';
@@ -3080,13 +3659,14 @@ function signoffCardHtml(slug, d) {
 function renderVerify(el, slug, d) {
   var par = d.parity;
   var parityRows = ((par || {}).panels || []).map(function (p) {
-    return '<tr><td>' + esc(p.panel_id) + '</td>' +
+    return '<tr><td class="num">' + esc(p.panel_id) + '</td>' +
       '<td><b>' + esc(p.panel_title || '') + '</b> ' +
       chip(p.refId || '', 'dim') + '</td>' +
       '<td>' + verdictChip(p.verdict, p.ratio, '') + '</td>' +
-      '<td>' + fmtNum((p.nr_summary || {}).last) + ' vs ' +
-      fmtNum((p.gf_summary || {}).last) + '</td>' +
-      '<td class="kv">' + esc(p.detail || '') + '</td></tr>';
+      '<td class="num mono">' + fmtNum((p.nr_summary || {}).last) +
+      ' vs ' + fmtNum((p.gf_summary || {}).last) + '</td>' +
+      '<td class="kv">' + truncHtml(p.detail || '', 160) +
+      '</td></tr>';
   }).join('');
   var sum = (par || {}).summary || {};
   var sumChips = Object.keys(sum).sort().map(function (k) {
@@ -3102,18 +3682,22 @@ function renderVerify(el, slug, d) {
     '<input id="vf-from" value="now-1h" style="max-width:110px">' +
     '<label style="margin:0">To</label>' +
     '<input id="vf-to" value="now" style="max-width:110px">' +
-    '<button class="btn primary" id="vf-run">Run parity</button>' +
+    '<button class="btn primary" id="vf-run">' +
+    ico('play', 14) + 'Run parity</button>' +
     '<span style="margin-left:auto">' + sumChips + '</span>' +
     '</div>' +
-    '<div class="log" id="vf-log" aria-live="polite"></div>' +
+    consoleHtml('vf-log', 'Parity / import log') +
     (parityRows ?
-      '<div class="tablewrap" style="margin-top:12px"><table>' +
-      '<thead><tr><th>Id</th><th>Panel</th><th>Verdict</th>' +
-      '<th>Last NR vs GF</th><th>Detail</th></tr></thead><tbody>' +
+      '<div class="tablewrap tall" style="margin-top:12px">' +
+      '<table class="zebra">' +
+      '<thead><tr><th class="num">Id</th><th>Panel</th>' +
+      '<th>Verdict</th><th class="num">Last NR vs GF</th>' +
+      '<th>Detail</th></tr></thead><tbody>' +
       parityRows + '</tbody></table></div>' :
-      '<div class="empty" style="margin-top:12px">Not compared ' +
-      'yet. Run parity to prove the migrated panels show the ' +
-      'same data.</div>') +
+      '<div class="empty" style="margin-top:12px">' +
+      '<span class="eico">' + ico('search', 26) + '</span>' +
+      'Not compared yet. Run parity to prove the migrated ' +
+      'panels show the same data.</div>') +
     '</div>' +
     signoffCardHtml(slug, d) +
     '<div class="grid2">' +
@@ -3126,20 +3710,23 @@ function renderVerify(el, slug, d) {
     '<input type="checkbox" id="vf-ow" checked>' +
     '<span class="kv">overwrite existing</span></div>' +
     '<div class="btnbar"><button class="btn primary" id="vf-imp">' +
-    'Import dashboard</button></div>' +
+    ico('play', 14) + 'Import dashboard</button></div>' +
     '<div id="vf-imp-out"></div></div>' +
     '</div>' +
-    '<div class="card"><h2>Download</h2>' +
+    '<div class="card"><h2>' + ico('download', 14) +
+    'Download</h2>' +
     '<p class="kv">Grab the current (post-fix) dashboard JSON or ' +
     'the full package.</p>' +
     '<div class="btnbar" id="vf-dl">' +
     '<a class="btn" id="dl-json" href="/download/dashboard/' +
-    encodeURIComponent(slug) + '.json" download>Dashboard JSON' +
+    encodeURIComponent(slug) + '.json" download>' +
+    ico('download', 13) + 'Dashboard JSON' +
     '</a>' +
     '<a class="btn" id="dl-pkg" href="/download/package/' +
-    encodeURIComponent(slug) + '.zip" download>Package .zip</a>' +
+    encodeURIComponent(slug) + '.zip" download>' +
+    ico('download', 13) + 'Package .zip</a>' +
     '<a class="btn" id="dl-all" href="/download/all.zip" download>' +
-    'Everything .zip</a></div></div>';
+    ico('download', 13) + 'Everything .zip</a></div></div>';
 
   /* readiness ring + armed download buttons */
   api('/api/readiness?slug=' + encodeURIComponent(slug))
@@ -3213,8 +3800,11 @@ function renderVerify(el, slug, d) {
            '&rarr;</a>' : '') + '</div>';
         toast('Imported' + (r.url ? ': ' + r.url : ''), 'ok');
       } else {
-        out.innerHTML = '<div class="err-text">' +
-          esc(r.error || 'import failed') + '</div>';
+        out.innerHTML = errorCard(
+          'The dashboard could not be imported into Grafana.',
+          r.error || 'import failed',
+          { label: 'Check the Grafana connection',
+            href: '#/connect' });
         toast(r.error || 'import failed', 'err');
       }
     } catch (e) { toast(e.message, 'err'); }
@@ -3228,7 +3818,8 @@ async function vImport(view) {
   var data = await api('/api/dashboards');
   App.dashboards = data.dashboards || [];
   if (!App.dashboards.length) {
-    view.innerHTML = '<h1>Import</h1><div class="empty"><b>No ' +
+    view.innerHTML = '<h1>Import</h1><div class="empty">' +
+      '<span class="eico">' + ico('inbox', 26) + '</span><b>No ' +
       'dashboards to import.</b><br>Run <a href="#/convert">' +
       'Fetch &amp; Convert</a> first.</div>';
     return;
@@ -3252,13 +3843,15 @@ async function vImport(view) {
     '<span class="row" style="gap:6px">' +
     '<input type="checkbox" id="imp-ow" checked>' +
     '<span class="kv">overwrite</span></span>' +
-    '<button class="btn primary" id="imp-run">Import selected' +
+    '<button class="btn primary" id="imp-run">' +
+    ico('play', 14) + 'Import selected' +
     '</button></div>' +
-    '<div class="log" id="imp-log" aria-live="polite"></div></div>' +
-    '<div class="card"><h2>Bulk download</h2>' +
+    consoleHtml('imp-log', 'Import log') + '</div>' +
+    '<div class="card"><h2>' + ico('download', 14) +
+    'Bulk download</h2>' +
     '<div class="btnbar">' +
     '<a class="btn" href="/download/all.zip" download>' +
-    'Everything .zip</a></div></div>';
+    ico('download', 13) + 'Everything .zip</a></div></div>';
 
   $('#imp-run').onclick = async function () {
     var btn = this;
@@ -3311,33 +3904,39 @@ async function vChanges(view) {
 
   function renderTable(list) {
     if (!list.length) {
-      $('#ch-table').innerHTML = '<div class="empty"><b>No ' +
+      $('#ch-table').innerHTML = '<div class="empty">' +
+        '<span class="eico">' + ico('inbox', 26) + '</span><b>No ' +
         'changes recorded yet.</b><br>Edits made in the panel ' +
         'editor (Save / Save &amp; Push) and applied fixes land ' +
         'here.</div>';
       return;
     }
     var rows = list.map(function (c) {
-      return '<tr><td class="kv">' +
+      return '<tr><td class="kv mono">' +
         esc(String(c.ts || '').replace('T', ' ').slice(0, 19)) +
         '</td><td class="mono">' + esc(c.slug || '') + '</td>' +
         '<td>' + chip(c.action, 'dim') +
         '<div class="kv">' + esc(c.target || '') + '</div></td>' +
-        '<td><pre style="margin:0">' + esc(shorten(c.before)) +
-        '</pre><pre style="margin:4px 0 0">' + esc(shorten(c.after)) +
+        '<td>' +
+        (asText(c.before) ? '<div class="kv">before</div>' +
+          '<pre style="margin:0 0 4px">' +
+          truncHtml(asText(c.before), 300) + '</pre>' : '') +
+        '<div class="kv">after</div><pre style="margin:0">' +
+        truncHtml(asText(c.after), 300) +
         '</pre></td><td>' + esc(c.why || '') +
         '<div class="kv">' + esc(c.source || '') + '</div></td>' +
         '</tr>';
     }).join('');
     $('#ch-table').innerHTML = '<div class="card"><div class=' +
-      '"tablewrap"><table><thead><tr><th>When</th><th>Dashboard' +
+      '"tablewrap tall"><table class="zebra"><thead><tr>' +
+      '<th>When</th><th>Dashboard' +
       '</th><th>Action</th><th>Before &rarr; After</th><th>Why' +
       '</th></tr></thead><tbody>' + rows +
       '</tbody></table></div></div>';
   }
-  function shorten(v) {
-    var s = typeof v === 'string' ? v : JSON.stringify(v);
-    return s && s.length > 300 ? s.slice(0, 300) + '...' : (s || '');
+  function asText(v) {
+    if (v == null || v === '') return '';
+    return typeof v === 'string' ? v : JSON.stringify(v);
   }
   renderTable(changes);
 
@@ -3355,20 +3954,16 @@ async function vChanges(view) {
                           (s ? '?slug=' + encodeURIComponent(s)
                              : ''));
       var txt = JSON.stringify(cfg, null, 2);
-      $('#ch-cfg').innerHTML = '<div class="card"><h2>Suggested ' +
-        'config overlay</h2><div class="kv">Merge this into your ' +
+      $('#ch-cfg').innerHTML = '<div class="card"><h2>' +
+        ico('wrench', 14) + 'Suggested config overlay</h2>' +
+        '<div class="kv">Merge this into your ' +
         'mapping config (convert -c) to make these fixes ' +
         'permanent.</div><pre id="ch-cfg-pre"></pre>' +
-        '<button class="btn small" id="ch-copy">Copy JSON</button>' +
+        '<button class="btn small" id="ch-copy">' +
+        ico('copy', 13) + 'Copy JSON</button>' +
         '</div>';
       $('#ch-cfg-pre').textContent = txt;
-      $('#ch-copy').onclick = function () {
-        var ok = function () { toast('Copied', 'ok'); };
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          navigator.clipboard.writeText(txt).then(ok, function () {
-            fallbackCopy(txt); ok(); });
-        } else { fallbackCopy(txt); ok(); }
-      };
+      $('#ch-copy').onclick = function () { copyText(txt, this); };
     } catch (e) { toast(e.message, 'err'); }
     busy(btn, false);
   };
@@ -3398,7 +3993,7 @@ function mdLite(text) {
 async function vAI(view) {
   crumb('AI Assistant');
   var s = App.state || await api('/api/state');
-  var enabled = s.session && s.session.anthropic_key_set;
+  var enabled = aiBackend(s.session) !== 'none';
   var msgs = App.ai.map(function (m) {
     return '<div class="msg ' + m.role + '">' +
       mdLite(m.content) + '</div>';
@@ -3409,9 +4004,11 @@ async function vAI(view) {
     'translation, datasource setup, or anything about this ' +
     'migration.</p>' +
     (!enabled ?
-      '<div class="empty"><b>AI is not configured.</b><br>Add an ' +
-      'Anthropic API key in <a href="#/connect">Connect</a> to ' +
-      'enable the assistant.</div>' :
+      '<div class="empty"><span class="eico">' +
+      ico('sparkle', 26) + '</span><b>AI is not configured.</b>' +
+      '<br>Pick a backend in <a href="#/connect">Connect</a> ' +
+      '&mdash; an Anthropic API key or a local console AI ' +
+      'command &mdash; to enable the assistant.</div>' :
       '<div class="card"><div id="chatlog">' + (msgs ||
         '<div class="kv">Try: &quot;Why would ' +
         'http_server_request_duration_seconds_bucket return no ' +
@@ -3472,6 +4069,49 @@ $('#themebtn').onclick = function () {
 };
 
 /* ====================================================== boot */
+/* Delegated handlers for the reusable components (copy buttons,
+   expandable truncations, console pin/copy) -- bound once so any
+   re-rendered HTML keeps working. */
+document.addEventListener('click', function (ev) {
+  var t = ev.target && ev.target.closest ?
+    ev.target.closest('button') : null;
+  if (!t) return;
+  if (t.hasAttribute('data-copy')) {
+    ev.preventDefault(); ev.stopPropagation();
+    var src = document.getElementById(t.getAttribute('data-copy'));
+    if (src) copyText(src.textContent, t);
+  } else if (t.hasAttribute('data-expand')) {
+    ev.preventDefault(); ev.stopPropagation();
+    var rest = t.parentNode.querySelector('.trunc-rest');
+    if (!rest) return;
+    var show = rest.hasAttribute('hidden');
+    if (show) rest.removeAttribute('hidden');
+    else rest.setAttribute('hidden', '');
+    t.textContent = show ? 'show less' :
+      '… ' + (t.getAttribute('data-more') || 'show all');
+  } else if (t.hasAttribute('data-cpin')) {
+    ev.preventDefault(); ev.stopPropagation();
+    t.classList.toggle('on');
+    var on = t.classList.contains('on');
+    t.setAttribute('aria-pressed', on ? 'true' : 'false');
+    if (on) {
+      var body = $('.console-body', t.closest('.console'));
+      if (body) body.scrollTop = body.scrollHeight;
+    }
+  } else if (t.hasAttribute('data-ccopy')) {
+    ev.preventDefault(); ev.stopPropagation();
+    var cb = $('.console-body', t.closest('.console'));
+    if (cb) {
+      copyText($all('.cline', cb).map(function (l) {
+        var c = l.cloneNode(true);
+        var ts = c.querySelector('.cts');
+        if (ts) ts.remove();
+        return c.textContent;
+      }).join('\n'), t);
+    }
+  }
+});
+
 $('#jobsbtn').onclick = function () { openDrawer(); };
 $('#drawer-close').onclick = function () { openDrawer(false); };
 document.addEventListener('keydown', function (ev) {

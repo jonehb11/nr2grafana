@@ -210,8 +210,37 @@ def _stub_ai():
         def chat(self, messages, system=""):
             return "stub reply to: %s" % messages[-1].get("content")
 
+    class LocalAgent:
+        def __init__(self, command, timeout=180):
+            self.command = command
+            self.timeout = timeout
+
+        @property
+        def available(self):
+            return bool(self.command)
+
+        def suggest_fix(self, context):
+            return {"explanation": "local stub", "fixed_expr":
+                    "up_local", "confidence": "medium", "actions": []}
+
+        def chat(self, messages, system=""):
+            return "local reply to: %s" % messages[-1].get("content")
+
+        def test(self):
+            return {"ok": True, "reply_excerpt": "OK",
+                    "latency_ms": 5}
+
+    def get_assistant(api_key="", model="", command=""):
+        if api_key:
+            return AIAssist(api_key, model)
+        if command:
+            return LocalAgent(command)
+        return None
+
     m.AIError = AIError
     m.AIAssist = AIAssist
+    m.LocalAgent = LocalAgent
+    m.get_assistant = get_assistant
     return m
 
 
@@ -955,6 +984,116 @@ class AIRouteTests(WebServerTestCase):
 
     def test_chat_requires_messages(self):
         code, body = self.api("POST", "/api/ai/chat", {})
+        self.assertEqual(code, 400)
+        self.assertIn("error", body)
+
+
+class LocalAITests(WebServerTestCase):
+    """Local console AI backend: ai_command settings persistence,
+    backend resolution, /api/ai/test, and routing chat/suggest
+    through LocalAgent when no API key is set."""
+
+    CMD = "claude -p {prompt}"
+
+    def setUp(self):
+        websrv.SESSION.anthropic_api_key = ""
+        websrv.SESSION.ai_command = ""
+        websrv.SESSION.status["ai"] = "unset"
+
+    def test_settings_persist_command_but_never_keys(self):
+        code, resp = self.api(
+            "POST", "/api/settings",
+            {"ai_command": self.CMD,
+             "anthropic_api_key": "sk-ant-should-not-persist"})
+        self.assertEqual(code, 200)
+        ses = resp["session"]
+        self.assertEqual(ses["ai_command"], self.CMD)
+        self.assertTrue(ses["ai_command_set"])
+        # the API key wins while it is set
+        self.assertEqual(ses["ai_backend"], "api")
+        # command persisted as a non-secret pref; key stays out of
+        # the store entirely
+        self.assertEqual(
+            self.store.get_setting("web.ai_command"), self.CMD)
+        with open(self.db_path, encoding="utf-8") as f:
+            on_disk = f.read()
+        self.assertIn(self.CMD, on_disk)
+        self.assertNotIn("sk-ant-should-not-persist", on_disk)
+
+    def test_backend_local_when_only_command(self):
+        self.api("POST", "/api/settings", {"ai_command": self.CMD})
+        code, st = self.api("GET", "/api/state")
+        self.assertEqual(code, 200)
+        ses = st["session"]
+        self.assertEqual(ses["ai_backend"], "local")
+        self.assertTrue(ses["ai_command_set"])
+        self.assertFalse(ses["anthropic_key_set"])
+        self.assertEqual(st["status"]["ai"], "ok")
+
+    def test_empty_string_clears_command(self):
+        self.api("POST", "/api/settings", {"ai_command": self.CMD})
+        code, resp = self.api("POST", "/api/settings",
+                              {"ai_command": ""})
+        self.assertEqual(code, 200)
+        ses = resp["session"]
+        self.assertFalse(ses["ai_command_set"])
+        self.assertEqual(ses["ai_backend"], "none")
+        self.assertEqual(self.store.get_setting("web.ai_command"), "")
+        code, st = self.api("GET", "/api/state")
+        self.assertEqual(st["status"]["ai"], "unset")
+
+    def test_state_features_ai_local(self):
+        code, st = self.api("GET", "/api/state")
+        self.assertEqual(code, 200)
+        self.assertTrue(st["features"].get("ai_local"))
+
+    def test_chat_routes_through_local_agent(self):
+        websrv.SESSION.ai_command = self.CMD
+        code, body = self.api(
+            "POST", "/api/ai/chat",
+            {"messages": [{"role": "user", "content": "hello"}]})
+        self.assertEqual(code, 200)
+        self.assertIn("local reply", body["reply"])
+
+    def test_suggest_routes_through_local_agent(self):
+        websrv.SESSION.ai_command = self.CMD
+        code, body = self.api(
+            "POST", "/api/ai/suggest",
+            {"expr": "uup", "error": "unknown metric",
+             "datasource": "prometheus"})
+        self.assertEqual(code, 200)
+        self.assertEqual(body["fixed_expr"], "up_local")
+        self.assertEqual(body["confidence"], "medium")
+
+    def test_ai_routes_400_without_any_backend(self):
+        code, body = self.api(
+            "POST", "/api/ai/chat",
+            {"messages": [{"role": "user", "content": "hi"}]})
+        self.assertEqual(code, 400)
+        self.assertIn("local console agent", body["error"])
+        self.assertIn("Anthropic", body["error"])
+
+    def test_ai_test_local_backend(self):
+        websrv.SESSION.ai_command = self.CMD
+        code, body = self.api("POST", "/api/ai/test", {})
+        self.assertEqual(code, 200)
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["backend"], "local")
+        self.assertEqual(body["reply_excerpt"], "OK")
+        self.assertIn("latency_ms", body)
+        self.assertEqual(websrv.SESSION.status["ai"], "ok")
+
+    def test_ai_test_api_backend(self):
+        websrv.SESSION.anthropic_api_key = "sk-ant-test"
+        websrv.SESSION.ai_command = self.CMD  # key must win
+        code, body = self.api("POST", "/api/ai/test", {})
+        self.assertEqual(code, 200)
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["backend"], "api")
+        self.assertIn("stub reply", body["reply_excerpt"])
+
+    def test_ai_test_unconfigured_400(self):
+        code, body = self.api("POST", "/api/ai/test", {})
         self.assertEqual(code, 400)
         self.assertIn("error", body)
 
