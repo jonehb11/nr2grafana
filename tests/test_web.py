@@ -579,6 +579,101 @@ def _stub_compare():
     return m
 
 
+def _stub_traffic():
+    m = types.ModuleType("nr2grafana.traffic")
+
+    def sample_traffic(grafana, ds_list, frm="now-24h", to="now",
+                       log=None):
+        if log:
+            log("traffic stub sampling")
+        return {"schema": "nr2grafana/traffic/v1",
+                "generated_at": "2026-01-01T00:00:00Z",
+                "range": {"from": frm, "to": to},
+                "datasources": [
+                    {"family": d["family"], "uid": d["uid"],
+                     "health": {"status": "ok"}} for d in ds_list]}
+
+    m.sample_traffic = sample_traffic
+    return m
+
+
+def _stub_usage():
+    m = types.ModuleType("nr2grafana.usage")
+
+    def collect_usage(dashboards, widget_reports):
+        return {"prometheus": {"metrics": ["up"], "labels": ["job"]},
+                "loki": {"stream_labels": ["namespace"],
+                         "filtered_values": {}},
+                "tempo": {},
+                "dashboards": len(dashboards)}
+
+    m.collect_usage = collect_usage
+    return m
+
+
+def _stub_costmodel():
+    m = types.ModuleType("nr2grafana.costmodel")
+    m.DEFAULT_PRICING = {"loki_gb_ingest": 0.5,
+                         "mimir_1k_series_month": 0.6,
+                         "retention_days": 30}
+
+    def estimate_costs(traffic, pricing=None):
+        return {"schema": "nr2grafana/cost/v1",
+                "pricing": dict(pricing or m.DEFAULT_PRICING),
+                "components": [{"family": "loki", "uid": "loki1",
+                                "monthly_cost": 100.0, "breakdown": {}}],
+                "monthly_total": 100.0,
+                "resources": {"mimir_ram_gb_est": 1.0}}
+
+    def apply_savings(cost, recommendations):
+        saved = sum((r.get("est_savings") or {}).get("monthly_usd", 0)
+                    for r in recommendations or [])
+        total = cost.get("monthly_total", 0.0)
+        return {"projected_total": total - saved,
+                "saved_total": saved,
+                "saved_pct": int(100 * saved / total) if total else 0,
+                "per_component": []}
+
+    m.estimate_costs = estimate_costs
+    m.apply_savings = apply_savings
+    return m
+
+
+def _stub_optimize():
+    m = types.ModuleType("nr2grafana.optimize")
+
+    def recommend(traffic, usage, cost=None, pricing=None, cfg=None,
+                  log=None):
+        if log:
+            log("optimize stub running")
+        return {"schema": "nr2grafana/optimize/v1",
+                "generated_at": "2026-01-01T00:00:00Z",
+                "recommendations": [{
+                    "id": "loki-drop-label-pod", "family": "loki",
+                    "kind": "drop-label", "severity": "high",
+                    "title": "Drop stream label `pod` (unused)",
+                    "rationale": "no dashboard filters on pod",
+                    "evidence": {"cardinality": 4213,
+                                 "used_by_dashboards": 0},
+                    "keeps_intact": True,
+                    "est_savings": {"streams": 4213, "monthly_usd": 12.5,
+                                    "confidence": "high"},
+                    "config": [
+                        {"target": "promtail", "language": "yaml",
+                         "snippet": "pipeline_stages:\n  - labeldrop:\n"
+                                    "      - pod",
+                         "note": "apply at the agent to save before "
+                                 "ingest"},
+                        {"target": "loki-limits", "language": "yaml",
+                         "snippet": "limits_config: {}", "note": ""}]}],
+                "summary": {"by_family": {"loki": 1},
+                            "total_est_monthly_usd": 12.5,
+                            "safe_count": 1, "needs_review_count": 0}}
+
+    m.recommend = recommend
+    return m
+
+
 STUBS = {
     "nr2grafana.requirements": _stub_requirements(),
     "nr2grafana.artifacts": _stub_artifacts(),
@@ -590,6 +685,10 @@ STUBS = {
     "nr2grafana.diagnose": _stub_diagnose(),
     "nr2grafana.remediate": _stub_remediate(),
     "nr2grafana.compare": _stub_compare(),
+    "nr2grafana.traffic": _stub_traffic(),
+    "nr2grafana.usage": _stub_usage(),
+    "nr2grafana.costmodel": _stub_costmodel(),
+    "nr2grafana.optimize": _stub_optimize(),
 }
 
 
@@ -1977,6 +2076,141 @@ class CompareRouteTests(WebServerTestCase):
         code, st = self.api("GET", "/api/state")
         self.assertEqual(code, 200)
         self.assertTrue(st["features"].get("compare"))
+
+
+class CostRouteTests(WebServerTestCase):
+    """1.5 cost & efficiency routes: traffic/cost jobs, pricing
+    roundtrip, cost-config zip, and the cost feature flag."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        websrv.SESSION.grafana_url = "http://gf.local:3000"
+        websrv.SESSION.grafana_token = "tok"
+        cls.slug = "cost-dash"
+        _seed_dash(cls.store, cls.slug, expr="up")
+        cls.store.save_artifact(cls.slug, "widget-report",
+                                {"widgets": [{"panel_id": 1}]})
+
+    def test_traffic_job_persists_instance_artifact(self):
+        code, resp = self.api("POST", "/api/traffic",
+                              {"from": "now-12h"})
+        self.assertEqual(code, 200)
+        job = poll_job(self.base, resp["job"])
+        self.assertEqual(job["status"], "done")
+        self.assertTrue(any("traffic stub sampling" in ln
+                            for ln in job["log"]))
+        self.assertEqual(job["result"]["schema"],
+                         "nr2grafana/traffic/v1")
+        self.assertEqual(job["result"]["range"]["from"], "now-12h")
+        art = self.store.get_artifact(websrv._INSTANCE_SLUG, "traffic")
+        self.assertIsNotNone(art)
+        self.assertEqual(art["schema"], "nr2grafana/traffic/v1")
+        # sampled from the fake instance's prometheus datasource
+        self.assertEqual(art["datasources"][0]["uid"], "mimir")
+
+    def test_traffic_requires_grafana_url(self):
+        websrv.SESSION.grafana_url = ""
+        try:
+            code, body = self.api("POST", "/api/traffic", {})
+            self.assertEqual(code, 400)
+            self.assertIn("Grafana URL", body["error"])
+        finally:
+            websrv.SESSION.grafana_url = "http://gf.local:3000"
+
+    def test_cost_job_persists_cost_and_optimize(self):
+        code, resp = self.api("POST", "/api/cost", {})
+        self.assertEqual(code, 200)
+        job = poll_job(self.base, resp["job"])
+        self.assertEqual(job["status"], "done")
+        self.assertTrue(any("optimize stub running" in ln
+                            for ln in job["log"]))
+        result = job["result"]
+        self.assertEqual(result["cost"]["schema"], "nr2grafana/cost/v1")
+        self.assertEqual(result["optimize"]["schema"],
+                         "nr2grafana/optimize/v1")
+        self.assertEqual(result["savings"]["saved_total"], 12.5)
+        # instance-wide run persists under the instance slug
+        self.assertIsNotNone(
+            self.store.get_artifact(websrv._INSTANCE_SLUG, "cost"))
+        self.assertIsNotNone(
+            self.store.get_artifact(websrv._INSTANCE_SLUG, "optimize"))
+
+    def test_cost_job_with_slug_persists_per_dashboard(self):
+        code, resp = self.api("POST", "/api/cost",
+                              {"slug": self.slug})
+        self.assertEqual(code, 200)
+        job = poll_job(self.base, resp["job"])
+        self.assertEqual(job["status"], "done")
+        self.assertEqual(job["result"]["slug"], self.slug)
+        self.assertIsNotNone(
+            self.store.get_artifact(self.slug, "optimize"))
+
+    def test_cost_unknown_slug_errors(self):
+        code, resp = self.api("POST", "/api/cost", {"slug": "zzz-no"})
+        self.assertEqual(code, 200)  # job starts, then errors
+        job = poll_job(self.base, resp["job"])
+        self.assertEqual(job["status"], "error")
+        self.assertIn("zzz-no", job["error"])
+
+    def test_pricing_roundtrip_persists_non_secret(self):
+        code, body = self.api("GET", "/api/pricing")
+        self.assertEqual(code, 200)
+        self.assertIn("loki_gb_ingest", body["pricing"])
+        self.assertIn("defaults", body)
+        code, body = self.api("POST", "/api/pricing",
+                              {"pricing": {"loki_gb_ingest": 0.9}})
+        self.assertEqual(code, 200)
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["pricing"]["loki_gb_ingest"], 0.9)
+        # persisted to disk as a plain non-secret setting
+        with open(self.db_path, encoding="utf-8") as f:
+            on_disk = f.read()
+        self.assertIn("web.pricing", on_disk)
+        self.assertIn("0.9", on_disk)
+        # GET now reflects the override merged over defaults
+        code, body = self.api("GET", "/api/pricing")
+        self.assertEqual(body["pricing"]["loki_gb_ingest"], 0.9)
+        self.assertIn("mimir_1k_series_month", body["pricing"])
+
+    def test_pricing_empty_400(self):
+        code, body = self.api("POST", "/api/pricing", {})
+        self.assertEqual(code, 400)
+        self.assertIn("error", body)
+
+    def test_cost_config_zip_is_valid_zip(self):
+        # run a cost analysis so the optimize artifact exists
+        code, resp = self.api("POST", "/api/cost", {})
+        self.assertEqual(code, 200)
+        poll_job(self.base, resp["job"])
+        code, headers, raw = http_bin(self.base,
+                                      "/download/cost-config.zip")
+        self.assertEqual(code, 200)
+        self.assertEqual(headers.get("Content-Type"),
+                         "application/zip")
+        self.assertIn("attachment",
+                      headers.get("Content-Disposition", ""))
+        zf = zipfile.ZipFile(io.BytesIO(raw))
+        self.assertIsNone(zf.testzip())
+        names = zf.namelist()
+        self.assertIn("promtail.yaml", names)
+        self.assertIn("loki-limits.yaml", names)
+        self.assertIn("README.md", names)
+        self.assertIn("labeldrop", zf.read("promtail.yaml").decode())
+
+    def test_cost_config_zip_without_run_404(self):
+        # a fresh slug with no optimize artifact
+        slug = "cost-noopt"
+        _seed_dash(self.store, slug)
+        code, headers, raw = http_bin(
+            self.base, "/download/cost-config.zip?slug=" + slug)
+        self.assertEqual(code, 404)
+        self.assertIn("error", json.loads(raw.decode("utf-8")))
+
+    def test_state_features_include_cost(self):
+        code, st = self.api("GET", "/api/state")
+        self.assertEqual(code, 200)
+        self.assertTrue(st["features"].get("cost"))
 
 
 class JobInternalsTests(unittest.TestCase):

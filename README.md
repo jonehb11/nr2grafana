@@ -79,6 +79,14 @@ What it does:
 - **Add a datasource and watch it flow**: create a datasource from the
   guided form and immediately see a before/after — "0 panels had data
   → N flowing now" — with a live sample chart proving data is arriving.
+- **Cost & efficiency optimization** (`cost analyze` / web UI **Cost**):
+  samples real traffic and cardinality from your datasources, subtracts
+  what the dashboards actually use, and proposes **safe** ways to cut TCO
+  — drop unused/high-cardinality Loki stream labels (move id-like fields
+  to structured metadata), drop metrics nothing queries, shrink active
+  series — each with an estimated saving and paste-ready Promtail/Alloy/
+  OTel/Loki/Prometheus config. It never proposes dropping anything your
+  dashboards depend on. See [docs/cost-optimization.md](docs/cost-optimization.md).
 - **Change tracking**: every fix is logged locally and can be codified
   back into the mapping config.
 - **Optional AI assistance**: Claude diagnoses and fixes failing panels

@@ -1264,6 +1264,265 @@ def cmd_changes_suggest(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# cost & efficiency optimization (1.5)
+# ---------------------------------------------------------------------------
+
+# optimize.recommend config target -> file name written under config/.
+_COST_CONFIG_FILES = {
+    "promtail": "promtail.yaml",
+    "alloy": "alloy.river",
+    "otel-collector": "otel-collector.yaml",
+    "loki-limits": "loki-limits.yaml",
+    "prometheus-relabel": "prometheus-relabel.yaml",
+    "mimir-limits": "mimir-limits.yaml",
+}
+
+
+def _cost_ds_list(client: GrafanaLive) -> List[Dict[str, Any]]:
+    """[{"family","uid","type"}] for every prometheus/loki/tempo
+    datasource in the instance (input to traffic.sample_traffic)."""
+    fam = {"prometheus": "prometheus", "loki": "loki", "tempo": "tempo"}
+    out: List[Dict[str, Any]] = []
+    for ds in client.datasources() or []:
+        uid = ds.get("uid") or ""
+        family = fam.get((ds.get("type") or "").lower())
+        if uid and family:
+            out.append({"family": family, "uid": uid,
+                        "type": ds.get("type") or family})
+    return out
+
+
+def _cost_usage_inputs(args: argparse.Namespace) \
+        -> Tuple[List[Dict[str, Any]], List[List[Dict[str, Any]]]]:
+    """Collect (dashboards, widget_reports) for usage.collect_usage.
+    Uses the converted Grafana dashboards named on the command line;
+    with no inputs, falls back to every dashboard in the local store."""
+    dashboards: List[Dict[str, Any]] = []
+    reports: List[List[Dict[str, Any]]] = []
+    inputs = list(getattr(args, "inputs", []) or [])
+    if inputs:
+        from .model import parse_nr_dashboard
+        for path in _collect_dashboard_files(inputs):
+            if os.path.basename(path) in _ARTIFACT_NAMES:
+                continue
+            data = _load_json_soft(path)
+            if isinstance(data, dict) and "panels" in data:
+                dashboards.append(data)
+                reports.append(_widget_report_for(path))
+            elif isinstance(data, dict) and "pages" in data:
+                try:
+                    nr = parse_nr_dashboard(data)
+                    cfg = load_config("")
+                    for _fn, dash, report in build_dashboards(nr, cfg):
+                        dashboards.append(dash)
+                        reports.append(report)
+                except Exception as e:
+                    _err("%s: could not convert for usage (%s)"
+                         % (path, e))
+        return dashboards, reports
+    store = _open_store_soft()
+    if store is not None:
+        with store:
+            for row in store.list_dashboards():
+                slug = row.get("slug", "")
+                full = store.get_dashboard(slug) if slug else None
+                data = (full or {}).get("data") if full else None
+                if isinstance(data, dict) and "panels" in data:
+                    dashboards.append(data)
+                    wr = store.get_artifact(slug, "widget-report") or {}
+                    reports.append(wr.get("widgets", []))
+    return dashboards, reports
+
+
+def _load_pricing(args: argparse.Namespace, costmodel) -> Dict[str, Any]:
+    """Effective pricing: costmodel defaults overlaid by a --pricing
+    JSON file when given."""
+    pricing = dict(getattr(costmodel, "DEFAULT_PRICING", {}) or {})
+    path = getattr(args, "pricing", "") or ""
+    if path:
+        loaded = _load_json(path)
+        if isinstance(loaded, dict):
+            pricing.update(loaded)
+    return pricing
+
+
+def _write_cost_config(out_dir: str, optimize: Dict[str, Any]) -> str:
+    """Write each recommendation's config snippet into out_dir/config/
+    grouped by target, plus a README. Returns the config dir path."""
+    cfg_dir = os.path.join(out_dir, "config")
+    os.makedirs(cfg_dir, exist_ok=True)
+    buckets: Dict[str, List[str]] = {}
+    readme = ["# nr2grafana cost-optimization config", "",
+              "Paste-ready snippets to cut LGTM-stack cost. Every one is",
+              "safe: nothing a migrated dashboard uses is ever dropped.",
+              "Apply at the collector/agent where possible (cheapest).",
+              ""]
+    for rec in optimize.get("recommendations") or []:
+        title = rec.get("title") or rec.get("id") or "recommendation"
+        safe = "safe" if rec.get("keeps_intact") else "REVIEW"
+        readme.append("- [%s] %s (%s)"
+                      % (rec.get("severity", "?"), title, safe))
+        for cfg in rec.get("config") or []:
+            snippet = cfg.get("snippet") or ""
+            if not snippet.strip():
+                continue
+            target = cfg.get("target") or "other"
+            fname = _COST_CONFIG_FILES.get(target, "%s.yaml" % target)
+            header = "# --- %s ---" % title
+            if cfg.get("note"):
+                header += "\n# %s" % cfg["note"]
+            buckets.setdefault(fname, []).append(
+                header + "\n" + snippet.rstrip() + "\n")
+    for fname, parts in sorted(buckets.items()):
+        with open(os.path.join(cfg_dir, fname), "w",
+                  encoding="utf-8") as f:
+            f.write("\n".join(parts))
+    with open(os.path.join(cfg_dir, "README.md"), "w",
+              encoding="utf-8") as f:
+        f.write("\n".join(readme) + "\n")
+    return cfg_dir
+
+
+def cmd_cost_analyze(args: argparse.Namespace) -> int:
+    """Sample datasource traffic, subtract what the migrated dashboards
+    need, and print safe, dollar-estimated savings recommendations."""
+    client = _grafana_live(args)
+    try:
+        import importlib
+        traffic_mod = importlib.import_module("nr2grafana.traffic")
+        usage_mod = importlib.import_module("nr2grafana.usage")
+        costmodel_mod = importlib.import_module("nr2grafana.costmodel")
+        optimize_mod = importlib.import_module("nr2grafana.optimize")
+    except Exception as e:  # pragma: no cover - built by sibling agents
+        _err("cost analysis is unavailable: %s" % e)
+        return 2
+    ds_list = _cost_ds_list(client)
+    if not ds_list:
+        _err("no Loki/Prometheus/Tempo datasources found to sample")
+        return 1
+    log = lambda m: print(m, file=sys.stderr)
+    print("sampling traffic from %d datasource(s) (%s .. %s)..."
+          % (len(ds_list), args.frm, args.to), file=sys.stderr)
+    try:
+        traffic = traffic_mod.sample_traffic(client, ds_list,
+                                             frm=args.frm, to=args.to,
+                                             log=log)
+    except GrafanaError as e:
+        _err(str(e))
+        return 1
+    dashboards, reports = _cost_usage_inputs(args)
+    print("analyzing what %d dashboard(s) need..." % len(dashboards),
+          file=sys.stderr)
+    usage = usage_mod.collect_usage(dashboards, reports)
+    try:
+        pricing = _load_pricing(args, costmodel_mod)
+    except (json.JSONDecodeError, OSError) as e:
+        _err("pricing file: %s" % e)
+        return 2
+    cost = costmodel_mod.estimate_costs(traffic, pricing)
+    optimize = optimize_mod.recommend(traffic, usage, cost=cost,
+                                      pricing=pricing, log=log)
+    recs = optimize.get("recommendations") or []
+    savings = costmodel_mod.apply_savings(cost, recs)
+
+    print()
+    print("%-40s %-11s %-14s %s"
+          % ("RECOMMENDATION", "FAMILY", "EST $/MO SAVED", "SAFE?"))
+    for rec in recs:
+        est = rec.get("est_savings") or {}
+        usd = est.get("monthly_usd")
+        usd_str = ("$%.2f" % usd) if isinstance(usd, (int, float)) \
+            else "-"
+        safe = "safe" if rec.get("keeps_intact") else "review"
+        title = (rec.get("title") or rec.get("id") or "")[:40]
+        print("%-40s %-11s %-14s %s"
+              % (title, rec.get("family", "?"), usd_str, safe))
+    if not recs:
+        print("no savings recommendations -- your usage matches what "
+              "your dashboards need")
+    print()
+    print("estimated monthly cost (based on your pricing inputs):")
+    print("  current:   $%.2f" % cost.get("monthly_total", 0.0))
+    print("  projected: $%.2f" % savings.get("projected_total", 0.0))
+    print("  saved:     $%.2f  (%s%%)"
+          % (savings.get("saved_total", 0.0),
+             savings.get("saved_pct", 0)))
+    print(dim_note())
+
+    out_dir = args.out or "."
+    os.makedirs(out_dir, exist_ok=True)
+    report = {"schema": "nr2grafana/cost-report/v1",
+              "traffic": traffic, "usage": usage, "cost": cost,
+              "optimize": optimize, "savings": savings}
+    report_path = os.path.join(out_dir, "cost-report.json")
+    _write_json(report_path, report)
+    cfg_dir = _write_cost_config(out_dir, optimize)
+    print("report -> %s" % report_path, file=sys.stderr)
+    print("config -> %s" % cfg_dir, file=sys.stderr)
+    return 0
+
+
+def dim_note() -> str:
+    return ("note: all costs are ESTIMATES based on your pricing "
+            "inputs, not exact bills.")
+
+
+def cmd_cost_pricing(args: argparse.Namespace) -> int:
+    """Print (or edit via --set key=value) the pricing assumptions.
+    Overrides persist in the local store as the non-secret setting
+    web.pricing, shared with the web UI."""
+    try:
+        import importlib
+        costmodel_mod = importlib.import_module("nr2grafana.costmodel")
+    except Exception as e:  # pragma: no cover - built by sibling agents
+        _err("cost model unavailable: %s" % e)
+        return 2
+    pricing = dict(getattr(costmodel_mod, "DEFAULT_PRICING", {}) or {})
+    store = _open_store_soft()
+    if store is not None:
+        saved = store.get_setting("web.pricing", None)
+        if isinstance(saved, dict):
+            pricing.update(saved)
+    sets = getattr(args, "set_values", []) or []
+    if sets:
+        overrides: Dict[str, Any] = {}
+        for spec in sets:
+            if "=" not in spec:
+                _err("--set expects key=value, got %r" % spec)
+                if store is not None:
+                    store.close()
+                return 2
+            key, val = spec.split("=", 1)
+            key = key.strip()
+            try:
+                num: Any = int(val)
+            except ValueError:
+                try:
+                    num = float(val)
+                except ValueError:
+                    num = val.strip()
+            overrides[key] = num
+        pricing.update(overrides)
+        if store is not None:
+            merged = {}
+            existing = store.get_setting("web.pricing", None)
+            if isinstance(existing, dict):
+                merged.update(existing)
+            merged.update(overrides)
+            try:
+                store.set_setting("web.pricing", merged)
+                print("updated %d assumption(s) in the local store"
+                      % len(overrides), file=sys.stderr)
+            except (StoreError, ValueError) as e:
+                _err("could not persist pricing: %s" % e)
+    print(json.dumps(pricing, indent=2, sort_keys=True))
+    print(dim_note(), file=sys.stderr)
+    if store is not None:
+        store.close()
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # web
 # ---------------------------------------------------------------------------
 
@@ -1552,6 +1811,46 @@ def main(argv: List[str] = None) -> int:
     c_sug.add_argument("--slug", default="",
                        help="only changes for this dashboard slug")
     c_sug.set_defaults(func=cmd_changes_suggest)
+
+    p_cost = sub.add_parser(
+        "cost",
+        help="estimate LGTM-stack cost from real traffic and propose "
+             "safe, dollar-estimated ways to cut it")
+    p_cost.set_defaults(func=_need_sub(p_cost))
+    costsub = p_cost.add_subparsers(dest="cost_command")
+
+    co_an = costsub.add_parser(
+        "analyze",
+        help="sample datasource traffic, subtract what the migrated "
+             "dashboards use, and print ranked safe savings + "
+             "estimated $ (writes cost-report.json + config/ snippets)")
+    co_an.add_argument("inputs", nargs="*",
+                       help="converted package dir(s) or dashboard "
+                            "JSON (default: all dashboards in the local "
+                            "store)")
+    add_grafana_args(co_an)
+    co_an.add_argument("--from", dest="frm", default="now-24h",
+                       help="traffic sample range start "
+                            "(default: %(default)s)")
+    co_an.add_argument("--to", dest="to", default="now",
+                       help="traffic sample range end "
+                            "(default: %(default)s)")
+    co_an.add_argument("--pricing", default="",
+                       help="pricing assumptions JSON file (overrides "
+                            "the built-in defaults)")
+    co_an.add_argument("--out", "-o", default=".",
+                       help="output directory for cost-report.json and "
+                            "config/ (default: current directory)")
+    co_an.set_defaults(func=cmd_cost_analyze)
+
+    co_pr = costsub.add_parser(
+        "pricing",
+        help="print the pricing assumptions (or edit them with "
+             "--set key=value; overrides persist locally)")
+    co_pr.add_argument("--set", action="append", default=[],
+                       dest="set_values", metavar="KEY=VALUE",
+                       help="override a pricing assumption (repeatable)")
+    co_pr.set_defaults(func=cmd_cost_pricing)
 
     p_web = sub.add_parser(
         "web", help="launch the localhost web UI")

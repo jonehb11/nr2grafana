@@ -128,6 +128,60 @@ class MockGrafanaTest(MockStackBase):
         self.assertIn("checkout",
                       g.loki_label_values(uid, "service_name"))
 
+    def test_cost_introspection_endpoints(self):
+        """tsdb status, count() and Loki volume back the cost view with
+        realistic, obviously-wasteful signals (independent of the 1.5
+        sibling modules; uses the stable proxy helper)."""
+        import urllib.parse as _up
+        g = self.grafana()
+        puid = self.make_datasource("prometheus", "Mimir",
+                                    "http://mimir:9009/prometheus")
+        luid = self.make_datasource("loki", "Loki", "http://loki:3100")
+
+        tsdb = g._proxy_get(puid, "/api/v1/status/tsdb")["data"]
+        top = tsdb["seriesCountByMetricName"]
+        # An obviously-unused waste metric tops the active-series rank.
+        self.assertEqual(top[0]["name"],
+                         "apiserver_request_duration_seconds_bucket")
+        names = [r["name"] for r in top]
+        self.assertIn("container_network_receive_bytes_total", names)
+        self.assertGreater(top[0]["value"], top[-1]["value"])
+        self.assertEqual(tsdb["numSeries"],
+                         sum(r["value"] for r in top))
+        labels = dict((r["name"], r["value"])
+                      for r in tsdb["labelValueCountByLabelName"])
+        # High-cardinality labels dominate; id-like labels are worst.
+        self.assertGreater(labels["pod"], 1000)
+        self.assertGreater(labels["id"], labels["pod"])
+
+        def _count(expr):
+            path = "/api/v1/query?query=" + _up.quote(expr)
+            return g._proxy_get(puid, path)["data"]["result"]
+
+        res = _count("count(apiserver_request_duration_seconds_bucket)")
+        self.assertEqual(res[0]["value"][1], "41200")
+        self.assertEqual(_count("count(no_such_metric_at_all)"), [])
+
+        vol = g._proxy_get(
+            luid, "/loki/api/v1/index/volume?query=%7B%7D")["data"]
+        streams = vol["result"]
+        self.assertTrue(streams)
+        # One chatty id-fanned debug stream dominates the byte volume.
+        top_stream = streams[0]["metric"]
+        self.assertEqual(top_stream.get("level"), "debug")
+        self.assertIn("request_id", top_stream)
+        self.assertGreater(int(streams[0]["value"][1]), 40000000)
+        # request_id is a high-cardinality stream label (explosion).
+        rid = g._proxy_get(
+            luid, "/loki/api/v1/label/request_id/values")["data"]
+        self.assertGreater(len(rid), 1000)
+        # volume_range returns a bucketed matrix of the same streams.
+        rng = g._proxy_get(
+            luid,
+            "/loki/api/v1/index/volume_range?query=%7B%7D")["data"]
+        self.assertEqual(rng["resultType"], "matrix")
+        self.assertTrue(rng["result"][0]["values"])
+
     def test_ds_query_is_deterministic(self):
         g = self.grafana()
         uid = self.make_datasource("prometheus", "Mimir",
@@ -638,6 +692,136 @@ class CompareViewTest(MockStackBase):
         self.assertEqual(loki_after["health"].get("status"), "ok")
         # A real sample series/log frame proves the flow to the UI.
         self.assertTrue(loki_after["sample_series"])
+
+
+class CostOptimizationTest(MockStackBase):
+    """The 1.5 cost loop end to end over the mock stack: sample what the
+    datasources ingest -> subtract what the converted Checkout dashboard
+    needs -> price it -> recommend safe cuts -> project the savings.
+
+    Proves the offline mock demoes the whole cost story, and that the
+    recommendation engine's safety guarantee holds on real fixture data
+    (never proposes dropping a dimension the dashboard uses). Sibling
+    1.5 modules are imported lazily and skipped when not yet written."""
+
+    def test_traffic_usage_cost_optimize_end_to_end(self):
+        (model, config_mod, builder, traffic_mod, usage_mod,
+         costmodel_mod, optimize_mod) = _import_or_skip(
+            self, "nr2grafana.model", "nr2grafana.config",
+            "nr2grafana.grafana.builder", "nr2grafana.traffic",
+            "nr2grafana.usage", "nr2grafana.costmodel",
+            "nr2grafana.optimize")
+
+        # -- convert the Checkout fixture -------------------------------
+        ng = self.nerdgraph()
+        guid = next(e["guid"] for e in ng.list_dashboards()
+                    if e["name"] == "Checkout Service Overview")
+        cfg = config_mod.load_config("")
+        nr_dash = model.parse_nr_dashboard(ng.get_dashboard(guid))
+        _fname, dash, report = builder.build_dashboards(nr_dash, cfg)[0]
+
+        # -- create the LGTM datasources --------------------------------
+        g = self.grafana()
+        puid = self.make_datasource("prometheus", "Mimir",
+                                    "http://mimir:9009/prometheus")
+        luid = self.make_datasource("loki", "Loki", "http://loki:3100")
+        tuid = self.make_datasource("tempo", "Tempo",
+                                    "http://tempo:3200")
+        ds_list = [
+            {"family": "prometheus", "uid": puid, "type": "prometheus"},
+            {"family": "loki", "uid": luid, "type": "loki"},
+            {"family": "tempo", "uid": tuid, "type": "tempo"},
+        ]
+
+        # -- 1. sample what the datasources actually ingest -------------
+        traffic = traffic_mod.sample_traffic(g, ds_list)
+        self.assertEqual(traffic["schema"], "nr2grafana/traffic/v1")
+        prom = next(d for d in traffic["datasources"]
+                    if d["family"] == "prometheus")
+        top_names = [m["metric"]
+                     for m in prom["prometheus"]["top_metrics"]]
+        self.assertIn("apiserver_request_duration_seconds_bucket",
+                      top_names)
+        loki = next(d for d in traffic["datasources"]
+                    if d["family"] == "loki")
+        self.assertGreater(loki["loki"]["bytes_window"], 0)
+
+        # -- 2. what the converted dashboard actually needs -------------
+        usage = usage_mod.collect_usage([dash], [report])
+        used_metrics = set(usage["prometheus"]["metrics"])
+        used_loki = set(usage["loki"]["stream_labels"])
+        # The waste dimensions are genuinely NOT referenced.
+        self.assertNotIn("apiserver_request_duration_seconds_bucket",
+                         used_metrics)
+        self.assertNotIn("request_id", used_loki)
+
+        # -- 3. price the current traffic -------------------------------
+        cost = costmodel_mod.estimate_costs(traffic)
+        self.assertEqual(cost["schema"], "nr2grafana/cost/v1")
+        self.assertGreater(cost["monthly_total"], 0)
+
+        # -- 4. recommend safe cuts -------------------------------------
+        opt = optimize_mod.recommend(traffic, usage, cost=cost, cfg=cfg)
+        self.assertEqual(opt["schema"], "nr2grafana/optimize/v1")
+        recs = opt["recommendations"]
+        self.assertTrue(recs)
+
+        # a) drop an UNUSED, high-series Prometheus metric, marked safe.
+        metric_drop = [
+            r for r in recs
+            if r.get("family") == "prometheus"
+            and r.get("kind") == "drop-metric"
+            and ("apiserver_request_duration_seconds_bucket"
+                 in json.dumps(r)
+                 or "container_network_receive_bytes_total"
+                 in json.dumps(r))]
+        self.assertTrue(
+            metric_drop,
+            "no drop-metric recommendation for an unused metric; "
+            "recs=%s" % json.dumps(recs, indent=1))
+        self.assertTrue(all(r.get("keeps_intact") for r in metric_drop),
+                        "unused-metric drop must be marked keeps_intact")
+
+        # b) drop / restructure an UNUSED high-cardinality Loki label.
+        loki_drop = [
+            r for r in recs
+            if r.get("family") == "loki"
+            and r.get("kind") in ("drop-label", "to-structured-metadata")
+            and ("request_id" in json.dumps(r)
+                 or "pod" in json.dumps(r))]
+        self.assertTrue(
+            loki_drop,
+            "no drop-label/to-structured-metadata rec for an unused "
+            "Loki label; recs=%s" % json.dumps(recs, indent=1))
+        self.assertTrue(all(r.get("keeps_intact") for r in loki_drop),
+                        "unused-label drop must be marked keeps_intact")
+
+        # Safety guarantee on real fixture data: no auto-safe drop ever
+        # targets a dimension the Checkout dashboard uses.
+        for r in recs:
+            if not r.get("keeps_intact"):
+                continue
+            blob = json.dumps(r)
+            if r.get("kind") == "drop-metric":
+                for um in used_metrics:
+                    self.assertNotIn(
+                        '"%s"' % um, blob,
+                        "safe drop-metric targets used metric %s" % um)
+            if r.get("kind") == "drop-label" \
+                    and r.get("family") == "loki":
+                for ul in used_loki:
+                    self.assertNotIn(
+                        '"%s"' % ul, blob,
+                        "safe drop-label targets used label %s" % ul)
+
+        # -- 5. project the savings -------------------------------------
+        saved = costmodel_mod.apply_savings(cost, recs)
+        self.assertGreater(saved["saved_pct"], 0,
+                           "cutting waste must yield a positive "
+                           "estimated savings percentage")
+        self.assertGreater(saved["saved_total"], 0)
+        self.assertLessEqual(saved["projected_total"],
+                             cost["monthly_total"] + 1e-6)
 
 
 class FixtureLoadingTest(unittest.TestCase):

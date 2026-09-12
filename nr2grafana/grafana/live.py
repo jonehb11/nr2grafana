@@ -518,6 +518,162 @@ class GrafanaLive(GrafanaClient):
         return [str(v) for v in self._data_list(resp, errors,
                                                 "loki label values")]
 
+    # -- traffic / cardinality introspection -------------------------------
+
+    @staticmethod
+    def _data_dict(resp: Any, errors: Optional[List[str]] = None,
+                   what: str = "") -> Dict[str, Any]:
+        """Extract the "data" object from a Prom/Loki-style response."""
+        if isinstance(resp, dict) and isinstance(resp.get("data"), dict):
+            return resp["data"]
+        if resp is not None and errors is not None:
+            errors.append("unexpected %s response shape: %.120r"
+                          % (what or "proxy", resp))
+        return {}
+
+    @staticmethod
+    def _named_counts(data: Dict[str, Any], key: str, name_key: str,
+                      value_key: str) -> List[Dict[str, Any]]:
+        """Turn a ``[{"name","value"}, ...]`` tsdb stat block into rows.
+
+        Non-dict entries and unparseable values are skipped; the result is
+        sorted by count descending.
+        """
+        out: List[Dict[str, Any]] = []
+        for row in data.get(key) or []:
+            if not isinstance(row, dict) or row.get("name") is None:
+                continue
+            try:
+                count = int(row.get("value") or 0)
+            except (TypeError, ValueError):
+                continue
+            out.append({name_key: str(row["name"]), value_key: count})
+        out.sort(key=lambda d: d[value_key], reverse=True)
+        return out
+
+    def prom_tsdb_status(self, uid: str,
+                         errors: Optional[List[str]] = None) \
+            -> Dict[str, Any]:
+        """TSDB status of a Prometheus/Mimir datasource; ``{}`` on failure.
+
+        Returns the ``data`` object of ``GET /api/v1/status/tsdb`` (via the
+        datasource proxy): ``headStats``, ``seriesCountByMetricName``,
+        ``labelValueCountByLabelName``, ``seriesCountByLabelValuePair`` and
+        ``memoryInBytesByLabelName``. This is the Mimir active-series
+        traffic sample. Never raises; pass ``errors`` for the failure text.
+        """
+        resp = self._proxy_get(uid, "/api/v1/status/tsdb", errors)
+        return self._data_dict(resp, errors, "tsdb status")
+
+    def prom_series_count(self, uid: str, match: str,
+                          errors: Optional[List[str]] = None) -> int:
+        """Active-series count for a selector via ``count(<match>)``.
+
+        Runs an instant query through the datasource proxy. Returns ``0``
+        on any failure or empty result; never raises.
+        """
+        if not match:
+            return 0
+        path = ("/api/v1/query?"
+                + urllib.parse.urlencode({"query": "count(%s)" % match}))
+        resp = self._proxy_get(uid, path, errors)
+        data = self._data_dict(resp, errors, "series count")
+        for item in data.get("result") or []:
+            if not isinstance(item, dict):
+                continue
+            value = item.get("value") or []
+            if len(value) >= 2:
+                try:
+                    return int(float(value[1]))
+                except (TypeError, ValueError):
+                    continue
+        return 0
+
+    def prom_top_metrics(self, uid: str, n: int = 50,
+                         errors: Optional[List[str]] = None) \
+            -> List[Dict[str, Any]]:
+        """Top metric names by active series from the TSDB status.
+
+        Returns ``[{"metric", "series"}]`` sorted by series descending,
+        truncated to ``n`` (all when ``n`` is not positive). ``[]`` on
+        failure; never raises.
+        """
+        rows = self._named_counts(self.prom_tsdb_status(uid, errors),
+                                  "seriesCountByMetricName", "metric",
+                                  "series")
+        return rows[:n] if n and n > 0 else rows
+
+    def prom_label_cardinality(self, uid: str,
+                               errors: Optional[List[str]] = None) \
+            -> List[Dict[str, Any]]:
+        """Per-label value counts from the TSDB status.
+
+        Returns ``[{"label", "values"}]`` (value count per label name),
+        sorted descending. High counts are the Mimir cardinality cost
+        drivers. ``[]`` on failure; never raises.
+        """
+        return self._named_counts(self.prom_tsdb_status(uid, errors),
+                                  "labelValueCountByLabelName", "label",
+                                  "values")
+
+    def loki_volume(self, uid: str, matcher: str = "{}",
+                    frm: str = "now-24h", to: str = "now",
+                    errors: Optional[List[str]] = None) \
+            -> List[Dict[str, Any]]:
+        """Per-stream ingested bytes over a window via ``/index/volume``.
+
+        Returns ``[{"stream": {labels}, "bytes": int}]`` sorted by bytes
+        descending (top streams first). ``matcher`` must be a valid LogQL
+        stream selector; Loki rejects a bare ``{}``. ``[]`` on failure;
+        never raises. Pass ``errors`` for the failure text.
+        """
+        try:
+            start_ns = _epoch_ms(frm) * 1000000
+            end_ns = _epoch_ms(to) * 1000000
+        except GrafanaError as e:
+            if errors is not None:
+                errors.append(str(e))
+            return []
+        path = "/loki/api/v1/index/volume?" + urllib.parse.urlencode(
+            [("query", matcher), ("start", start_ns), ("end", end_ns),
+             ("limit", 100), ("aggregateBy", "series")])
+        resp = self._proxy_get(uid, path, errors)
+        data = self._data_dict(resp, errors, "loki volume")
+        out: List[Dict[str, Any]] = []
+        for item in data.get("result") or []:
+            if not isinstance(item, dict):
+                continue
+            value = item.get("value") or []
+            try:
+                nbytes = int(float(value[1])) if len(value) >= 2 else 0
+            except (TypeError, ValueError):
+                nbytes = 0
+            labels = item.get("metric")
+            out.append({"stream": labels if isinstance(labels, dict)
+                        else {}, "bytes": nbytes})
+        out.sort(key=lambda d: d["bytes"], reverse=True)
+        return out
+
+    def loki_stream_cardinality(self, uid: str,
+                                labels: Optional[List[str]] = None,
+                                errors: Optional[List[str]] = None) \
+            -> List[Dict[str, Any]]:
+        """Value count per Loki stream label.
+
+        Returns ``[{"label", "values"}]`` sorted descending - the Loki
+        stream-explosion cost signal. When ``labels`` is ``None`` the label
+        set is discovered via :meth:`loki_labels`. ``[]`` on failure; never
+        raises. One proxy call per label, each degrading independently.
+        """
+        if labels is None:
+            labels = self.loki_labels(uid, errors)
+        out: List[Dict[str, Any]] = []
+        for label in labels:
+            values = self.loki_label_values(uid, label, errors)
+            out.append({"label": str(label), "values": len(values)})
+        out.sort(key=lambda d: d["values"], reverse=True)
+        return out
+
     # -- token capabilities ------------------------------------------------
 
     def permissions_report(self) -> Dict[str, Any]:

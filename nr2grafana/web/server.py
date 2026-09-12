@@ -48,6 +48,28 @@ _METRICS_LOCK = threading.Lock()
 # never reach the filesystem (download routes).
 _SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
+# Artifact slug used for instance-wide cost data (traffic sampling and
+# whole-instance cost/optimize runs are not tied to one dashboard). It
+# deliberately fails _SLUG_RE so it can never be requested through the
+# filesystem download routes.
+_INSTANCE_SLUG = "__instance__"
+
+# Grafana datasource plugin type -> LGTM family used for traffic
+# sampling. Anything not in here (cloudwatch, graphite, ...) is not a
+# cost-sampleable LGTM component and is skipped.
+_DS_FAMILY = {"prometheus": "prometheus", "loki": "loki",
+              "tempo": "tempo"}
+
+# optimize.recommend config target -> file name in cost-config.zip.
+_COST_CONFIG_FILES = {
+    "promtail": "promtail.yaml",
+    "alloy": "alloy.river",
+    "otel-collector": "otel-collector.yaml",
+    "loki-limits": "loki-limits.yaml",
+    "prometheus-relabel": "prometheus-relabel.yaml",
+    "mimir-limits": "mimir-limits.yaml",
+}
+
 
 def _lazy(name):
     """Import a sibling module at call time. importlib honors
@@ -454,6 +476,119 @@ def _comparison_inputs(store, slug: str):
         except ApiError:
             nr = None
     return dash, wr, nr_raw, live, nr
+
+
+# ---------------------------------------------------------------------------
+# cost / efficiency helpers (section 6)
+# ---------------------------------------------------------------------------
+
+def _traffic_ds_list(live, uids=None):
+    """Build the traffic.sample_traffic ds_list from the instance's
+    datasources: [{"family","uid","type"}] for every prometheus/loki/
+    tempo datasource, optionally filtered to ``uids``."""
+    want = set(uids) if uids else None
+    out: List[Dict[str, Any]] = []
+    for ds in live.datasources() or []:
+        uid = ds.get("uid") or ""
+        family = _DS_FAMILY.get((ds.get("type") or "").lower())
+        if not uid or not family:
+            continue
+        if want is not None and uid not in want:
+            continue
+        out.append({"family": family, "uid": uid,
+                    "type": ds.get("type") or family})
+    return out
+
+
+def _default_pricing() -> Dict[str, Any]:
+    """costmodel.DEFAULT_PRICING, tolerating a not-yet-built sibling."""
+    try:
+        return dict(_lazy("costmodel").DEFAULT_PRICING)
+    except Exception:
+        return {}
+
+
+def _effective_pricing(store, override=None) -> Dict[str, Any]:
+    """Merge, in precedence order, DEFAULT_PRICING < persisted
+    web.pricing < a per-request override. Pricing is plain numbers --
+    never a secret -- so it lives in Store settings."""
+    pricing = _default_pricing()
+    try:
+        saved = store.get_setting("web.pricing", None)
+        if isinstance(saved, dict):
+            pricing.update(saved)
+    except Exception:
+        pass
+    if isinstance(override, dict):
+        pricing.update(override)
+    return pricing
+
+
+def _cost_slug(body_slug):
+    """Store slug for a cost artifact: the dashboard slug when given,
+    else the instance-wide slug."""
+    return body_slug if body_slug else _INSTANCE_SLUG
+
+
+def _usage_inputs(store, slug=""):
+    """Collect (dashboards, widget_reports) for usage.collect_usage:
+    one stored dashboard when ``slug`` is given, else every stored
+    dashboard. Missing/broken rows are skipped."""
+    dashboards: List[Dict[str, Any]] = []
+    widget_reports: List[Any] = []
+    if slug:
+        slugs = [slug]
+    else:
+        slugs = [r.get("slug", "") for r in store.list_dashboards()]
+    for s in slugs:
+        if not s:
+            continue
+        row = store.get_dashboard(s)
+        try:
+            dash = _dash_from_row(s, row)
+        except ApiError:
+            continue
+        dashboards.append(dash)
+        widget_reports.append(
+            (_artifact(store, s, "widget-report") or {}).get(
+                "widgets", []))
+    return dashboards, widget_reports
+
+
+def _cost_config_files(optimize) -> List[Tuple[str, str]]:
+    """Group every recommendation's config snippet by its target into
+    (filename, text) pairs, plus a README index. Returns paste-ready,
+    commented files for cost-config.zip."""
+    buckets: Dict[str, List[str]] = {}
+    readme = ["# nr2grafana cost-optimization config",
+              "",
+              "Generated snippets to cut LGTM-stack cost. Each is safe:",
+              "the tool never drops a metric, label, or stream that a",
+              "migrated dashboard uses. Review before applying; apply at",
+              "the collector/agent where possible to save before ingest.",
+              ""]
+    recs = (optimize or {}).get("recommendations") or []
+    for rec in recs:
+        title = rec.get("title") or rec.get("id") or "recommendation"
+        safe = "safe" if rec.get("keeps_intact") else "REVIEW"
+        readme.append("- [%s] %s (%s)"
+                      % (rec.get("severity", "?"), title, safe))
+        for cfg in rec.get("config") or []:
+            target = cfg.get("target") or "other"
+            fname = _COST_CONFIG_FILES.get(target, "%s.yaml" % target)
+            snippet = cfg.get("snippet") or ""
+            if not snippet.strip():
+                continue
+            note = cfg.get("note") or ""
+            header = "# --- %s ---" % title
+            if note:
+                header += "\n# %s" % note
+            buckets.setdefault(fname, []).append(
+                header + "\n" + snippet.rstrip() + "\n")
+    files = [(fname, "\n".join(parts))
+             for fname, parts in sorted(buckets.items())]
+    files.append(("README.md", "\n".join(readme) + "\n"))
+    return files
 
 
 # ---------------------------------------------------------------------------
@@ -901,6 +1036,76 @@ def _job_heal(job: _Job, body: Dict[str, Any], store) \
     return result
 
 
+def _job_traffic(job: _Job, body: Dict[str, Any], store) \
+        -> Dict[str, Any]:
+    """Sample real datasource traffic (Loki volume, Mimir tsdb status)
+    and persist it as the instance-wide "traffic" artifact."""
+    live = _grafana_live()
+    frm = body.get("from") or "now-24h"
+    to = body.get("to") or "now"
+    ds_uids = body.get("ds_uids") or None
+    ds_list = _traffic_ds_list(live, ds_uids)
+    if not ds_list:
+        raise ApiError("no Loki/Prometheus/Tempo datasources found to "
+                       "sample -- add one in Setup first", 400)
+    job.add("Sampling traffic from %d datasource(s) (%s .. %s)"
+            % (len(ds_list), frm, to))
+    traffic = _lazy("traffic").sample_traffic(
+        live, ds_list, frm=frm, to=to, log=job.add)
+    store.save_artifact(_INSTANCE_SLUG, "traffic", traffic)
+    SESSION.status["grafana"] = "ok"
+    job.add("Sampled %d datasource(s)"
+            % len(traffic.get("datasources") or []))
+    return traffic
+
+
+def _job_cost(job: _Job, body: Dict[str, Any], store) \
+        -> Dict[str, Any]:
+    """Cross-reference sampled traffic against what the migrated
+    dashboards actually need, estimate cost, and emit safe savings
+    recommendations. Persists "cost" and "optimize"."""
+    slug = body.get("slug") or ""
+    if slug and not store.get_dashboard(slug):
+        raise ApiError("no dashboard with slug %r -- run Convert first"
+                       % slug, 404)
+    frm = body.get("from") or "now-24h"
+    to = body.get("to") or "now"
+    traffic = _artifact(store, _INSTANCE_SLUG, "traffic")
+    if not traffic:
+        job.add("No cached traffic sample; sampling fresh...")
+        live = _grafana_live()
+        ds_list = _traffic_ds_list(live, body.get("ds_uids") or None)
+        if not ds_list:
+            raise ApiError("no Loki/Prometheus/Tempo datasources found "
+                           "to sample -- add one in Setup first", 400)
+        traffic = _lazy("traffic").sample_traffic(
+            live, ds_list, frm=frm, to=to, log=job.add)
+        store.save_artifact(_INSTANCE_SLUG, "traffic", traffic)
+    else:
+        job.add("Using cached traffic sample")
+    dashboards, widget_reports = _usage_inputs(store, slug)
+    job.add("Computing what %d dashboard(s) need..." % len(dashboards))
+    usage = _lazy("usage").collect_usage(dashboards, widget_reports)
+    pricing = _effective_pricing(store, body.get("pricing"))
+    costmodel = _lazy("costmodel")
+    cost = costmodel.estimate_costs(traffic, pricing)
+    optimize = _lazy("optimize").recommend(
+        traffic, usage, cost=cost, pricing=pricing,
+        cfg=_load_cfg(), log=job.add)
+    recs = optimize.get("recommendations") or []
+    savings = costmodel.apply_savings(cost, recs)
+    store_slug = _cost_slug(slug)
+    store.save_artifact(store_slug, "cost", cost)
+    store.save_artifact(store_slug, "optimize", optimize)
+    SESSION.status["grafana"] = "ok"
+    job.add("Estimated $%.2f/mo current; %d recommendation(s), "
+            "est %s%% saved"
+            % (cost.get("monthly_total", 0.0), len(recs),
+               savings.get("saved_pct", 0)))
+    return {"slug": slug, "cost": cost, "optimize": optimize,
+            "savings": savings, "usage": usage}
+
+
 # ---------------------------------------------------------------------------
 # request handler
 # ---------------------------------------------------------------------------
@@ -1035,6 +1240,8 @@ class Handler(BaseHTTPRequestHandler):
             self._get_panel_data(q)
         elif path == "/api/readiness":
             self._get_readiness(slug)
+        elif path == "/api/pricing":
+            self._get_pricing()
         elif path.startswith("/download/"):
             self._get_download(path)
         else:
@@ -1095,6 +1302,9 @@ class Handler(BaseHTTPRequestHandler):
             "/api/grafana/test": self._post_grafana_test,
             "/api/grafana/import": self._post_grafana_import,
             "/api/parity": self._post_parity,
+            "/api/traffic": self._post_traffic,
+            "/api/cost": self._post_cost,
+            "/api/pricing": self._post_pricing,
             "/api/samples": self._post_samples,
             "/api/review": self._post_review,
             "/api/diagnose": self._post_diagnose,
@@ -1135,6 +1345,14 @@ class Handler(BaseHTTPRequestHandler):
                 features[name] = True
             except Exception:
                 features[name] = False
+        # "cost" is on once the whole 1.5 optimization pipeline is
+        # importable (traffic sampling + usage + cost model + engine).
+        try:
+            for name in ("traffic", "usage", "costmodel", "optimize"):
+                _lazy(name)
+            features["cost"] = True
+        except Exception:
+            features["cost"] = False
         try:
             features["ds_templates"] = isinstance(
                 getattr(_lazy("grafana.live"), "DS_TEMPLATES", None),
@@ -1354,6 +1572,10 @@ class Handler(BaseHTTPRequestHandler):
     def _get_download(self, path: str) -> None:
         if path == "/download/all.zip":
             return self._download_all()
+        if path == "/download/cost-config.zip":
+            q = parse_qs(urlsplit(self.path).query)
+            return self._download_cost_config(
+                (q.get("slug") or [""])[0])
         m = re.match(r"^/download/dashboard/([^/]+)\.json$", path)
         if m:
             return self._download_dashboard(m.group(1))
@@ -1658,6 +1880,64 @@ class Handler(BaseHTTPRequestHandler):
         store = self.store
         self._json({"job": _start_job(
             "parity", lambda job: _job_parity(job, body, store))})
+
+    def _post_traffic(self) -> None:
+        body = self._body()
+        _grafana_live()  # fail fast with 400 before starting the job
+        store = self.store
+        self._json({"job": _start_job(
+            "traffic", lambda job: _job_traffic(job, body, store))})
+
+    def _post_cost(self) -> None:
+        body = self._body()
+        _grafana_live()  # fail fast with 400 before starting the job
+        store = self.store
+        self._json({"job": _start_job(
+            "cost", lambda job: _job_cost(job, body, store))})
+
+    def _get_pricing(self) -> None:
+        """Effective pricing assumptions (defaults + any persisted
+        overrides) and the shipped defaults, for the editable panel."""
+        self._json({"pricing": _effective_pricing(self.store),
+                    "defaults": _default_pricing()})
+
+    def _post_pricing(self) -> None:
+        """Persist non-secret pricing assumptions in Store settings and
+        return the effective set. Body: {"pricing": {...}} or a bare
+        object of pricing keys."""
+        body = self._body()
+        pricing = body.get("pricing")
+        if not isinstance(pricing, dict):
+            pricing = {k: v for k, v in body.items() if k != "pricing"}
+        if not isinstance(pricing, dict) or not pricing:
+            raise ApiError("missing 'pricing' object", 400)
+        try:
+            self.store.set_setting("web.pricing", pricing)
+        except Exception as e:
+            raise ApiError("could not persist pricing: %s" % _errmsg(e),
+                           400)
+        self._json({"ok": True,
+                    "pricing": _effective_pricing(self.store),
+                    "defaults": _default_pricing()})
+
+    def _download_cost_config(self, slug: str) -> None:
+        """Zip every recommendation's config snippet as paste-ready
+        files (promtail.yaml, prometheus-relabel.yaml, ...). slug picks
+        a per-dashboard optimize run; omitted = the instance-wide run."""
+        if slug:
+            self._known_slug(slug)
+        store_slug = _cost_slug(slug)
+        optimize = _artifact(self.store, store_slug, "optimize")
+        if not optimize:
+            raise ApiError("no cost recommendations yet -- run a cost "
+                           "analysis first", 404)
+        files = _cost_config_files(optimize)
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for name, text in files:
+                zf.writestr(name, text)
+        self._bytes(buf.getvalue(), "application/zip",
+                    "cost-config.zip")
 
     def _post_samples(self) -> None:
         body = self._body()
