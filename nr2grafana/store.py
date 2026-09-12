@@ -38,7 +38,8 @@ DEFAULT_DB = os.path.join(DEFAULT_DIR, "nr2grafana.db")
 # list_dashboards().
 ARTIFACT_KINDS = ("requirements", "widget-report", "datatest", "check",
                   "parity", "diagnosis", "heal", "samples", "review",
-                  "comparison", "nr-source")
+                  "comparison", "nr-source", "traffic", "cost",
+                  "optimize")
 
 CHANGE_SOURCES = ("user", "ai", "auto")
 

@@ -257,6 +257,7 @@ class Wizard:
                     "🔧  Auto-heal",
                     "🗄   Manage datasources",
                     "📤  Import dashboards into Grafana",
+                    "💰  Analyze cost & efficiency",
                     "🌐  Launch web UI",
                     "⚙️   Choose / create a mapping config",
                     "👋  Quit",
@@ -289,8 +290,10 @@ class Wizard:
                 elif choice == 11:
                     self.flow_import()
                 elif choice == 12:
-                    self.flow_web()
+                    self.flow_cost()
                 elif choice == 13:
+                    self.flow_web()
+                elif choice == 14:
                     self.flow_config()
                 else:
                     print(dim("bye!"))
@@ -644,6 +647,38 @@ class Wizard:
             print(green("✓ auto-heal finished (see summary above)"))
         else:
             print(red("✗ auto-heal hit errors (see above)"))
+        return rc
+
+    # -- cost & efficiency --------------------------------------------------
+
+    def flow_cost(self) -> int:
+        header("Analyze cost & efficiency")
+        print(dim("Samples what your Loki/Mimir/Tempo datasources "
+                  "ingest, subtracts what the migrated dashboards "
+                  "actually use, and proposes safe, dollar-estimated "
+                  "ways to cut cost. Nothing a dashboard uses is ever "
+                  "dropped. All figures are estimates, not exact "
+                  "bills."))
+        src = prompt("Converted dashboards dir or package (blank = all "
+                     "in the local store)",
+                     self.recall("convert_out", "./grafana-dashboards"))
+        url, token = self._grafana_connection()
+        frm = prompt("Traffic sample range from", "now-24h")
+        to = prompt("Traffic sample range to", "now")
+        pricing = prompt("Pricing assumptions JSON file (blank = "
+                         "built-in defaults)", "")
+        out = prompt("Write cost-report.json + config/ to",
+                     self.recall("cost_out", "./cost-analysis"))
+        self.remember("cost_out", out)
+        from .cli import cmd_cost_analyze
+        rc = cmd_cost_analyze(argparse.Namespace(
+            inputs=[src] if src else [], grafana_url=url,
+            grafana_token=token, insecure=False, frm=frm, to=to,
+            pricing=pricing, out=out))
+        if rc == 0:
+            print(green("✓ cost analysis complete → %s" % out))
+        else:
+            print(red("✗ cost analysis had problems (see above)"))
         return rc
 
     # -- datasources --------------------------------------------------------

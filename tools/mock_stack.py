@@ -10,7 +10,11 @@ real Grafana or New Relic:
   CRUD (+ /health per datasource), folders, dashboard import/read,
   /api/search, /api/plugins, deterministic /api/ds/query frames, and
   the Prometheus/Loki proxy introspection endpoints backed by a
-  configurable metric/label inventory.
+  configurable metric/label inventory - including the cost-analysis
+  traffic signals: Prometheus /api/v1/status/tsdb (active-series counts
+  incl. obviously-unused high-series metrics and high-cardinality
+  labels), count(...) instant queries, and Loki
+  /loki/api/v1/index/volume(_range) with a chatty id-fanned stream.
 * fake NerdGraph: POST /graphql serving the dashboards under
   ``fixtures/newrelic/`` (entitySearch + entity reads), a deterministic
   ``actor.account.nrql`` whose numbers are consistent with the fake
@@ -121,12 +125,50 @@ DEFAULT_PROM_LABELS = {
     "deployment_environment": ["prod", "staging"],
     "http_response_status_code": ["200", "500"],
     "job": ["checkout/app"],
+    # id-like / unbounded labels no shipped dashboard groups or filters
+    # on -> the cost view's "high-cardinality, unused" drop candidates.
+    "path": ["/cart/9f3a2c", "/pay/22b19e"],
+    "id": ["req-0001a", "req-0002b"],
+}
+
+# Metrics the fake Mimir "ingests" that NO shipped fixture dashboard
+# references -- obvious active-series waste the optimizer must flag as
+# safe drop candidates. Big series counts so they top the tsdb status
+# (a histogram *_bucket fans out across le, an infra counter across
+# nodes), yet nothing the Checkout dashboard queries.
+DEFAULT_UNUSED_METRICS = {
+    "apiserver_request_duration_seconds_bucket": 41200,
+    "container_network_receive_bytes_total": 18700,
+}
+
+# labelValueCountByLabelName overrides for the tsdb status: the real
+# active-series cost of a label is its distinct-value count, which is
+# far larger than the couple of demo values the query endpoints return.
+# pod/instance churn; path/id are effectively unbounded.
+DEFAULT_PROM_LABEL_CARD = {
+    "id": 15200,
+    "path": 9800,
+    "pod": 4213,
+    "instance": 2600,
 }
 
 DEFAULT_LOKI_LABELS = {
     "service_name": ["checkout", "payments"],
     "level": ["error", "warn", "info"],
     "job": ["checkout/app"],
+    # High-cardinality stream labels no dashboard's stream selector
+    # filters on: classic "stream explosion" the optimizer moves to
+    # structured metadata. request_id is id-like (always structured
+    # metadata); pod is churny. Value lists are generated in MockState.
+    "pod": [],
+    "request_id": [],
+}
+
+# Approximate distinct-value counts for the high-cardinality Loki
+# stream labels (also the size of the generated value lists).
+DEFAULT_LOKI_LABEL_CARD = {
+    "request_id": 4800,
+    "pod": 52,
 }
 
 DEFAULT_PLUGINS = [
@@ -165,13 +207,29 @@ class MockState(object):
         self.lock = threading.Lock()
         self.grafana_token = grafana_token
         self.nr_api_key = nr_api_key
-        # metric name -> value override (None = default_value)
+        # metric name -> value override (None = default_value). Includes
+        # the "unused" waste metrics so the fake Mimir lists them in its
+        # inventory and answers count()/query for them like the real one.
         self.prom_metrics: Dict[str, Optional[float]] = dict(
             (m, None) for m in DEFAULT_METRICS)
+        for m in DEFAULT_UNUSED_METRICS:
+            self.prom_metrics.setdefault(m, None)
         self.prom_labels: Dict[str, List[str]] = dict(
             (k, list(v)) for k, v in DEFAULT_PROM_LABELS.items())
         self.loki_labels: Dict[str, List[str]] = dict(
             (k, list(v)) for k, v in DEFAULT_LOKI_LABELS.items())
+        # active-series cost signals for /api/v1/status/tsdb (editable).
+        self.prom_unused_metrics: Dict[str, int] = dict(
+            DEFAULT_UNUSED_METRICS)
+        self.prom_label_card: Dict[str, int] = dict(
+            DEFAULT_PROM_LABEL_CARD)
+        self.loki_label_card: Dict[str, int] = dict(
+            DEFAULT_LOKI_LABEL_CARD)
+        # Materialize the generated high-cardinality Loki value lists so
+        # /loki/api/v1/label/<l>/values reports a believable count.
+        for lbl, cnt in DEFAULT_LOKI_LABEL_CARD.items():
+            if not self.loki_labels.get(lbl):
+                self.loki_labels[lbl] = _gen_values(lbl, int(cnt))
         self.facet_values: List[str] = ["a", "b"]
         self.default_value: float = DEFAULT_VALUE
         # Metrics whose fake Grafana series intentionally DISAGREE with
@@ -282,6 +340,21 @@ def _hash01(*parts: Any) -> float:
     """
     raw = "|".join(str(p) for p in parts).encode()
     return int(hashlib.md5(raw).hexdigest()[:8], 16) / float(0x100000000)
+
+
+def _gen_values(prefix: str, n: int, cap: int = 5000) -> List[str]:
+    """``n`` deterministic id-like values for a high-cardinality label.
+
+    Index-seeded md5 (never a live RNG) so the fake inventory is
+    byte-for-byte reproducible across runs. Capped so a pathological
+    cardinality does not balloon a response body.
+    """
+    n = max(0, min(int(n), cap))
+    out: List[str] = []
+    for i in range(n):
+        h = hashlib.md5(("%s|%d" % (prefix, i)).encode()).hexdigest()[:10]
+        out.append("%s-%s" % (prefix, h))
+    return out
 
 
 def _facet_phase(facet_value: str) -> float:
@@ -522,6 +595,170 @@ def _nrql_rows(state: MockState, nrql: str,
 
 
 # ---------------------------------------------------------------------------
+# cost / traffic introspection (Prom tsdb status, count, Loki volume)
+# ---------------------------------------------------------------------------
+
+def _tsdb_metric_series(state: MockState, metric: str) -> int:
+    """Deterministic active-series count for one metric name.
+
+    The injected "unused" waste metrics carry their configured big
+    counts; everything else gets a modest, name-seeded few-hundred
+    (histograms fan out across ``le`` like the real thing).
+    """
+    if metric in state.prom_unused_metrics:
+        return int(state.prom_unused_metrics[metric])
+    base = 40 + int(_hash01("series", metric) * 260)
+    if metric.endswith("_bucket"):
+        base *= max(1, len(state.prom_labels.get("le", [])))
+    return base
+
+
+def _tsdb_status(state: MockState) -> Dict[str, Any]:
+    """A realistic ``/api/v1/status/tsdb`` ``data`` payload.
+
+    ``seriesCountByMetricName`` is ranked high-to-low so the unused
+    waste metrics top it; ``labelValueCountByLabelName`` surfaces the
+    high-cardinality labels (id/path/pod). Shapes match Prometheus/Mimir
+    (``[{"name","value"}, ...]`` plus ``headStats``).
+    """
+    series = [{"name": m, "value": _tsdb_metric_series(state, m)}
+              for m in state.metric_names()]
+    series.sort(key=lambda r: (-r["value"], r["name"]))
+    labels = []
+    for lbl in sorted(state.prom_labels):
+        cnt = state.prom_label_card.get(
+            lbl, len(state.prom_labels.get(lbl, [])))
+        labels.append({"name": lbl, "value": int(cnt)})
+    labels.sort(key=lambda r: (-r["value"], r["name"]))
+    pairs = []
+    for lbl in sorted(state.prom_labels):
+        for val in state.prom_labels.get(lbl, [])[:2]:
+            pairs.append({"name": "%s=%s" % (lbl, val),
+                          "value": 20 + int(_hash01("pair", lbl, val)
+                                            * 180)})
+    pairs.sort(key=lambda r: (-r["value"], r["name"]))
+    mem = [{"name": r["name"], "value": r["value"] * 48}
+           for r in labels]
+    total = sum(r["value"] for r in series)
+    return {
+        "seriesCountByMetricName": series,
+        "labelValueCountByLabelName": labels,
+        "seriesCountByLabelValuePair": pairs[:20],
+        "memoryInBytesByLabelName": mem,
+        "totalSeries": total,
+        "numSeries": total,
+        "headStats": {"numSeries": total,
+                      "numLabelPairs": len(pairs),
+                      "chunkCount": total * 3,
+                      "minTimeMs": 0, "maxTimeMs": 0},
+    }
+
+
+def _count_result(state: MockState, expr: str,
+                  now: Optional[float] = None) -> Dict[str, Any]:
+    """Instant ``count(<metric>)`` -> the metric's active-series count.
+
+    Bare ``count(...)`` (or ``count by(...)``) over a known metric
+    returns that metric's tsdb series count as a single vector sample;
+    an unknown metric returns an empty vector, like the real API.
+    """
+    if now is None:
+        now = time.time()
+    ts = int(now)
+    tokens = [t for t in _TOKEN_RE.findall(expr)
+              if t not in ("count", "by", "without", "sum")]
+    metric = next((t for t in tokens if t in state.prom_metrics), "")
+    if not metric:
+        return {"status": "success",
+                "data": {"resultType": "vector", "result": []}}
+    val = _tsdb_metric_series(state, metric)
+    return {"status": "success",
+            "data": {"resultType": "vector",
+                     "result": [{"metric": {},
+                                 "value": [ts, str(val)]}]}}
+
+
+def _loki_volume_streams(state: MockState) -> List[Dict[str, Any]]:
+    """Per-stream ingested bytes for ``/loki/api/v1/index/volume``.
+
+    A grid of ``service_name`` x ``level`` streams, plus one deliberately
+    chatty ``level="debug"`` stream fanned out by the id-like
+    ``request_id`` label (Loki stream explosion) that dominates the byte
+    volume -- the hotspot the optimizer targets for a drop/retention rec.
+    """
+    out: List[Dict[str, Any]] = []
+    svcs = state.loki_labels.get("service_name") or ["checkout"]
+    levels = [lv for lv in (state.loki_labels.get("level") or ["info"])
+              if lv != "debug"]
+    for s in svcs:
+        for lv in levels:
+            b = 900000 + int(_hash01("vol", s, lv) * 5000000)
+            out.append({"service_name": s, "level": lv, "_bytes": b})
+    # The chatty stream: debug lines keyed by request_id. Huge byte
+    # share and an unbounded stream count -> the headline Loki hotspot.
+    rids = state.loki_labels.get("request_id") or ["r0"]
+    for rid in rids[:4]:
+        b = 42000000 + int(_hash01("chatty", rid) * 18000000)
+        out.append({"service_name": "checkout", "level": "debug",
+                    "request_id": rid, "_bytes": b})
+    out.sort(key=lambda r: -r["_bytes"])
+    return out
+
+
+def _selector_matchers(matcher: str) -> List[Any]:
+    """Parse ``{a="x",b=~"y"}`` into (label, op, value) tuples."""
+    m = _SELECTOR_RE.search(matcher or "")
+    if not m:
+        return []
+    return _MATCHER_RE.findall(m.group(1))
+
+
+def _loki_volume(state: MockState, matcher: str,
+                 as_range: bool = False,
+                 now: Optional[float] = None) -> Dict[str, Any]:
+    """A ``/loki/api/v1/index/volume(_range)`` response payload.
+
+    Honors an equality/regex label filter in ``matcher`` (default
+    ``{}`` returns every stream). ``volume`` is a vector of per-stream
+    byte totals; ``volume_range`` is a matrix of the same totals split
+    into a few time buckets.
+    """
+    if now is None:
+        now = time.time()
+    ts = int(now)
+    wanted = _selector_matchers(matcher)
+    result: List[Dict[str, Any]] = []
+    for st in _loki_volume_streams(state):
+        labels = dict((k, v) for k, v in st.items() if k != "_bytes")
+        ok = True
+        for label, op, val in wanted:
+            have = labels.get(label)
+            if op == "=" and have != val:
+                ok = False
+                break
+            if op == "!=" and have == val:
+                ok = False
+                break
+            if op == "=~" and (have is None
+                               or not re.search("^(?:%s)$" % val,
+                                                str(have))):
+                ok = False
+                break
+        if not ok:
+            continue
+        b = st["_bytes"]
+        if as_range:
+            vals = [[ts - 3600 + i * 900,
+                     str(int(b / 4.0))] for i in range(4)]
+            result.append({"metric": labels, "values": vals})
+        else:
+            result.append({"metric": labels, "value": [ts, str(b)]})
+    return {"status": "success",
+            "data": {"resultType": "matrix" if as_range else "vector",
+                     "result": result}}
+
+
+# ---------------------------------------------------------------------------
 # HTTP plumbing
 # ---------------------------------------------------------------------------
 
@@ -751,6 +988,14 @@ class GrafanaHandler(_JSONHandler):
         ds_type = ds.get("type")
         state = self.state
         if ds_type == "prometheus":
+            if rest == ["api", "v1", "status", "tsdb"]:
+                self._send(200, {"status": "success",
+                                 "data": _tsdb_status(state)})
+                return
+            if rest == ["api", "v1", "query"]:
+                expr = (query.get("query") or [""])[0]
+                self._send(200, _count_result(state, expr))
+                return
             if rest == ["api", "v1", "label", "__name__", "values"]:
                 self._send(200, {"status": "success",
                                  "data": state.metric_names()})
@@ -778,6 +1023,15 @@ class GrafanaHandler(_JSONHandler):
                     self._send(200, {"status": "success", "data": []})
                 return
         elif ds_type == "loki":
+            if rest == ["loki", "api", "v1", "index", "volume"]:
+                matcher = (query.get("query") or ["{}"])[0]
+                self._send(200, _loki_volume(state, matcher))
+                return
+            if rest == ["loki", "api", "v1", "index", "volume_range"]:
+                matcher = (query.get("query") or ["{}"])[0]
+                self._send(200, _loki_volume(state, matcher,
+                                             as_range=True))
+                return
             if rest == ["loki", "api", "v1", "labels"]:
                 self._send(200, {"status": "success",
                                  "data": list(state.loki_labels)})

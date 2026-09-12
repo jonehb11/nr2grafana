@@ -954,6 +954,102 @@ details.jd pre { margin: 0; border: 0;
 .help-tbl kbd { font-family: var(--mono); font-size: 11px;
   background: var(--bg3); border: 1px solid var(--border);
   border-radius: 4px; padding: 1px 6px; color: var(--text); }
+
+/* =============================================== cost (1.5) */
+.cost-actions { display: flex; align-items: flex-end; gap: var(--s3);
+  flex-wrap: wrap; }
+.cost-actions .fld { display: flex; flex-direction: column; gap: 0; }
+.cost-actions .fld label { margin: 0 0 var(--s1); }
+.cost-actions .fld input, .cost-actions .fld select { width: auto;
+  min-width: 120px; }
+.cost-actions .grow { flex: 1; }
+.term-i { display: inline-flex; color: var(--faint); cursor: help;
+  margin-left: 4px; vertical-align: middle; }
+.term-i svg.i { width: 13px; height: 13px; }
+.term-i:hover { color: var(--accent); }
+.ds-tcard { border: 1px solid var(--border-soft);
+  border-radius: var(--r-lg); background: var(--bg2);
+  box-shadow: var(--shadow-card); padding: var(--s4);
+  margin-bottom: var(--s4); }
+.ds-tcard .tc-head { display: flex; align-items: center; gap: var(--s2);
+  flex-wrap: wrap; margin-bottom: var(--s3); }
+.ds-tcard .tc-head .tc-uid { font-family: var(--mono);
+  font-size: var(--fs-xs); color: var(--faint); }
+.tc-viz { display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--s4); align-items: start; margin-top: var(--s3); }
+.tc-viz h3 { display: flex; align-items: center; }
+.rank-tbl { max-height: 176px; overflow-y: auto; margin-top: 6px; }
+.rank-tbl table { width: 100%; font-size: 12px; }
+.rank-tbl td { padding: 3px 8px; border-bottom: 1px solid
+  var(--border-soft); }
+.rank-tbl td.v { text-align: right; font-variant-numeric: tabular-nums;
+  font-family: var(--mono); white-space: nowrap; }
+.rank-tbl td.n { font-family: var(--mono); word-break: break-all; }
+.savings-hero { display: flex; align-items: center; gap: var(--s5);
+  flex-wrap: wrap; padding: var(--s4);
+  border: 1px solid var(--green); background: var(--green-bg);
+  border-radius: var(--r-lg); }
+.savings-hero .sh-flow { display: flex; align-items: center;
+  gap: var(--s4); flex-wrap: wrap; }
+.savings-hero .sh-big { margin-left: auto; text-align: right; }
+.savings-hero .sh-pct { font-size: 40px; font-weight: 800;
+  line-height: 1; color: var(--green); letter-spacing: -.02em;
+  font-variant-numeric: tabular-nums; }
+.savings-hero .sh-sub { font-size: var(--fs-md); color: var(--text);
+  font-weight: 600; margin-top: 2px; }
+.savings-hero .sh-note { flex-basis: 100%; font-size: var(--fs-xs);
+  color: var(--muted); margin-top: var(--s1); }
+.savings-hero.flat { border-color: var(--border); background: var(--bg); }
+.savings-hero.flat .sh-pct { color: var(--muted); }
+.cost-total { display: flex; align-items: baseline; gap: 8px;
+  margin-bottom: var(--s3); }
+.cost-total .ct-num { font-size: 30px; font-weight: 750;
+  letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.cost-total .ct-lbl { color: var(--muted); font-size: var(--fs-md); }
+.pricing-grid { display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: var(--s2) var(--s4); }
+.pricing-grid .pf label { margin-top: 0; }
+.pricing-grid .pf .in-money { position: relative; }
+.pricing-grid .pf .in-money::before { content: "$"; position: absolute;
+  left: 9px; top: 50%; transform: translateY(-50%); color: var(--muted);
+  font-size: var(--fs-md); pointer-events: none; }
+.pricing-grid .pf .in-money input { padding-left: 20px; }
+.recompute-note { font-size: var(--fs-sm); color: var(--muted);
+  display: inline-flex; align-items: center; gap: 6px; }
+.rec-card { border: 1px solid var(--border-soft);
+  border-left-width: 3px; border-radius: var(--r-md);
+  background: var(--bg2); padding: var(--s3) var(--s4);
+  margin-bottom: var(--s3); box-shadow: var(--shadow-sm); }
+.rec-card.sev-high { border-left-color: var(--red); }
+.rec-card.sev-medium { border-left-color: var(--amber); }
+.rec-card.sev-low { border-left-color: var(--blue); }
+.rec-head { display: flex; gap: var(--s2); align-items: flex-start;
+  flex-wrap: wrap; }
+.rec-title { font-weight: 650; font-size: var(--fs-lg); flex: 1;
+  min-width: 220px; }
+.rec-rationale { color: var(--muted); font-size: var(--fs-md);
+  margin: var(--s2) 0; }
+.rec-ev { display: flex; flex-wrap: wrap; gap: 3px;
+  margin: var(--s2) 0; }
+.rec-save { display: flex; flex-wrap: wrap; gap: var(--s2);
+  align-items: center; margin: var(--s2) 0; }
+.rec-save .save-money { font-weight: 750; color: var(--green);
+  font-size: var(--fs-lg); font-variant-numeric: tabular-nums; }
+.rec-cfg { border: 1px dashed var(--border); border-radius: var(--r-md);
+  background: var(--bg); padding: var(--s2) var(--s3);
+  margin-top: var(--s2); }
+.rec-cfg .cfg-bar { display: flex; align-items: center; gap: var(--s2);
+  flex-wrap: wrap; }
+.rec-cfg .cfg-bar label { margin: 0; }
+.rec-cfg .cfg-bar select { width: auto; min-width: 150px; }
+.rec-cfg pre { margin-top: var(--s2); }
+.rec-cfg .cfg-note { font-size: var(--fs-xs); color: var(--muted);
+  margin-top: 4px; font-style: italic; }
+.recs-head { display: flex; align-items: center; gap: var(--s2);
+  flex-wrap: wrap; margin-bottom: var(--s3); }
+.recs-head .grow { flex: 1; }
 </style>
 </head>
 <body>
@@ -1033,6 +1129,14 @@ details.jd pre { margin: 0; border: 0;
           1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"></path><path d="M19
           15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9z">
           </path></svg></span> AI Assistant</a>
+      <div class="nav-sec">Optimize</div>
+      <a href="#/cost" data-r="cost">
+        <span class="ico"><svg class="i" viewBox="0 0 24 24"
+          fill="none" stroke="currentColor" stroke-width="1.7"
+          stroke-linecap="round" stroke-linejoin="round"
+          aria-hidden="true"><line x1="12" y1="1" x2="12" y2="23">
+          </line><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1
+          0 7H6"></path></svg></span> Cost &amp; efficiency</a>
     </nav>
     <div class="sidebar-foot">
       Local only &mdash; API keys stay in server memory,
@@ -1087,7 +1191,8 @@ var App = {
   dsFlowSlug: '',        /* dashboard the ds flow badges track */
   cmp: null,             /* compare view state {slug,from,to,...} */
   cmpIO: null,           /* IntersectionObserver for lazy panels */
-  templates: null        /* /api/grafana/ds-templates cache */
+  templates: null,       /* /api/grafana/ds-templates cache */
+  cost: null             /* cost view state (traffic/cost/optimize) */
 };
 
 var Jobs = { items: [], open: false };
@@ -1934,6 +2039,9 @@ function fmtBytes(v) {
 function fmtUnit(v, unit) {
   if (v == null || !isFinite(v)) return '–';
   unit = String(unit || '').toLowerCase();
+  if (unit === 'usd' || unit === '$' || unit === 'dollars') {
+    return '$' + fmtNumP(v);
+  }
   if (unit === 'percent' || unit === '%') {
     return (Math.round(v * 10) / 10) + '%';
   }
@@ -2496,7 +2604,8 @@ function renderPills() {
 /* ====================================================== router */
 var VIEWS = { overview: vOverview, connect: vConnect,
               convert: vConvert, datasources: vDatasources,
-              import: vImport, changes: vChanges, ai: vAI };
+              import: vImport, changes: vChanges, ai: vAI,
+              cost: vCost };
 var ALIASES = { setup: 'connect', dashboards: 'overview',
                 test: 'overview' };
 
@@ -5478,12 +5587,13 @@ function welcomeHtml() {
 /* ============================================== help / shortcuts */
 var GKEYS = { o: '#/overview', c: '#/connect', f: '#/convert',
   d: '#/datasources', m: '#/compare', i: '#/import',
-  h: '#/changes', a: '#/ai' };
+  h: '#/changes', a: '#/ai', e: '#/cost' };
 var HELP_KEYS = [
   ['g then o', 'Overview'], ['g then c', 'Connect'],
   ['g then f', 'Fetch & Convert'], ['g then d', 'Datasources'],
   ['g then m', 'Compare'], ['g then i', 'Import'],
   ['g then h', 'Changes (history)'], ['g then a', 'AI Assistant'],
+  ['g then e', 'Cost & efficiency'],
   ['?', 'Show this help'], ['j', 'Toggle background jobs'],
   ['t', 'Cycle theme'], ['Esc', 'Close dialogs / drawers']];
 
@@ -5502,6 +5612,730 @@ function openHelp() {
   $('.modal-wrap', $('#modal-slot')).onclick = function (ev) {
     if (ev.target === this) closeModal();
   };
+}
+
+/* ================================================ cost (1.5) */
+/* The Cost & efficiency view. Samples real datasource traffic (a
+   job), cross-references it against what the migrated dashboards
+   need, and shows an estimated monthly-cost breakdown plus ranked,
+   paste-ready recommendations. Nothing a dashboard uses is ever
+   proposed for removal; used-but-costly dimensions are "review". */
+
+/* Plain-language definitions surfaced as hover tooltips. */
+var COST_TERMS = {
+  cardinality: 'the number of distinct values a label has. High ' +
+    'cardinality (many unique values, like ids or pod names) is the ' +
+    '#1 driver of Loki and Mimir cost.',
+  streams: 'a stream is one unique combination of Loki label ' +
+    'values. More streams means a bigger index and higher cost.',
+  'active-series': 'one active series is a unique metric + ' +
+    'label-value combination stored by Mimir/Prometheus. Cost ' +
+    'scales with the number of active series.',
+  'bytes-per-day': 'estimated log volume ingested per day, ' +
+    'projected from the sampled window.',
+  histogram: 'histogram metrics (_bucket) multiply series by every ' +
+    '`le` bucket, so they can dominate active-series cost.'
+};
+var TARGET_LBL = { promtail: 'Promtail', alloy: 'Grafana Alloy',
+  'otel-collector': 'OTel Collector', otel: 'OTel Collector',
+  'loki-limits': 'Loki limits', loki: 'Loki',
+  'prometheus-relabel': 'Prometheus relabel',
+  prometheus: 'Prometheus', 'mimir-limits': 'Mimir limits',
+  mimir: 'Mimir' };
+var FAM_LBL = { loki: 'Loki', prometheus: 'Mimir', mimir: 'Mimir',
+  tempo: 'Tempo' };
+var COST_SEV = { high: 'err', medium: 'warn', low: 'info' };
+var PRICING_META = {
+  loki_ingest_per_gb: { label: 'Loki ingest ($/GB)',
+    help: 'Cost per GB of logs ingested by Loki.', money: true },
+  loki_store_per_gb_month: { label: 'Loki storage ($/GB-mo)',
+    help: 'Cost per GB of log storage per month.', money: true },
+  loki_retention_days: { label: 'Loki retention (days)',
+    help: 'How long logs are kept; drives storage cost.',
+    money: false },
+  mimir_per_1k_series_month: {
+    label: 'Mimir ($/1k active series-mo)',
+    help: 'Cost per 1,000 active series per month.', money: true },
+  mimir_store_per_gb_month: { label: 'Mimir storage ($/GB-mo)',
+    help: 'Cost per GB of metric storage per month.', money: true },
+  tempo_per_gb: { label: 'Tempo ($/GB)',
+    help: 'Cost per GB of trace data.', money: true } };
+
+function num(v) { v = Number(v); return isFinite(v) ? v : 0; }
+function fmtMoney(v) {
+  if (v == null || !isFinite(v)) return '$0';
+  if (Math.abs(v) >= 100000) return '$' + fmtNumP(v);
+  var r = Math.round(v * 100) / 100;
+  return '$' + r.toLocaleString(undefined,
+    { maximumFractionDigits: 2 });
+}
+function fmtPerDay(v) { return fmtBytes(num(v)) + '/day'; }
+function humanize(k) {
+  return String(k).replace(/_/g, ' ')
+    .replace(/\bgb\b/gi, 'GB').replace(/\bram\b/gi, 'RAM')
+    .replace(/\busd\b/gi, 'USD');
+}
+function costTermRaw(text) {
+  return '<span class="term-i" title="' + esc(text) +
+    '" tabindex="0" role="img" aria-label="' + esc(text) + '">' +
+    ico('info', 13) + '</span>';
+}
+function costTerm(term) {
+  var t = COST_TERMS[term];
+  if (!t) return '';
+  return costTermRaw(term.replace(/-/g, ' ') + ': ' + t);
+}
+function labelStr(obj) {
+  obj = obj || {};
+  return Object.keys(obj).map(function (k) {
+    return k + '=' + obj[k];
+  }).join(', ');
+}
+
+function ensureCost() {
+  if (!App.cost) {
+    App.cost = { range: { from: 'now-24h', to: 'now' }, slug: '',
+      traffic: null, cost: null, optimize: null, savings: null,
+      pricing: null, pricingDefaults: null,
+      loadingTraffic: false, loadingCost: false,
+      trafficErr: null, costErr: null };
+  }
+  return App.cost;
+}
+
+/* Wait on an already-started job id (used if /api/cost is served as
+   a job rather than synchronously). Resolves with job.result. */
+function pollJob(jid) {
+  return new Promise(function (resolve, reject) {
+    var t = setInterval(function () {
+      api('/api/jobs/' + jid).then(function (job) {
+        if (job.status === 'done') {
+          clearInterval(t); resolve(job.result);
+        } else if (job.status === 'error') {
+          clearInterval(t);
+          reject(new Error(job.error || 'job failed'));
+        }
+      }, function (e) { clearInterval(t); reject(e); });
+    }, 700);
+  });
+}
+
+async function vCost(view) {
+  crumb('Cost & efficiency');
+  ensureCost();
+  if (!App.dashboards.length) {
+    try {
+      App.dashboards = (await api('/api/dashboards')).dashboards || [];
+    } catch (e) { /* scope selector just offers whole-instance */ }
+  }
+  if (!App.cost.pricing) {
+    try {
+      var pr = await api('/api/pricing');
+      App.cost.pricing = (pr && pr.pricing) || pr || null;
+      if (App.cost.pricing && !App.cost.pricingDefaults) {
+        App.cost.pricingDefaults =
+          JSON.parse(JSON.stringify(App.cost.pricing));
+      }
+    } catch (e) { /* defaults appear once an analysis runs */ }
+  }
+  view.innerHTML =
+    '<h1>Cost &amp; efficiency</h1>' +
+    '<p class="lead">Sample what your LGTM datasources actually ' +
+    'ingest, compare it against what your migrated dashboards ' +
+    'need, and get safe, paste-ready ways to cut spend. Every ' +
+    'figure is an <b>estimate based on your pricing inputs</b> ' +
+    '&mdash; never an exact bill.</p>' +
+    '<div class="card">' + costActionsHtml() + '</div>' +
+    consoleHtml('cost-console', 'Sampling log') +
+    '<section id="cost-traffic"></section>' +
+    '<section id="cost-breakdown"></section>' +
+    '<section id="cost-recs"></section>';
+  wireCostActions();
+  renderTrafficSection();
+  renderBreakdownSection();
+  renderRecsSection();
+}
+
+function costActionsHtml() {
+  var c = App.cost;
+  var scopeOpts = '<option value="">Whole instance</option>' +
+    (App.dashboards || []).map(function (d) {
+      var s = d.slug || d.name || '';
+      return '<option value="' + esc(s) + '"' +
+        (s === c.slug ? ' selected' : '') + '>' + esc(s) +
+        '</option>';
+    }).join('');
+  return '<div class="cost-actions">' +
+    '<div class="fld"><label>Sample window from</label>' +
+    '<input id="ct-from" value="' + esc(c.range.from) +
+    '" autocomplete="off" spellcheck="false"></div>' +
+    '<div class="fld"><label>to</label>' +
+    '<input id="ct-to" value="' + esc(c.range.to) +
+    '" autocomplete="off" spellcheck="false"></div>' +
+    '<div class="fld"><label>Scope</label>' +
+    '<select id="ct-scope">' + scopeOpts + '</select></div>' +
+    '<div class="grow"></div>' +
+    '<button class="btn" id="ct-sample" type="button">' +
+    ico('database', 14) + ' Sample traffic</button>' +
+    '<button class="btn primary" id="ct-analyze" type="button">' +
+    ico('zap', 14) + ' Analyze cost &amp; efficiency</button>' +
+    '</div>';
+}
+
+function wireCostActions() {
+  var c = App.cost;
+  var f = $('#ct-from'), t = $('#ct-to'), sc = $('#ct-scope');
+  if (f) f.onchange = function () { c.range.from = f.value; };
+  if (t) t.onchange = function () { c.range.to = t.value; };
+  if (sc) sc.onchange = function () { c.slug = sc.value; };
+  var sb = $('#ct-sample');
+  if (sb) sb.onclick = function () { onSampleTraffic(sb); };
+  var ab = $('#ct-analyze');
+  if (ab) ab.onclick = function () { onAnalyze(ab); };
+}
+
+async function onSampleTraffic(btn) {
+  var c = App.cost;
+  c.loadingTraffic = true; c.trafficErr = null;
+  renderTrafficSection();
+  busy(btn, true);
+  try {
+    var job = await startJob('sample-traffic', '/api/traffic',
+      { from: c.range.from, to: c.range.to }, logInto($('#cost-console')));
+    c.traffic = (job && job.result) || null;
+    toast('Traffic sampled', 'ok');
+  } catch (e) {
+    c.trafficErr = e.message; toast(e.message, 'err');
+  }
+  c.loadingTraffic = false; busy(btn, false);
+  renderTrafficSection();
+}
+
+function applyCostResult(res) {
+  res = res || {};
+  var c = App.cost;
+  c.costErr = null;
+  c.cost = res.cost ||
+    (res.schema === 'nr2grafana/cost/v1' ? res : c.cost);
+  c.optimize = res.optimize ||
+    (res.schema === 'nr2grafana/optimize/v1' ? res : c.optimize);
+  if (res.traffic) c.traffic = res.traffic;
+  if (res.pricing) c.pricing = res.pricing;
+  else if (c.cost && c.cost.pricing) c.pricing = c.cost.pricing;
+  if (!c.pricingDefaults && c.pricing) {
+    c.pricingDefaults = JSON.parse(JSON.stringify(c.pricing));
+  }
+  c.savings = normalizeSavings(res);
+}
+
+async function onAnalyze(btn) {
+  var c = App.cost;
+  c.loadingCost = true; c.costErr = null;
+  renderBreakdownSection(); renderRecsSection();
+  busy(btn, true);
+  var pricing = gatherPricing() || c.pricing || null;
+  var body = {};
+  if (c.slug) body.slug = c.slug;
+  if (pricing) body.pricing = pricing;
+  try {
+    var res = await api('/api/cost', body);
+    if (res && res.job) res = await pollJob(res.job);
+    applyCostResult(res);
+    toast('Cost analysis ready', 'ok');
+  } catch (e) {
+    c.costErr = e.message; toast(e.message, 'err');
+  }
+  c.loadingCost = false; busy(btn, false);
+  renderTrafficSection();
+  renderBreakdownSection();
+  renderRecsSection();
+}
+
+/* Prefer an explicit savings/projection object from the server; fall
+   back to the optimize summary, then to summing the recommendations.
+   Everything is an estimate derived from the pricing inputs. */
+function normalizeSavings(res) {
+  var c = App.cost;
+  var cost = (res && res.cost) || c.cost || {};
+  var current = num(cost.monthly_total);
+  var sv = (res && (res.savings || res.projection)) ||
+    (cost && cost.savings) || null;
+  var saved, projected, pct;
+  if (sv && sv.saved_total != null) {
+    saved = num(sv.saved_total);
+    projected = sv.projected_total != null ?
+      num(sv.projected_total) : Math.max(0, current - saved);
+    pct = sv.saved_pct != null ? num(sv.saved_pct) :
+      (current > 0 ? saved / current * 100 : 0);
+  } else {
+    var opt = (res && res.optimize) || c.optimize || {};
+    var sum = opt.summary || {};
+    if (sum.total_est_monthly_usd != null) {
+      saved = num(sum.total_est_monthly_usd);
+    } else {
+      saved = (opt.recommendations || []).reduce(function (a, r) {
+        return a + num((r.est_savings || {}).monthly_usd);
+      }, 0);
+    }
+    projected = Math.max(0, current - saved);
+    pct = current > 0 ? saved / current * 100 : 0;
+  }
+  return { current: current, saved: saved, projected: projected,
+           pct: pct };
+}
+
+/* ---- traffic section ---- */
+function renderTrafficSection() {
+  var el = $('#cost-traffic'); if (!el) return;
+  var c = App.cost;
+  var head = '<h2>' + ico('database', 15) + ' Sampled traffic</h2>';
+  if (c.loadingTraffic) {
+    el.innerHTML = head +
+      '<div class="card"><div class="skel skel-chart"></div></div>';
+    return;
+  }
+  var t = c.traffic;
+  var dss = (t && t.datasources) || [];
+  if (!dss.length) {
+    var msg = c.trafficErr ?
+      errorCard('Traffic sampling failed.', c.trafficErr) : '';
+    el.innerHTML = head + msg +
+      '<div class="empty"><span class="eico">' +
+      ico('database', 26) + '</span><b>No traffic sampled yet.</b>' +
+      '<br>Sample your Loki, Mimir and Tempo datasources to see ' +
+      'what they actually ingest &mdash; active series, streams and ' +
+      'bytes per day.<div class="btnbar" ' +
+      'style="justify-content:center">' +
+      '<button class="btn primary" id="ct-empty-sample" ' +
+      'type="button">' + ico('database', 14) +
+      ' Sample traffic</button></div></div>';
+    var b = $('#ct-empty-sample');
+    if (b) b.onclick = function () { onSampleTraffic(b); };
+    return;
+  }
+  var rangeNote = t.range ? '<p class="helper">Window: ' +
+    esc(t.range.from || '') + ' .. ' + esc(t.range.to || '') +
+    (t.generated_at ? ' &middot; sampled ' +
+      esc(String(t.generated_at).replace('T', ' ').slice(0, 19)) :
+      '') + '</p>' : '';
+  el.innerHTML = head + rangeNote + dss.map(dsTcardHtml).join('');
+  mountCharts(el);
+}
+
+function statCardHtml(v, lbl, term) {
+  return '<div class="stat-card"><div class="num">' + v +
+    '</div><div class="lbl">' + esc(lbl) +
+    (term ? costTerm(term) : '') + '</div></div>';
+}
+
+function vizBlock(title, chartHtml, tableHtml, term) {
+  return '<div><h3>' + esc(title) + (term ? costTerm(term) : '') +
+    '</h3>' + chartHtml + (tableHtml || '') + '</div>';
+}
+
+function barChartFromPairs(pairs, nameKey, valKey, unit) {
+  pairs = pairs || [];
+  if (!pairs.length) return chartEmpty('No data sampled');
+  var series = pairs.slice(0, 12).map(function (p) {
+    var nm = nameKey === 'name' ? p.name : p[nameKey];
+    return { name: String(nm == null ? '' : nm),
+             points: [[0, num(p[valKey])]] };
+  });
+  return chart('bar', { series: series },
+    { unit: unit, height: 150 });
+}
+
+function rankTableHtml(pairs, nameKey, valKey, unit) {
+  pairs = pairs || [];
+  if (!pairs.length) return '';
+  var rows = pairs.slice(0, 12).map(function (p) {
+    var nm = nameKey === 'name' ? p.name : p[nameKey];
+    return '<tr><td class="n">' + esc(String(nm == null ? '' : nm)) +
+      '</td><td class="v">' + esc(fmtUnit(num(p[valKey]), unit)) +
+      '</td></tr>';
+  }).join('');
+  return '<div class="rank-tbl"><table><tbody>' + rows +
+    '</tbody></table></div>';
+}
+
+function streamPairs(list) {
+  return (list || []).map(function (s) {
+    return { name: labelStr(s.labels) || '(stream)',
+             bytes: num(s.bytes) };
+  });
+}
+
+function dsTcardHtml(ds) {
+  ds = ds || {};
+  var fam = (ds.family || '').toLowerCase();
+  var stats = '', viz = '';
+  if (fam === 'prometheus' || fam === 'mimir' || ds.prometheus) {
+    var p = ds.prometheus || {};
+    stats = statCardHtml(fmtNumP(num(p.active_series)),
+        'active series', 'active-series') +
+      (p.histogram_series != null ? statCardHtml(
+        fmtNumP(num(p.histogram_series)), 'histogram series',
+        'histogram') : '');
+    viz = vizBlock('Top metrics by series',
+        barChartFromPairs(p.top_metrics, 'metric', 'series', ''),
+        rankTableHtml(p.top_metrics, 'metric', 'series', '')) +
+      vizBlock('Label cardinality',
+        barChartFromPairs(p.label_cardinality, 'label', 'values', ''),
+        rankTableHtml(p.label_cardinality, 'label', 'values', ''),
+        'cardinality');
+  } else if (fam === 'loki' || ds.loki) {
+    var l = ds.loki || {};
+    var sp = streamPairs(l.top_streams);
+    stats = statCardHtml(fmtNumP(num(l.streams)), 'streams',
+        'streams') +
+      statCardHtml(fmtPerDay(num(l.bytes_per_day)), 'bytes / day',
+        'bytes-per-day');
+    viz = vizBlock('Top streams by volume',
+        barChartFromPairs(sp, 'name', 'bytes', 'bytes'),
+        rankTableHtml(sp, 'name', 'bytes', 'bytes')) +
+      vizBlock('Label cardinality',
+        barChartFromPairs(l.label_cardinality, 'label', 'values', ''),
+        rankTableHtml(l.label_cardinality, 'label', 'values', ''),
+        'cardinality');
+  } else if (fam === 'tempo' || ds.tempo) {
+    var te = ds.tempo || {};
+    viz = '<p class="helper">' + esc(te.note ||
+      'Tempo sampling is best-effort in this release.') + '</p>';
+  }
+  var errs = (ds.errors || []).length ?
+    '<div class="helper" style="color:var(--amber)">' +
+    (ds.errors || []).map(function (e) {
+      return esc(String(e)); }).join('<br>') + '</div>' : '';
+  return '<div class="ds-tcard"><div class="tc-head">' +
+    chip(FAM_LBL[fam] || ds.family || 'datasource', 'info') +
+    '<span class="tc-uid">' + esc(ds.uid || '') + '</span></div>' +
+    (stats ? '<div class="cards-row">' + stats + '</div>' : '') +
+    (viz ? '<div class="tc-viz">' + viz + '</div>' : '') + errs +
+    '</div>';
+}
+
+/* ---- breakdown section ---- */
+function renderBreakdownSection() {
+  var el = $('#cost-breakdown'); if (!el) return;
+  var c = App.cost;
+  var head = '<h2>' + ico('zap', 15) + ' Cost breakdown</h2>';
+  if (c.loadingCost && !c.cost) {
+    el.innerHTML = head +
+      '<div class="card"><div class="skel skel-chart"></div></div>';
+    return;
+  }
+  if (!c.cost) {
+    var msg = c.costErr ?
+      errorCard('Cost analysis failed.', c.costErr) : '';
+    el.innerHTML = head + msg +
+      (c.pricing ? '<div class="card" id="cost-pricing">' +
+        pricingPanelHtml(c.pricing) + '</div>' : '') +
+      '<div class="empty"><span class="eico">' + ico('zap', 26) +
+      '</span><b>No cost estimate yet.</b><br>Run an analysis to ' +
+      'see your estimated monthly spend per component and where you ' +
+      'can safely cut it.<div class="btnbar" ' +
+      'style="justify-content:center">' +
+      '<button class="btn primary" id="cost-empty-analyze" ' +
+      'type="button">' + ico('zap', 14) +
+      ' Analyze cost &amp; efficiency</button></div></div>';
+    if (c.pricing) wirePricing();
+    var b = $('#cost-empty-analyze');
+    if (b) b.onclick = function () { onAnalyze(b); };
+    return;
+  }
+  el.innerHTML = head + '<div class="grid2">' +
+    '<div class="card"><div id="cost-viz"></div></div>' +
+    '<div class="card" id="cost-pricing">' +
+    pricingPanelHtml(c.pricing) + '</div></div>';
+  wirePricing();
+  renderCostViz();
+}
+
+function renderCostViz() {
+  var el = $('#cost-viz'); if (!el) return;
+  var c = App.cost, cost = c.cost || {};
+  var comps = cost.components || [];
+  var famCount = {};
+  comps.forEach(function (m) {
+    var f = (m.family || '').toLowerCase();
+    famCount[f] = (famCount[f] || 0) + 1;
+  });
+  var series = comps.map(function (m) {
+    var f = (m.family || '').toLowerCase();
+    var nm = FAM_LBL[f] || m.family || 'component';
+    if (famCount[f] > 1 && m.uid) {
+      nm += ' (' + String(m.uid).slice(0, 6) + ')';
+    }
+    return { name: nm, points: [[0, num(m.monthly_cost)]] };
+  });
+  var donut = series.length ?
+    chart('pie', { series: series }, { unit: 'usd' }) :
+    chartEmpty('No component costs');
+  var total = num(cost.monthly_total);
+  var savings = c.savings || normalizeSavings({});
+  var r = cost.resources || {};
+  var resHtml = '';
+  if (r.mimir_ram_gb_est != null || r.storage_gb_month_est != null) {
+    var bits = [];
+    if (r.mimir_ram_gb_est != null) {
+      bits.push('~' + fmtNumP(num(r.mimir_ram_gb_est)) + ' GB RAM');
+    }
+    if (r.storage_gb_month_est != null) {
+      bits.push('~' + fmtNumP(num(r.storage_gb_month_est)) +
+        ' GB stored/mo');
+    }
+    resHtml = '<p class="helper">Rough resource estimate: ' +
+      esc(bits.join(' · ')) + '</p>';
+  }
+  el.innerHTML =
+    '<div class="cost-total"><span class="ct-num">' +
+    esc(fmtMoney(total)) + '</span><span class="ct-lbl">estimated ' +
+    'current spend / month</span></div>' + donut + resHtml +
+    savingsHeroHtml(savings) +
+    (c.loadingCost ? '<p class="recompute-note">' +
+      '<span class="skel" style="width:14px;height:14px;' +
+      'border-radius:50%;display:inline-block"></span> ' +
+      'recomputing&hellip;</p>' : '');
+  mountCharts(el);
+}
+
+function savingsHeroHtml(s) {
+  s = s || {};
+  var has = num(s.saved) > 0;
+  return '<div class="savings-hero' + (has ? '' : ' flat') + '">' +
+    '<div class="sh-flow"><div class="flow-num">' +
+    '<div class="flow-n before">' + esc(fmtMoney(num(s.current))) +
+    '</div><div class="k">current / mo</div></div>' +
+    '<div class="flow-arrow">' + ico('arrow', 20) + '</div>' +
+    '<div class="flow-num"><div class="flow-n after">' +
+    esc(fmtMoney(num(s.projected))) +
+    '</div><div class="k">projected / mo</div></div></div>' +
+    '<div class="sh-big"><div class="sh-pct">~' +
+    esc(String(Math.round(num(s.pct)))) + '%</div>' +
+    '<div class="sh-sub">estimated ~' + esc(fmtMoney(num(s.saved))) +
+    ' / mo saved</div></div>' +
+    '<div class="sh-note">Estimated only, based on your pricing ' +
+    'assumptions &mdash; never an exact bill. Nothing your ' +
+    'dashboards use is ever proposed for removal.</div></div>';
+}
+
+function pricingMeta(k) {
+  if (PRICING_META[k]) return PRICING_META[k];
+  var lk = k.toLowerCase();
+  var money = lk.indexOf('day') < 0 && (lk.indexOf('per') >= 0 ||
+    lk.indexOf('usd') >= 0 || lk.indexOf('cost') >= 0 ||
+    lk.indexOf('price') >= 0 || lk.indexOf('gb') >= 0 ||
+    lk.indexOf('series') >= 0);
+  return { label: humanize(k), help: '', money: money };
+}
+
+function pricingPanelHtml(pricing) {
+  pricing = pricing || {};
+  var fields = Object.keys(pricing).filter(function (k) {
+    return typeof pricing[k] === 'number';
+  }).map(function (k) {
+    var meta = pricingMeta(k);
+    return '<div class="pf"><label>' + esc(meta.label) +
+      (meta.help ? costTermRaw(meta.help) : '') + '</label>' +
+      (meta.money ? '<div class="in-money">' : '') +
+      '<input type="number" step="any" min="0" data-pk="' + esc(k) +
+      '" value="' + esc(String(pricing[k])) + '">' +
+      (meta.money ? '</div>' : '') + '</div>';
+  }).join('');
+  if (!fields) {
+    fields = '<p class="helper">No editable pricing inputs were ' +
+      'returned by the server.</p>';
+  }
+  return '<h2>' + ico('wrench', 15) + ' Pricing assumptions ' +
+    chip('assumptions', 'warn') + '</h2>' +
+    '<p class="lead">Editable estimates &mdash; not real invoices. ' +
+    'Set these to match your contract; the breakdown and savings ' +
+    'recompute automatically.</p><div class="pricing-grid">' +
+    fields + '</div><div class="btnbar">' +
+    '<button class="btn small" id="pricing-reset" type="button">' +
+    'Reset to defaults</button>' +
+    '<span class="recompute-note" id="pricing-status"></span></div>';
+}
+
+function wirePricing() {
+  var reset = $('#pricing-reset');
+  if (reset) reset.onclick = function () {
+    var c = App.cost;
+    if (!c.pricingDefaults) return;
+    c.pricing = JSON.parse(JSON.stringify(c.pricingDefaults));
+    renderBreakdownSection();
+    onPricingChange();
+  };
+  $all('#cost-pricing input[data-pk]').forEach(function (inp) {
+    inp.oninput = onPricingChangeDebounced;
+  });
+}
+
+function gatherPricing() {
+  var inps = $all('#cost-pricing input[data-pk]');
+  if (!inps.length) return null;
+  var out = {}, base = App.cost.pricing || {};
+  Object.keys(base).forEach(function (k) { out[k] = base[k]; });
+  inps.forEach(function (inp) {
+    var v = parseFloat(inp.value);
+    out[inp.getAttribute('data-pk')] = isFinite(v) ? v : 0;
+  });
+  return out;
+}
+
+async function onPricingChange() {
+  var c = App.cost;
+  var pricing = gatherPricing();
+  if (!pricing) return;
+  c.pricing = pricing;
+  var status = $('#pricing-status');
+  if (status) status.textContent = 'saving & recomputing…';
+  try { await api('/api/pricing', { pricing: pricing }); }
+  catch (e) { /* persistence is best-effort */ }
+  try {
+    var body = { pricing: pricing };
+    if (c.slug) body.slug = c.slug;
+    var res = await api('/api/cost', body);
+    if (res && res.job) res = await pollJob(res.job);
+    applyCostResult(res);
+    if (status) status.textContent = '';
+    renderCostViz();
+    renderRecsSection();
+  } catch (e) {
+    if (status) status.textContent = '';
+    toast(e.message, 'err');
+  }
+}
+var onPricingChangeDebounced = debounce(onPricingChange, 650);
+
+/* ---- recommendations section ---- */
+function renderRecsSection() {
+  var el = $('#cost-recs'); if (!el) return;
+  var c = App.cost, opt = c.optimize;
+  var recs = (opt && opt.recommendations) || [];
+  if (c.loadingCost && !opt) {
+    el.innerHTML = '<h2>' + ico('wrench', 15) +
+      ' Recommendations</h2><div class="card">' +
+      '<div class="skel" style="height:80px"></div></div>';
+    return;
+  }
+  if (!opt) { el.innerHTML = ''; return; }
+  var sum = opt.summary || {};
+  var safeN = sum.safe_count != null ? sum.safe_count :
+    recs.filter(function (r) { return r.keeps_intact; }).length;
+  var revN = sum.needs_review_count != null ? sum.needs_review_count :
+    recs.filter(function (r) { return !r.keeps_intact; }).length;
+  var dl = '/download/cost-config.zip' +
+    (c.slug ? '?slug=' + encodeURIComponent(c.slug) : '');
+  var head = '<div class="recs-head"><h2 style="margin:0">' +
+    ico('wrench', 15) + ' Recommendations</h2>' +
+    (recs.length ? chip(safeN + ' safe', 'ok') +
+      (revN ? chip(revN + ' needs review', 'warn') : '') : '') +
+    '<span class="grow"></span>' +
+    (recs.length ? '<a class="btn primary" href="' + esc(dl) +
+      '">' + ico('download', 14) + ' Download all config</a>' : '') +
+    '</div>';
+  if (!recs.length) {
+    el.innerHTML = head + '<div class="empty"><span class="eico">' +
+      ico('check', 26) + '</span><b>No savings found.</b><br>' +
+      'Everything your datasources ingest is used by your ' +
+      'dashboards, or traffic is too low to matter. Nice and lean.' +
+      '</div>';
+    return;
+  }
+  var so = { high: 0, medium: 1, low: 2 };
+  var ordered = recs.slice().sort(function (a, b) {
+    var d = (so[a.severity] == null ? 3 : so[a.severity]) -
+            (so[b.severity] == null ? 3 : so[b.severity]);
+    if (d) return d;
+    return num((b.est_savings || {}).monthly_usd) -
+           num((a.est_savings || {}).monthly_usd);
+  });
+  el.innerHTML = head + ordered.map(recCardHtml).join('');
+}
+
+function cfgHtml(config) {
+  config = config || [];
+  if (!config.length) return '';
+  var grp = 'rg' + uid();
+  var opts = config.map(function (cf, i) {
+    return '<option value="' + i + '">' +
+      esc(TARGET_LBL[cf.target] || cf.target ||
+          ('option ' + (i + 1))) + '</option>';
+  }).join('');
+  var pres = config.map(function (cf, i) {
+    return '<pre id="' + grp + '-' + i + '" data-recgrp="' + grp +
+      '" data-recidx="' + i + '" data-note="' + esc(cf.note || '') +
+      '"' + (i === 0 ? '' : ' hidden') + '>' + esc(cf.snippet || '') +
+      '</pre>';
+  }).join('');
+  var lang = config[0].language ?
+    ' ' + chip(config[0].language, 'dim') : '';
+  return '<div class="rec-cfg"><div class="cfg-bar">' +
+    '<label>Apply at</label><select data-rectarget="' + grp + '">' +
+    opts + '</select>' + lang +
+    '<span style="margin-left:auto"></span>' +
+    '<button class="btn small ghost iconbtn" type="button" ' +
+    'data-copy="' + grp + '-0" data-recgrp-btn="' + grp +
+    '" title="Copy config" aria-label="Copy config">' +
+    ico('copy', 13) + '</button></div>' + pres +
+    '<div class="cfg-note" id="' + grp + '-note">' +
+    esc(config[0].note || '') + '</div></div>';
+}
+
+function recCardHtml(rec) {
+  rec = rec || {};
+  var sev = rec.severity || 'low';
+  var safe = rec.keeps_intact === true;
+  var safeChip = safe ?
+    chip('safe — nothing your dashboards use', 'ok',
+      'Proven safe: this dimension is not referenced by any of ' +
+      'your migrated dashboards, so removing it changes nothing ' +
+      'you see.') :
+    chip('review — touches used data', 'warn',
+      'This touches a dimension your dashboards use. Review before ' +
+      'applying; it is never dropped automatically.');
+  var ev = rec.evidence || {};
+  var evHtml = Object.keys(ev).map(function (k) {
+    var v = ev[k];
+    if (v == null) return '';
+    var disp = typeof v === 'number' ? fmtNumP(v) : String(v);
+    return chip(humanize(k) + ': ' + disp, 'dim');
+  }).join('');
+  var es = rec.est_savings || {};
+  var saveBits = '';
+  if (es.series != null) {
+    saveBits += chip('-' + fmtNumP(num(es.series)) + ' series',
+      'info');
+  }
+  if (es.streams != null) {
+    saveBits += chip('-' + fmtNumP(num(es.streams)) + ' streams',
+      'info');
+  }
+  if (es.gb_per_day != null) {
+    saveBits += chip('-' + fmtNumP(num(es.gb_per_day)) + ' GB/day',
+      'info');
+  }
+  var confCls = { high: 'ok', med: 'info', medium: 'info',
+    low: 'warn' }[es.confidence] || 'dim';
+  var confChipHtml = es.confidence ?
+    chip(es.confidence + ' confidence', confCls) : '';
+  var moneyHtml = es.monthly_usd != null ?
+    '<span class="save-money">~' + esc(fmtMoney(num(es.monthly_usd))) +
+    ' / mo</span>' : '';
+  return '<div class="rec-card sev-' + esc(sev) + '">' +
+    '<div class="rec-head"><span class="rec-title">' +
+    esc(rec.title || 'Recommendation') + '</span>' +
+    chip(sev, COST_SEV[sev] || 'dim') +
+    (rec.kind ? chip(rec.kind, 'purple') : '') + safeChip + '</div>' +
+    (rec.rationale ? '<div class="rec-rationale">' +
+      esc(rec.rationale) + '</div>' : '') +
+    (evHtml ? '<div class="rec-ev">' + evHtml + '</div>' : '') +
+    '<div class="rec-save">' + moneyHtml +
+    (moneyHtml && (saveBits || confChipHtml) ?
+      '<span class="kv">estimated savings</span>' : '') +
+    saveBits + confChipHtml + '</div>' + cfgHtml(rec.config || []) +
+    '</div>';
 }
 
 /* ====================================================== theme */
@@ -5570,6 +6404,27 @@ document.addEventListener('click', function (ev) {
     var wc = t.closest('.welcome');
     if (wc) wc.remove();
   }
+});
+
+/* Recommendation config target picker: swap the visible snippet and
+   re-point the copy button + note without a full re-render. Delegated
+   so it survives every cost re-render. */
+document.addEventListener('change', function (ev) {
+  var sel = ev.target;
+  if (!sel || sel.tagName !== 'SELECT' ||
+      !sel.hasAttribute('data-rectarget')) return;
+  var grp = sel.getAttribute('data-rectarget'), idx = sel.value;
+  $all('pre[data-recgrp="' + grp + '"]').forEach(function (pre) {
+    var on = pre.getAttribute('data-recidx') === idx;
+    if (on) pre.removeAttribute('hidden');
+    else pre.setAttribute('hidden', '');
+    if (on) {
+      var cb = $('[data-recgrp-btn="' + grp + '"]');
+      if (cb) cb.setAttribute('data-copy', pre.id);
+      var note = document.getElementById(grp + '-note');
+      if (note) note.textContent = pre.getAttribute('data-note') || '';
+    }
+  });
 });
 
 $('#jobsbtn').onclick = function () { openDrawer(); };

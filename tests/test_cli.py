@@ -210,7 +210,7 @@ class NoCommandTests(unittest.TestCase):
 
 class VersionTests(unittest.TestCase):
     def test_package_version(self):
-        self.assertEqual(nr2grafana.__version__, "1.4.0")
+        self.assertEqual(nr2grafana.__version__, "1.5.0")
 
 
 class _TempDbMixin:
@@ -1044,6 +1044,199 @@ class WebCommandTests(unittest.TestCase):
         with self.assertRaises(SystemExit) as ctx:
             run_cli(["web", "--help"])
         self.assertEqual(ctx.exception.code, 0)
+
+
+# ---------------------------------------------------------------------------
+# cost analyze / pricing (1.5) -- sibling modules stubbed in sys.modules
+# ---------------------------------------------------------------------------
+
+def _cost_stub_modules():
+    """Fake traffic/usage/costmodel/optimize modules matching the
+    section 2-5 contracts, installed under their nr2grafana.* names."""
+    import types
+
+    traffic = types.ModuleType("nr2grafana.traffic")
+    traffic.calls = []
+
+    def sample_traffic(grafana, ds_list, frm="now-24h", to="now",
+                       log=None):
+        traffic.calls.append({"ds_list": ds_list, "frm": frm, "to": to})
+        if log:
+            log("traffic stub")
+        return {"schema": "nr2grafana/traffic/v1",
+                "range": {"from": frm, "to": to},
+                "datasources": [{"family": d["family"], "uid": d["uid"]}
+                                for d in ds_list]}
+
+    traffic.sample_traffic = sample_traffic
+
+    usage = types.ModuleType("nr2grafana.usage")
+    usage.calls = []
+
+    def collect_usage(dashboards, widget_reports):
+        usage.calls.append({"dashboards": len(dashboards),
+                            "reports": len(widget_reports)})
+        return {"prometheus": {"metrics": ["up"], "labels": ["job"]},
+                "loki": {"stream_labels": ["namespace"]}, "tempo": {}}
+
+    usage.collect_usage = collect_usage
+
+    costmodel = types.ModuleType("nr2grafana.costmodel")
+    costmodel.DEFAULT_PRICING = {"loki_gb_ingest": 0.5,
+                                 "mimir_1k_series_month": 0.6}
+
+    def estimate_costs(traffic_data, pricing=None):
+        return {"schema": "nr2grafana/cost/v1",
+                "pricing": dict(pricing or costmodel.DEFAULT_PRICING),
+                "components": [], "monthly_total": 100.0,
+                "resources": {}}
+
+    def apply_savings(cost, recommendations):
+        saved = sum((r.get("est_savings") or {}).get("monthly_usd", 0)
+                    for r in recommendations or [])
+        return {"projected_total": 100.0 - saved, "saved_total": saved,
+                "saved_pct": int(saved), "per_component": []}
+
+    costmodel.estimate_costs = estimate_costs
+    costmodel.apply_savings = apply_savings
+
+    optimize = types.ModuleType("nr2grafana.optimize")
+
+    def recommend(traffic_data, usage_data, cost=None, pricing=None,
+                  cfg=None, log=None):
+        if log:
+            log("optimize stub")
+        return {"schema": "nr2grafana/optimize/v1",
+                "recommendations": [{
+                    "id": "loki-drop-label-pod", "family": "loki",
+                    "kind": "drop-label", "severity": "high",
+                    "title": "Drop stream label pod (unused)",
+                    "keeps_intact": True,
+                    "est_savings": {"monthly_usd": 12.5,
+                                    "confidence": "high"},
+                    "config": [{"target": "promtail", "language": "yaml",
+                                "snippet": "pipeline_stages:\n  - "
+                                           "labeldrop:\n      - pod",
+                                "note": "apply at the agent"}]}],
+                "summary": {"safe_count": 1}}
+
+    optimize.recommend = recommend
+    return {"nr2grafana.traffic": traffic,
+            "nr2grafana.usage": usage,
+            "nr2grafana.costmodel": costmodel,
+            "nr2grafana.optimize": optimize}
+
+
+class CostAnalyzeTests(_PackageMixin, unittest.TestCase):
+    """cost analyze plumbing with a stubbed GrafanaLive + siblings."""
+
+    def _fake_client(self):
+        fake = mock.MagicMock()
+        fake.datasources.return_value = [
+            {"name": "Mimir", "type": "prometheus", "uid": "mimir",
+             "isDefault": True},
+            {"name": "Loki", "type": "loki", "uid": "loki1"},
+            {"name": "CW", "type": "cloudwatch", "uid": "cw"}]
+        return fake
+
+    def test_analyze_writes_report_and_config(self):
+        out = os.path.join(self.tmp.name, "cost-out")
+        stubs = _cost_stub_modules()
+        with mock.patch.dict("sys.modules", stubs), \
+                mock.patch.object(cli, "GrafanaLive",
+                                  return_value=self._fake_client()):
+            code, sout, serr = run_cli(
+                ["cost", "analyze", self.pkg, "--url", "http://gr:3000",
+                 "--token", "tok", "-o", out])
+        self.assertEqual(code, 0)
+        # report + config snippets on disk
+        report_path = os.path.join(out, "cost-report.json")
+        self.assertTrue(os.path.isfile(report_path))
+        with open(report_path, encoding="utf-8") as f:
+            report = json.load(f)
+        self.assertEqual(report["schema"], "nr2grafana/cost-report/v1")
+        self.assertEqual(report["optimize"]["schema"],
+                         "nr2grafana/optimize/v1")
+        promtail = os.path.join(out, "config", "promtail.yaml")
+        self.assertTrue(os.path.isfile(promtail))
+        with open(promtail, encoding="utf-8") as f:
+            self.assertIn("labeldrop", f.read())
+        self.assertTrue(os.path.isfile(
+            os.path.join(out, "config", "README.md")))
+        # ranked table + estimate + non-exact-bill disclaimer printed
+        self.assertIn("EST $/MO SAVED", sout)
+        self.assertIn("Drop stream label pod", sout)
+        self.assertIn("$12.50", sout)
+        self.assertIn("current:", sout)
+        self.assertIn("ESTIMATES", sout)
+        # only prometheus/loki datasources were sampled (cloudwatch out)
+        sampled = stubs["nr2grafana.traffic"].calls[-1]["ds_list"]
+        fams = sorted(d["family"] for d in sampled)
+        self.assertEqual(fams, ["loki", "prometheus"])
+        # usage was computed from the packaged dashboard
+        self.assertEqual(stubs["nr2grafana.usage"].calls[-1]["dashboards"],
+                         1)
+
+    def test_analyze_no_datasources_exits_one(self):
+        fake = mock.MagicMock()
+        fake.datasources.return_value = [
+            {"name": "CW", "type": "cloudwatch", "uid": "cw"}]
+        with mock.patch.dict("sys.modules", _cost_stub_modules()), \
+                mock.patch.object(cli, "GrafanaLive",
+                                  return_value=fake):
+            code, sout, serr = run_cli(
+                ["cost", "analyze", self.pkg, "--url", "http://gr:3000",
+                 "--token", "tok", "-o", self.tmp.name])
+        self.assertEqual(code, 1)
+        self.assertIn("no Loki/Prometheus/Tempo", serr)
+
+    def test_analyze_missing_url_exits_two(self):
+        env = dict(os.environ)
+        env.pop("GRAFANA_URL", None)
+        with mock.patch.dict(os.environ, env, clear=True):
+            with self.assertRaises(SystemExit) as ctx:
+                run_cli(["cost", "analyze", self.pkg])
+        self.assertEqual(ctx.exception.code, 2)
+
+
+class CostPricingTests(_TempDbMixin, unittest.TestCase):
+    def test_pricing_prints_defaults(self):
+        with mock.patch.dict("sys.modules", _cost_stub_modules()):
+            code, sout, serr = run_cli(["cost", "pricing"])
+        self.assertEqual(code, 0)
+        pricing = json.loads(sout)
+        self.assertEqual(pricing["loki_gb_ingest"], 0.5)
+        self.assertIn("mimir_1k_series_month", pricing)
+
+    def test_pricing_set_persists_to_store(self):
+        with mock.patch.dict("sys.modules", _cost_stub_modules()):
+            code, sout, serr = run_cli(
+                ["cost", "pricing", "--set", "loki_gb_ingest=0.9",
+                 "--set", "retention_days=14"])
+        self.assertEqual(code, 0)
+        pricing = json.loads(sout)
+        self.assertEqual(pricing["loki_gb_ingest"], 0.9)
+        self.assertEqual(pricing["retention_days"], 14)
+        # persisted as the non-secret web.pricing setting
+        store = Store(self.db_path)
+        try:
+            saved = store.get_setting("web.pricing")
+        finally:
+            store.close()
+        self.assertEqual(saved["loki_gb_ingest"], 0.9)
+        self.assertEqual(saved["retention_days"], 14)
+
+    def test_pricing_bad_set_exits_two(self):
+        with mock.patch.dict("sys.modules", _cost_stub_modules()):
+            code, sout, serr = run_cli(
+                ["cost", "pricing", "--set", "noequalssign"])
+        self.assertEqual(code, 2)
+        self.assertIn("key=value", serr)
+
+    def test_cost_without_subcommand_prints_help(self):
+        code, out, err = run_cli(["cost"])
+        self.assertEqual(code, 2)
+        self.assertIn("analyze", out)
 
 
 if __name__ == "__main__":

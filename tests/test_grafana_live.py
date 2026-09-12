@@ -685,6 +685,139 @@ class ProxyIntrospectionTests(unittest.TestCase):
         self.assertIn("HTTP 403", errors[0])
 
 
+TSDB = {"status": "success", "data": {
+    "headStats": {"numSeries": 12345, "numLabelPairs": 99},
+    "seriesCountByMetricName": [
+        {"name": "http_request_duration_seconds_bucket", "value": 4000},
+        {"name": "unused_expensive_metric", "value": 3000},
+        {"name": "up", "value": 5}],
+    "labelValueCountByLabelName": [
+        {"name": "pod", "value": 4213},
+        {"name": "job", "value": 7},
+        {"name": "bad", "value": "notanint"}]}}
+
+
+class TrafficIntrospectionTests(unittest.TestCase):
+    def test_prom_tsdb_status_returns_data_object(self):
+        gl = FakeLive(routes={
+            ("GET", PROXY + "/api/v1/status/tsdb"): TSDB})
+        data = gl.prom_tsdb_status("mimir")
+        self.assertEqual(data["headStats"]["numSeries"], 12345)
+        self.assertIn("seriesCountByMetricName", data)
+
+    def test_prom_tsdb_status_failure_degrades(self):
+        errors = []
+        gl = FakeLive(routes={
+            ("GET", PROXY + "/api/v1/status/tsdb"):
+                GrafanaError("HTTP 404 on GET: proxy off")})
+        self.assertEqual(gl.prom_tsdb_status("mimir", errors=errors), {})
+        self.assertIn("HTTP 404", errors[0])
+
+    def test_prom_top_metrics_sorted_and_truncated(self):
+        gl = FakeLive(routes={
+            ("GET", PROXY + "/api/v1/status/tsdb"): TSDB})
+        top = gl.prom_top_metrics("mimir", n=2)
+        self.assertEqual([r["metric"] for r in top],
+                         ["http_request_duration_seconds_bucket",
+                          "unused_expensive_metric"])
+        self.assertEqual(top[0]["series"], 4000)
+
+    def test_prom_top_metrics_all_when_n_nonpositive(self):
+        gl = FakeLive(routes={
+            ("GET", PROXY + "/api/v1/status/tsdb"): TSDB})
+        self.assertEqual(len(gl.prom_top_metrics("mimir", n=0)), 3)
+
+    def test_prom_label_cardinality_skips_bad_values(self):
+        gl = FakeLive(routes={
+            ("GET", PROXY + "/api/v1/status/tsdb"): TSDB})
+        lc = gl.prom_label_cardinality("mimir")
+        # "bad" has a non-int value and is dropped; sorted descending.
+        self.assertEqual(lc, [{"label": "pod", "values": 4213},
+                              {"label": "job", "values": 7}])
+
+    def test_prom_series_count_parses_vector(self):
+        path = PROXY + "/api/v1/query?query=count%28up%29"
+        gl = FakeLive(routes={
+            ("GET", path): {"status": "success", "data": {
+                "resultType": "vector",
+                "result": [{"metric": {}, "value": [1700000000, "42"]}]}}})
+        self.assertEqual(gl.prom_series_count("mimir", "up"), 42)
+
+    def test_prom_series_count_empty_result_is_zero(self):
+        path = PROXY + "/api/v1/query?query=count%28absent%29"
+        gl = FakeLive(routes={
+            ("GET", path): {"status": "success", "data": {
+                "resultType": "vector", "result": []}}})
+        self.assertEqual(gl.prom_series_count("mimir", "absent"), 0)
+
+    def test_prom_series_count_empty_match_is_zero(self):
+        gl = FakeLive()
+        self.assertEqual(gl.prom_series_count("mimir", ""), 0)
+        # No request issued for an empty matcher.
+        self.assertEqual(gl.requests, [])
+
+    def test_loki_volume_sorted_desc_with_ns_window(self):
+        gl = FakeLive()
+        gl._proxy_get = lambda uid, path, errors=None: {
+            "status": "success", "data": {"resultType": "vector", "result": [
+                {"metric": {"namespace": "quiet"}, "value": [1, "100"]},
+                {"metric": {"namespace": "chatty"}, "value": [1, "9000"]},
+                "junk"]}}
+        vol = gl.loki_volume("loki-uid", '{job=~".+"}',
+                             frm="now-24h", to="now")
+        self.assertEqual([v["bytes"] for v in vol], [9000, 100])
+        self.assertEqual(vol[0]["stream"], {"namespace": "chatty"})
+
+    def test_loki_volume_builds_ns_range(self):
+        gl = FakeLive()
+        gl.loki_volume("loki-uid", '{job=~".+"}')
+        _m, path, _b = gl.requests[-1]
+        self.assertTrue(path.startswith(
+            LOKI_PROXY + "/loki/api/v1/index/volume?"))
+        self.assertIn("aggregateBy=series", path)
+        # Nanosecond timestamps are 19 digits for a modern epoch.
+        self.assertIn("start=1", path)
+        self.assertIn("end=1", path)
+
+    def test_loki_volume_failure_degrades(self):
+        errors = []
+        gl = FakeLive(routes={})  # unregistered proxy -> 404
+        self.assertEqual(
+            gl.loki_volume("loki-uid", '{j=~".+"}', errors=errors), [])
+        self.assertTrue(errors)
+
+    def test_loki_volume_bad_time_spec_degrades(self):
+        errors = []
+        gl = FakeLive()
+        self.assertEqual(
+            gl.loki_volume("loki-uid", "{}", frm="yesterday",
+                           errors=errors), [])
+        self.assertIn("yesterday", errors[0])
+
+    def test_loki_stream_cardinality_counts_and_sorts(self):
+        gl = FakeLive(routes={
+            ("GET", LOKI_PROXY + "/loki/api/v1/labels"):
+                {"status": "success", "data": ["job", "pod"]},
+            ("GET", LOKI_PROXY + "/loki/api/v1/label/job/values"):
+                {"status": "success", "data": ["nginx", "api"]},
+            ("GET", LOKI_PROXY + "/loki/api/v1/label/pod/values"):
+                {"status": "success",
+                 "data": ["p1", "p2", "p3", "p4", "p5"]}})
+        card = gl.loki_stream_cardinality("loki-uid")
+        self.assertEqual(card, [{"label": "pod", "values": 5},
+                                {"label": "job", "values": 2}])
+
+    def test_loki_stream_cardinality_explicit_labels(self):
+        gl = FakeLive(routes={
+            ("GET", LOKI_PROXY + "/loki/api/v1/label/job/values"):
+                {"status": "success", "data": ["a"]}})
+        card = gl.loki_stream_cardinality("loki-uid", labels=["job"])
+        self.assertEqual(card, [{"label": "job", "values": 1}])
+        # loki_labels was not consulted when labels were supplied.
+        self.assertNotIn((LOKI_PROXY + "/loki/api/v1/labels"),
+                         [p for _m, p, _b in gl.requests])
+
+
 class PermissionsReportTests(unittest.TestCase):
     def test_admin_token(self):
         gl = FakeLive(
