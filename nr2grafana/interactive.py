@@ -258,6 +258,9 @@ class Wizard:
                     "🗄   Manage datasources",
                     "📤  Import dashboards into Grafana",
                     "💰  Analyze cost & efficiency",
+                    "🔬  Deep-dive the LGTM stack",
+                    "🤖  Export AI context",
+                    "🔌  Set up Grafana MCP",
                     "🌐  Launch web UI",
                     "⚙️   Choose / create a mapping config",
                     "👋  Quit",
@@ -292,8 +295,14 @@ class Wizard:
                 elif choice == 12:
                     self.flow_cost()
                 elif choice == 13:
-                    self.flow_web()
+                    self.flow_deepdive()
                 elif choice == 14:
+                    self.flow_ai_context()
+                elif choice == 15:
+                    self.flow_mcp()
+                elif choice == 16:
+                    self.flow_web()
+                elif choice == 17:
                     self.flow_config()
                 else:
                     print(dim("bye!"))
@@ -679,6 +688,116 @@ class Wizard:
             print(green("✓ cost analysis complete → %s" % out))
         else:
             print(red("✗ cost analysis had problems (see above)"))
+        return rc
+
+    # -- deep-dive / AI context / MCP (1.6) ---------------------------------
+
+    def flow_deepdive(self) -> int:
+        header("Deep-dive the LGTM stack")
+        print(dim("Reads component self-metrics (Mimir/Loki/Tempo) and "
+                  "finds capacity, cardinality, churn, network and "
+                  "efficiency wins -- each with an estimated saving and a "
+                  "clear risk flag. Nothing that would cut durability, "
+                  "availability or performance is recommended silently. "
+                  "All figures are estimates, not exact bills."))
+        prom = prompt("Prometheus/Mimir query URL",
+                      self.recall("prom_url", "http://localhost:9090"))
+        self.remember("prom_url", prom)
+        mimir = prompt("Mimir self-metrics URL (blank = same as above)",
+                       self.recall("mimir_url", ""))
+        if mimir:
+            self.remember("mimir_url", mimir)
+        loki = prompt("Loki URL (blank to skip)",
+                      self.recall("loki_url", "http://localhost:3100"))
+        self.remember("loki_url", loki)
+        kube = confirm("Also analyze Kubernetes topology, bin-pack and "
+                       "Karpenter? (needs kubectl on PATH)",
+                       default=False)
+        out = prompt("Write deepdive-report.json + config/ to",
+                     self.recall("deepdive_out", "./lgtm-deepdive"))
+        self.remember("deepdive_out", out)
+        from .cli import cmd_deepdive
+        rc = cmd_deepdive(argparse.Namespace(
+            prom=prom, mimir=mimir, loki=loki, kube=kube, pricing="",
+            config=self.recall("config", ""), out=out,
+            grafana_url="", grafana_token="", insecure=False))
+        if rc == 0:
+            print(green("✓ deep-dive complete → %s" % out))
+        else:
+            print(yellow("deep-dive finished with FAIL-severity "
+                         "finding(s) -- review them above"))
+        return rc
+
+    def flow_ai_context(self) -> int:
+        header("Export AI context")
+        print(dim("Packages every artifact into one compact, LLM-"
+                  "optimized bundle so an AI agent can troubleshoot the "
+                  "migration and the whole stack end to end. Secret-"
+                  "looking values are redacted defensively."))
+        slug = prompt("Dashboard slug (blank = whole workspace)", "")
+        markdown = confirm("Markdown instead of JSON?", default=True)
+        default_out = "ai-context." + ("md" if markdown else "json")
+        out = prompt("Write to file (blank = print to screen)",
+                     default_out)
+        from .cli import cmd_ai_context
+        rc = cmd_ai_context(argparse.Namespace(
+            slug=slug, markdown=markdown, out=out))
+        if rc == 0 and out:
+            print(green("✓ context exported → %s" % out))
+        return rc
+
+    def flow_mcp(self) -> int:
+        header("Set up Grafana MCP")
+        print(dim("Generates a ready MCP config wiring the Grafana MCP "
+                  "server into your local AI (Claude / Kiro). The Grafana "
+                  "token is referenced via the "
+                  "GRAFANA_SERVICE_ACCOUNT_TOKEN environment variable -- "
+                  "it is never written into the file."))
+        while True:
+            choice = menu("Grafana MCP", [
+                "Generate an MCP config",
+                "Probe a Grafana MCP server",
+                "Back to main menu",
+            ])
+            if choice == 0:
+                self._mcp_generate()
+            elif choice == 1:
+                self._mcp_probe()
+            else:
+                return 0
+
+    def _mcp_generate(self) -> int:
+        kind = ["claude", "kiro", "generic"][menu(
+            "Target AI client?", ["Claude", "Kiro", "Generic"])]
+        url = prompt("Grafana URL",
+                     self.recall("grafana_url", "http://localhost:3000"))
+        self.remember("grafana_url", url)
+        context = prompt("Path to an exported AI context (blank to skip)",
+                         "")
+        out = prompt("Write config to file (blank = print to screen)", "")
+        from .cli import cmd_mcp_config
+        rc = cmd_mcp_config(argparse.Namespace(
+            kind=kind, grafana_url=url, grafana_token="", insecure=False,
+            context=context, no_grafana=False, out=out))
+        if rc == 0:
+            print(green("✓ MCP config ready"))
+        return rc
+
+    def _mcp_probe(self) -> int:
+        mode = menu("Probe via?", ["stdio command (e.g. mcp-grafana)",
+                                   "HTTP/SSE URL"])
+        if mode == 0:
+            command = prompt("MCP server command", "mcp-grafana")
+            url = ""
+        else:
+            url = prompt("MCP HTTP/SSE URL", validator=_require_nonempty)
+            command = ""
+        from .cli import cmd_mcp_probe
+        rc = cmd_mcp_probe(argparse.Namespace(url=url, command=command))
+        if rc == 0:
+            print(green("✓ MCP server reachable"))
+        else:
+            print(red("✗ MCP probe failed (see above)"))
         return rc
 
     # -- datasources --------------------------------------------------------

@@ -1106,6 +1106,87 @@ def _job_cost(job: _Job, body: Dict[str, Any], store) \
             "savings": savings, "usage": usage}
 
 
+def _optional_grafana_live():
+    """A GrafanaLive client when a URL is configured, else None. Unlike
+    :func:`_grafana_live` this never raises -- deep-dive and AI context
+    stay usable when no Grafana instance is wired up (direct
+    Prometheus/Mimir/Loki URLs, or store artifacts only)."""
+    if not SESSION.grafana_url:
+        return None
+    try:
+        return _grafana_live()
+    except ApiError:
+        return None
+
+
+def _job_deepdive(job: _Job, body: Dict[str, Any], store) \
+        -> Dict[str, Any]:
+    """Deep LGTM stack analysis: run deepdive.analyze against the
+    component self-metrics and, when Kubernetes is requested AND kubectl
+    is on PATH, packing.analyze for topology/right-sizing/Karpenter.
+    Persists "deepdive" and (when it runs) "packing"."""
+    prom = body.get("prom") or ""
+    mimir = body.get("mimir") or ""
+    loki = body.get("loki") or ""
+    grafana = _optional_grafana_live()
+    cfg = _load_cfg()
+    pricing = body.get("pricing")
+    if isinstance(pricing, dict) and pricing:
+        cfg = dict(cfg)
+        cfg["pricing"] = _effective_pricing(store, pricing)
+    job.add("Analyzing the LGTM stack from component self-metrics...")
+    deepdive = _lazy("deepdive").analyze(
+        prom=prom or None, mimir=mimir or None, loki=loki or None,
+        grafana=grafana, cfg=cfg, log=job.add)
+    store_slug = _cost_slug(body.get("slug") or "")
+    store.save_artifact(store_slug, "deepdive", deepdive)
+    out: Dict[str, Any] = {"slug": body.get("slug") or "",
+                           "deepdive": deepdive}
+    findings = deepdive.get("findings") or []
+    job.add("Deep-dive: %d finding(s)" % len(findings))
+    if body.get("kube"):
+        packing_mod = _lazy("packing")
+        if packing_mod.kubectl_available():
+            job.add("kubectl found; analyzing node topology, bin-pack "
+                    "and Karpenter...")
+            prices = pricing if isinstance(pricing, dict) else None
+            packing = packing_mod.analyze(
+                cfg=cfg, prices=prices, log=job.add)
+            store.save_artifact(store_slug, "packing", packing)
+            out["packing"] = packing
+        else:
+            note = ("kubectl not available -- skipping Kubernetes "
+                    "topology / packing / Karpenter analysis (the "
+                    "metric-driven deep-dive above is unaffected)")
+            job.add(note)
+            out["packing"] = {"schema": "nr2grafana/packing/v1",
+                              "available": False, "note": note,
+                              "findings": []}
+    return out
+
+
+def _job_troubleshoot(job: _Job, body: Dict[str, Any], store,
+                      assistant) -> Dict[str, Any]:
+    """Assemble the AI context bundle and ask the configured AI backend
+    the user's troubleshooting question. Never raises: AI errors are
+    returned as actionable text by aicontext.troubleshoot."""
+    slug = body.get("slug") or ""
+    question = body.get("question") or ""
+    grafana = _optional_grafana_live()
+    deepdive = _artifact(store, _cost_slug(slug), "deepdive")
+    aicontext = _lazy("aicontext")
+    job.add("Assembling the AI context bundle...")
+    context = aicontext.build_context(
+        store, slug=slug, grafana=grafana, deepdive=deepdive,
+        redact=True)
+    job.add("Asking the %s AI backend..." % SESSION.ai_backend())
+    result = aicontext.troubleshoot(assistant, context, question)
+    SESSION.status["ai"] = "ok"
+    job.add("Answer received (%s backend)"
+            % result.get("backend", SESSION.ai_backend()))
+    return result
+
+
 # ---------------------------------------------------------------------------
 # request handler
 # ---------------------------------------------------------------------------
@@ -1137,6 +1218,15 @@ class Handler(BaseHTTPRequestHandler):
         raw = text.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def _markdown(self, text: str) -> None:
+        raw = text.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/markdown; charset=utf-8")
         self.send_header("Content-Length", str(len(raw)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
@@ -1242,6 +1332,12 @@ class Handler(BaseHTTPRequestHandler):
             self._get_readiness(slug)
         elif path == "/api/pricing":
             self._get_pricing()
+        elif path == "/api/deepdive":
+            self._get_deepdive(slug)
+        elif path == "/api/ai/context":
+            self._get_ai_context(q)
+        elif path == "/api/mcp/config":
+            self._get_mcp_config(q)
         elif path.startswith("/download/"):
             self._get_download(path)
         else:
@@ -1315,6 +1411,10 @@ class Handler(BaseHTTPRequestHandler):
             "/api/ai/suggest": self._post_ai_suggest,
             "/api/ai/chat": self._post_ai_chat,
             "/api/ai/test": self._post_ai_test,
+            "/api/deepdive": self._post_deepdive,
+            "/api/ai/troubleshoot": self._post_ai_troubleshoot,
+            "/api/mcp/config": self._post_mcp_config,
+            "/api/mcp/probe": self._post_mcp_probe,
         }
         fn = routes.get(path)
         if not fn:
@@ -1363,6 +1463,25 @@ class Handler(BaseHTTPRequestHandler):
             features["ai_local"] = hasattr(_lazy("ai"), "LocalAgent")
         except Exception:
             features["ai_local"] = False
+        # 1.6 deep-dive / AI-context / MCP capabilities.
+        try:
+            features["deepdive"] = hasattr(_lazy("deepdive"), "analyze")
+        except Exception:
+            features["deepdive"] = False
+        try:
+            features["packing"] = hasattr(_lazy("packing"), "analyze")
+        except Exception:
+            features["packing"] = False
+        try:
+            features["ai_context"] = hasattr(_lazy("aicontext"),
+                                             "build_context")
+        except Exception:
+            features["ai_context"] = False
+        try:
+            features["mcp"] = hasattr(_lazy("mcp"),
+                                      "generate_mcp_config")
+        except Exception:
+            features["mcp"] = False
         self._json({"app": "nr2grafana",
                     "version": ver,
                     "session": SESSION.public(),
@@ -1567,7 +1686,85 @@ class Handler(BaseHTTPRequestHandler):
                     "range": {"from": frm, "to": to},
                     "data": match.get(side)})
 
+    # -- deep-dive / AI-context / MCP (1.6) ------------------------------
+
+    def _get_deepdive(self, slug: str) -> None:
+        """Return the stored deep-dive analysis (and packing, when a
+        Kubernetes run produced one). ``slug`` is optional -- the stack
+        deep-dive is instance-wide by default."""
+        store_slug = _cost_slug(slug)
+        deepdive = _artifact(self.store, store_slug, "deepdive")
+        if not deepdive:
+            raise ApiError("no deep-dive analysis yet -- run one from "
+                           "the Stack view first", 404)
+        self._json({"slug": slug, "deepdive": deepdive,
+                    "packing": _artifact(self.store, store_slug,
+                                         "packing")})
+
+    def _ai_context(self, slug: str) -> Dict[str, Any]:
+        """Build the AI context bundle for ``slug`` (empty = the whole
+        workspace), threading in a live Grafana client and the stored
+        deep-dive when present. redact=True strips secret-looking
+        values defensively."""
+        if slug:
+            if not _SLUG_RE.match(slug) or not self.store.get_dashboard(
+                    slug):
+                raise ApiError("no dashboard with slug %r" % slug, 404)
+        grafana = _optional_grafana_live()
+        deepdive = _artifact(self.store, _cost_slug(slug), "deepdive")
+        return _lazy("aicontext").build_context(
+            self.store, slug=slug, grafana=grafana, deepdive=deepdive,
+            redact=True)
+
+    def _get_ai_context(self, q: Dict[str, List[str]]) -> None:
+        slug = (q.get("slug") or [""])[0]
+        fmt = (q.get("format") or [""])[0].lower()
+        context = self._ai_context(slug)
+        if fmt in ("markdown", "md"):
+            self._markdown(_lazy("aicontext").to_markdown(context))
+        else:
+            self._json(context)
+
+    def _mcp_config(self, kind: str, grafana_url: str,
+                    include_grafana: bool, n2g_context_path: str) \
+            -> Dict[str, Any]:
+        cfg = _lazy("mcp").generate_mcp_config(
+            grafana_url, kind=kind, n2g_context_path=n2g_context_path,
+            include_grafana=include_grafana)
+        return {"kind": kind, "grafana_url": grafana_url,
+                "include_grafana": include_grafana,
+                "n2g_context_path": n2g_context_path, "config": cfg}
+
+    def _get_mcp_config(self, q: Dict[str, List[str]]) -> None:
+        """Generate an MCP config from persisted prefs + query
+        overrides. The Grafana token is NEVER embedded -- the config
+        references the GRAFANA_SERVICE_ACCOUNT_TOKEN env var."""
+        kind = (q.get("kind") or [""])[0] \
+            or self.store.get_setting("web.mcp_kind", "claude")
+        grafana_url = (q.get("grafana_url") or [""])[0] \
+            or SESSION.grafana_url
+        ctx_path = (q.get("n2g_context_path") or [""])[0] \
+            or self.store.get_setting("web.mcp_context_path", "")
+        inc_raw = (q.get("include_grafana") or [""])[0]
+        include = inc_raw.lower() not in ("0", "false", "no") \
+            if inc_raw else True
+        self._json(self._mcp_config(kind, grafana_url, include,
+                                    ctx_path))
+
     # -- downloads -------------------------------------------------------
+
+    def _download_ai_context(self, path: str, slug: str) -> None:
+        context = self._ai_context(slug)
+        aicontext = _lazy("aicontext")
+        if path.endswith(".md"):
+            raw = (aicontext.to_markdown(context) + "\n").encode("utf-8")
+            self._bytes(raw, "text/markdown; charset=utf-8",
+                        "ai-context.md")
+        else:
+            raw = (json.dumps(context, indent=2, ensure_ascii=False)
+                   + "\n").encode("utf-8")
+            self._bytes(raw, "application/json; charset=utf-8",
+                        "ai-context.json")
 
     def _get_download(self, path: str) -> None:
         if path == "/download/all.zip":
@@ -1576,6 +1773,10 @@ class Handler(BaseHTTPRequestHandler):
             q = parse_qs(urlsplit(self.path).query)
             return self._download_cost_config(
                 (q.get("slug") or [""])[0])
+        if path in ("/download/ai-context.md", "/download/ai-context.json"):
+            q = parse_qs(urlsplit(self.path).query)
+            return self._download_ai_context(
+                path, (q.get("slug") or [""])[0])
         m = re.match(r"^/download/dashboard/([^/]+)\.json$", path)
         if m:
             return self._download_dashboard(m.group(1))
@@ -2258,6 +2459,66 @@ class Handler(BaseHTTPRequestHandler):
             SESSION.status["ai"] = "error"
             SESSION.status_detail["ai"] = res.get("error", "")
         self._json(res)
+
+    # -- deep-dive / AI-context / MCP (1.6) ------------------------------
+
+    def _post_deepdive(self) -> None:
+        body = self._body()
+        store = self.store
+        self._json({"job": _start_job(
+            "deepdive",
+            lambda job: _job_deepdive(job, body, store))})
+
+    def _post_ai_troubleshoot(self) -> None:
+        body = self._body()
+        ai = _ai()  # 400 fast when no AI backend is configured
+        store = self.store
+        self._json({"job": _start_job(
+            "ai-troubleshoot",
+            lambda job: _job_troubleshoot(job, body, store, ai))})
+
+    def _post_mcp_config(self) -> None:
+        """Generate an MCP config and persist the non-secret prefs
+        (kind, include-grafana, context path). No token is written."""
+        body = self._body()
+        kind = body.get("kind") \
+            or self.store.get_setting("web.mcp_kind", "claude")
+        grafana_url = body.get("grafana_url") or SESSION.grafana_url
+        ctx_path = body.get("n2g_context_path")
+        if ctx_path is None:
+            ctx_path = self.store.get_setting("web.mcp_context_path", "")
+        include = body.get("include_grafana")
+        if include is None:
+            include = True
+        include = bool(include)
+        resp = self._mcp_config(kind, grafana_url, include, ctx_path)
+        for key, val in (("web.mcp_kind", kind),
+                         ("web.mcp_context_path", ctx_path or ""),
+                         ("web.mcp_include_grafana", include)):
+            try:
+                self.store.set_setting(key, val)
+            except Exception:
+                pass  # pref persistence is best-effort
+        resp["ok"] = True
+        self._json(resp)
+
+    def _post_mcp_probe(self) -> None:
+        """Probe a Grafana MCP server (stdio command or http/SSE url).
+        probe() never raises -- a failed probe returns {"ok": False,
+        "error": ...}, so this is a fast non-job route."""
+        body = self._body()
+        url = body.get("url") or ""
+        command = body.get("command")
+        if isinstance(command, str) and command.strip():
+            import shlex
+            command = shlex.split(command)
+        elif not isinstance(command, list):
+            command = None
+        if not url and not command:
+            raise ApiError("provide a 'url' (http/SSE) or 'command' "
+                           "(stdio) to probe", 400)
+        self._json(_lazy("mcp").probe(command=command,
+                                      url=url or None))
 
 
 # ---------------------------------------------------------------------------

@@ -210,7 +210,7 @@ class NoCommandTests(unittest.TestCase):
 
 class VersionTests(unittest.TestCase):
     def test_package_version(self):
-        self.assertEqual(nr2grafana.__version__, "1.5.0")
+        self.assertEqual(nr2grafana.__version__, "1.6.0")
 
 
 class _TempDbMixin:
@@ -1237,6 +1237,310 @@ class CostPricingTests(_TempDbMixin, unittest.TestCase):
         code, out, err = run_cli(["cost"])
         self.assertEqual(code, 2)
         self.assertIn("analyze", out)
+
+
+# ---------------------------------------------------------------------------
+# deep-dive / ai-context / mcp (1.6) -- siblings stubbed in sys.modules
+# ---------------------------------------------------------------------------
+
+def _deepdive_stub_modules(kubectl=True):
+    """Fake deepdive + packing modules matching the section 1-2
+    contracts."""
+    import types
+
+    deepdive = types.ModuleType("nr2grafana.deepdive")
+    deepdive.calls = []
+
+    def analyze(prom=None, mimir=None, loki=None, grafana=None,
+                cfg=None, log=None):
+        deepdive.calls.append({"prom": prom, "mimir": mimir,
+                               "loki": loki, "cfg": cfg})
+        if log:
+            log("deepdive stub analyzing")
+        return {"schema": "nr2grafana/deepdive/v1",
+                "findings": [
+                    {"severity": "FAIL", "area": "capacity",
+                     "title": "Ingester near GOMEMLIMIT series capacity",
+                     "evidence": {"series": 9500000},
+                     "rationale": "10M limit is not capacity",
+                     "config": [], "est_savings": {},
+                     "keeps_performance": True, "keeps_durability": True,
+                     "keeps_availability": True},
+                    {"severity": "WARN", "area": "cardinality",
+                     "title": "Drop unused high-cardinality metric",
+                     "evidence": {"series": 400000},
+                     "rationale": "no dashboard queries it",
+                     "config": [{"target": "prometheus-relabel",
+                                 "language": "yaml",
+                                 "snippet": "write_relabel_configs:\n"
+                                            "  - action: drop",
+                                 "note": "drop at remote_write"}],
+                     "est_savings": {"monthly_usd": 30.0,
+                                     "compute": {"cores": 2.0}},
+                     "keeps_performance": True, "keeps_durability": True,
+                     "keeps_availability": True}]}
+
+    deepdive.analyze = analyze
+
+    packing = types.ModuleType("nr2grafana.packing")
+    packing.calls = []
+
+    def kubectl_available():
+        return kubectl
+
+    def pack_analyze(cfg=None, prices=None, log=None):
+        packing.calls.append({"cfg": cfg, "prices": prices})
+        if log:
+            log("packing stub analyzing")
+        return {"schema": "nr2grafana/packing/v1", "available": True,
+                "findings": [
+                    {"severity": "FAIL", "area": "durability",
+                     "title": "Ingester has a CPU limit",
+                     "evidence": {"limit": "2"},
+                     "config": [],
+                     "keeps_durability": False,
+                     "keeps_availability": True,
+                     "keeps_performance": False}],
+                "karpenter": {
+                    "nodepools": [],
+                    "findings": [],
+                    "proposed_nodepool_yaml":
+                        "apiVersion: karpenter.sh/v1\nkind: NodePool\n",
+                    "est_savings": {"monthly_usd": 120.0, "nodes": 2,
+                                    "keeps_availability": True}}}
+
+    packing.kubectl_available = kubectl_available
+    packing.analyze = pack_analyze
+    return {"nr2grafana.deepdive": deepdive,
+            "nr2grafana.packing": packing}
+
+
+class DeepDiveCommandTests(_TempDbMixin, unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.out = os.path.join(self.tmp.name, "dd-out")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+        super().tearDown()
+
+    def _run(self, argv, kubectl=True):
+        env = dict(os.environ)
+        env.pop("GRAFANA_URL", None)
+        stubs = _deepdive_stub_modules(kubectl=kubectl)
+        with mock.patch.dict("sys.modules", stubs), \
+                mock.patch.dict(os.environ, env, clear=True):
+            os.environ["N2G_DB"] = self.db_path
+            code, sout, serr = run_cli(argv)
+        return code, sout, serr, stubs
+
+    def test_deepdive_prints_findings_and_writes_report(self):
+        code, sout, serr, stubs = self._run(
+            ["deepdive", "--prom", "http://mimir:9090", "-o", self.out])
+        # exit 1: a FAIL-severity finding is present
+        self.assertEqual(code, 1)
+        self.assertIn("LGTM stack findings", sout)
+        self.assertIn("Ingester near GOMEMLIMIT", sout)
+        self.assertIn("$30.00", sout)
+        # safe savings headline (WARN finding keeps everything)
+        self.assertIn("saveable without reducing durability", sout)
+        # report + config snippet on disk
+        report_path = os.path.join(self.out, "deepdive-report.json")
+        self.assertTrue(os.path.isfile(report_path))
+        with open(report_path, encoding="utf-8") as f:
+            report = json.load(f)
+        self.assertEqual(report["deepdive"]["schema"],
+                         "nr2grafana/deepdive/v1")
+        relabel = os.path.join(self.out, "config",
+                               "prometheus-relabel.yaml")
+        self.assertTrue(os.path.isfile(relabel))
+        with open(relabel, encoding="utf-8") as f:
+            self.assertIn("action: drop", f.read())
+        # prom url threaded through to analyze
+        self.assertEqual(stubs["nr2grafana.deepdive"].calls[-1]["prom"],
+                         "http://mimir:9090")
+        # packing not run without --kube
+        self.assertEqual(stubs["nr2grafana.packing"].calls, [])
+
+    def test_deepdive_kube_runs_packing_and_writes_nodepool(self):
+        code, sout, serr, stubs = self._run(
+            ["deepdive", "--kube", "-o", self.out], kubectl=True)
+        self.assertEqual(code, 1)
+        self.assertEqual(len(stubs["nr2grafana.packing"].calls), 1)
+        self.assertIn("Karpenter", sout)
+        nodepool = os.path.join(self.out, "config",
+                                "karpenter-nodepool.yaml")
+        self.assertTrue(os.path.isfile(nodepool))
+        with open(nodepool, encoding="utf-8") as f:
+            self.assertIn("kind: NodePool", f.read())
+        with open(os.path.join(self.out, "deepdive-report.json"),
+                  encoding="utf-8") as f:
+            report = json.load(f)
+        self.assertIn("packing", report)
+
+    def test_deepdive_kube_without_kubectl_degrades(self):
+        code, sout, serr, stubs = self._run(
+            ["deepdive", "--kube", "-o", self.out], kubectl=False)
+        # still succeeds-with-findings; packing skipped, note printed
+        self.assertEqual(stubs["nr2grafana.packing"].calls, [])
+        self.assertIn("kubectl not available", serr)
+
+
+def _aicontext_stub_module():
+    import types
+    m = types.ModuleType("nr2grafana.aicontext")
+    m.calls = []
+
+    def build_context(store, slug="", include=None, grafana=None,
+                      deepdive=None, redact=True):
+        m.calls.append({"slug": slug, "deepdive": deepdive,
+                        "redact": redact})
+        return {"schema": "nr2grafana/ai-context/v1", "slug": slug,
+                "preamble": "you are troubleshooting", "artifacts": {}}
+
+    def to_markdown(context):
+        return "# AI context\n\nslug: %s\n" % context.get("slug", "")
+
+    def troubleshoot(assistant, context, question=""):
+        return {"answer": "stub answer to: %s" % question,
+                "backend": getattr(assistant, "backend", "api")}
+
+    m.build_context = build_context
+    m.to_markdown = to_markdown
+    m.troubleshoot = troubleshoot
+    return m
+
+
+class AiContextCommandTests(_TempDbMixin, unittest.TestCase):
+    def test_ai_context_json_to_stdout(self):
+        stub = _aicontext_stub_module()
+        with mock.patch.dict("sys.modules",
+                             {"nr2grafana.aicontext": stub}):
+            code, sout, serr = run_cli(["ai-context"])
+        self.assertEqual(code, 0)
+        bundle = json.loads(sout)
+        self.assertEqual(bundle["schema"], "nr2grafana/ai-context/v1")
+        self.assertTrue(stub.calls[-1]["redact"])
+
+    def test_ai_context_markdown_to_file(self):
+        stub = _aicontext_stub_module()
+        out = os.path.join(self._db_tmp.name, "ctx.md")
+        with mock.patch.dict("sys.modules",
+                             {"nr2grafana.aicontext": stub}):
+            code, sout, serr = run_cli(
+                ["ai-context", "mydash", "--markdown", "-o", out])
+        self.assertEqual(code, 0)
+        self.assertTrue(os.path.isfile(out))
+        with open(out, encoding="utf-8") as f:
+            self.assertIn("# AI context", f.read())
+        self.assertEqual(stub.calls[-1]["slug"], "mydash")
+
+
+class AiTroubleshootCommandTests(_TempDbMixin, unittest.TestCase):
+    def test_troubleshoot_no_backend_exits_two(self):
+        stub = _aicontext_stub_module()
+        env = dict(os.environ)
+        env.pop("ANTHROPIC_API_KEY", None)
+        env.pop("N2G_AI_COMMAND", None)
+        with mock.patch.dict("sys.modules",
+                             {"nr2grafana.aicontext": stub}), \
+                mock.patch.dict(os.environ, env, clear=True):
+            os.environ["N2G_DB"] = self.db_path
+            code, sout, serr = run_cli(
+                ["ai", "troubleshoot", "-q", "why no data?"])
+        self.assertEqual(code, 2)
+        self.assertIn("no AI backend", serr)
+
+    def test_troubleshoot_with_api_key(self):
+        stub = _aicontext_stub_module()
+        env = dict(os.environ)
+        env["ANTHROPIC_API_KEY"] = "sk-ant-test"
+        with mock.patch.dict("sys.modules",
+                             {"nr2grafana.aicontext": stub}), \
+                mock.patch.dict(os.environ, env, clear=True):
+            os.environ["N2G_DB"] = self.db_path
+            code, sout, serr = run_cli(
+                ["ai", "troubleshoot", "-q", "why no data?"])
+        self.assertEqual(code, 0)
+        self.assertIn("stub answer to: why no data?", sout)
+
+
+class McpCommandTests(unittest.TestCase):
+    def test_mcp_config_references_env_never_token(self):
+        code, sout, serr = run_cli(
+            ["mcp", "config", "--kind", "claude",
+             "--url", "http://gf.local:3000"])
+        self.assertEqual(code, 0)
+        cfg = json.loads(sout)
+        self.assertIn("mcpServers", cfg)
+        entry = cfg["mcpServers"]["grafana"]
+        # token is referenced via env var, never embedded
+        self.assertEqual(entry["env"]["GRAFANA_SERVICE_ACCOUNT_TOKEN"],
+                         "${GRAFANA_SERVICE_ACCOUNT_TOKEN}")
+        self.assertNotIn("glsa_", sout)
+
+    def test_mcp_config_writes_file(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        out = os.path.join(tmp.name, "mcp.json")
+        code, sout, serr = run_cli(
+            ["mcp", "config", "--kind", "kiro", "-o", out])
+        self.assertEqual(code, 0)
+        with open(out, encoding="utf-8") as f:
+            cfg = json.load(f)
+        self.assertIn("grafana", cfg["mcpServers"])
+
+    def test_mcp_config_no_grafana(self):
+        code, sout, serr = run_cli(["mcp", "config", "--no-grafana"])
+        self.assertEqual(code, 0)
+        cfg = json.loads(sout)
+        self.assertNotIn("grafana", cfg["mcpServers"])
+
+    def test_mcp_probe_requires_target(self):
+        code, sout, serr = run_cli(["mcp", "probe"])
+        self.assertEqual(code, 2)
+        self.assertIn("--url", serr)
+
+    def test_mcp_probe_ok(self):
+        import types
+        stub = types.ModuleType("nr2grafana.mcp")
+
+        def probe(command=None, url=""):
+            return {"ok": True, "tools": ["search_dashboards"],
+                    "server": {"name": "grafana"}}
+
+        stub.probe = probe
+        with mock.patch.dict("sys.modules", {"nr2grafana.mcp": stub}):
+            code, sout, serr = run_cli(
+                ["mcp", "probe", "--command", "mcp-grafana"])
+        self.assertEqual(code, 0)
+        self.assertIn("reachable", sout)
+        self.assertIn("search_dashboards", sout)
+
+    def test_mcp_probe_failure_exits_one(self):
+        import types
+        stub = types.ModuleType("nr2grafana.mcp")
+        stub.probe = lambda command=None, url="": {
+            "ok": False, "tools": [], "error": "connection refused"}
+        with mock.patch.dict("sys.modules", {"nr2grafana.mcp": stub}):
+            code, sout, serr = run_cli(
+                ["mcp", "probe", "--url", "http://x:1/sse"])
+        self.assertEqual(code, 1)
+        self.assertIn("connection refused", serr)
+
+    def test_mcp_without_subcommand_prints_help(self):
+        code, out, err = run_cli(["mcp"])
+        self.assertEqual(code, 2)
+        self.assertIn("config", out)
+
+
+class NewCommandsListedTests(unittest.TestCase):
+    def test_new_commands_appear_in_top_level_help(self):
+        code, out, err = run_cli([])
+        self.assertEqual(code, 2)
+        for name in ("deepdive", "ai-context", "ai", "mcp"):
+            self.assertIn(name, out)
 
 
 if __name__ == "__main__":

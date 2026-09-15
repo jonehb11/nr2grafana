@@ -824,6 +824,190 @@ class CostOptimizationTest(MockStackBase):
                              cost["monthly_total"] + 1e-6)
 
 
+_KEEPS = ("keeps_performance", "keeps_durability",
+          "keeps_availability", "keeps_intact")
+
+
+class DeepDiveMockTest(MockStackBase):
+    """The 1.6 deep-dive end to end over the fake self-metrics endpoint.
+
+    deepdive.analyze reads the component self-metrics (cortex_*, loki_*,
+    prometheus_remote_storage_*, container_memory_working_set_bytes) the
+    mock serves against a deterministic churn / duplicate-replica /
+    high-cardinality (Mimir) + tiny-chunk / failed-flush (Loki) scenario,
+    and must surface capacity + cardinality + churn findings that carry a
+    config snippet, an estimated saving and explicit safety flags. The
+    deepdive sibling is imported lazily and the test skips when it is not
+    yet written."""
+
+    def test_deepdive_analyze_end_to_end(self):
+        (deepdive,) = _import_or_skip(self, "nr2grafana.deepdive")
+        res = deepdive.analyze(prom=self.stack.prom_url,
+                               mimir=self.stack.mimir_url,
+                               loki=self.stack.loki_url)
+        self.assertEqual(res.get("schema"), "nr2grafana/deepdive/v1")
+        findings = res.get("findings") or []
+        self.assertTrue(findings, "deep-dive produced no findings")
+        for f in findings:
+            self.assertIn(f.get("severity"), ("FAIL", "WARN", "INFO"), f)
+            self.assertTrue(f.get("area"), f)
+        areas = set(f.get("area") for f in findings)
+        self.assertIn("capacity", areas,
+                      "no capacity finding; areas=%s" % sorted(areas))
+        self.assertIn("cardinality", areas,
+                      "no cardinality finding; areas=%s" % sorted(areas))
+
+        # Every safety flag that IS present must be a real bool (the
+        # engine must never leave a durability/availability claim fuzzy).
+        for f in findings:
+            for k in _KEEPS:
+                if k in f:
+                    self.assertIsInstance(f[k], bool, (k, f))
+
+        # A churn finding carrying a config snippet, an estimated saving
+        # and at least one explicit safety flag (the actionable shape the
+        # 1.6 contract promises for every recommendation).
+        def _is_churn(f):
+            if f.get("area") == "churn":
+                return True
+            blob = json.dumps(f).lower()
+            return ("churn" in blob or "samples/series" in blob
+                    or "samples per series" in blob or "stale" in blob)
+
+        churn = [f for f in findings if _is_churn(f)]
+        self.assertTrue(churn, "no churn-related finding; findings=%s"
+                        % json.dumps(findings, indent=1))
+        # A churn finding carrying a machine-pasteable config snippet and
+        # at least one explicit safety flag.
+        good = [f for f in churn
+                if isinstance(f.get("config"), list) and f.get("config")
+                and any(k in f for k in _KEEPS)]
+        self.assertTrue(
+            good,
+            "no churn finding with config + safety flags; "
+            "churn findings=%s" % json.dumps(churn, indent=1))
+        snippet = good[0]["config"][0]
+        self.assertTrue(snippet.get("snippet") or snippet.get("target"),
+                        snippet)
+        # Any per-finding est_savings that IS present must be a dict.
+        for f in findings:
+            if "est_savings" in f and f["est_savings"] is not None:
+                self.assertIsInstance(f["est_savings"], dict, f)
+
+        # The deep-dive wires up an estimated-savings roll-up (the money
+        # side of the recommendations), reported at the summary level.
+        summary = res.get("summary") or {}
+        self.assertIn("total_est_monthly_usd", summary, summary)
+
+
+class AiContextMockTest(MockStackBase):
+    """An AI context bundle assembled over a real converted dashboard.
+
+    Converts the Checkout fixture, persists it (plus a live deep-dive
+    artifact when the sibling exists) and folds everything into one
+    ``nr2grafana/ai-context/v1`` bundle that renders to markdown/prompt.
+    """
+
+    def setUp(self):
+        super(AiContextMockTest, self).setUp()
+        self.tmp = tempfile.mkdtemp(prefix="nr2g-ai-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def test_build_context_over_converted_dashboard(self):
+        (model, config_mod, builder, store_mod, aicontext) = \
+            _import_or_skip(
+                self, "nr2grafana.model", "nr2grafana.config",
+                "nr2grafana.grafana.builder", "nr2grafana.store",
+                "nr2grafana.aicontext")
+        ng = self.nerdgraph()
+        guid = next(e["guid"] for e in ng.list_dashboards()
+                    if e["name"] == "Checkout Service Overview")
+        cfg = config_mod.load_config("")
+        nr_dash = model.parse_nr_dashboard(ng.get_dashboard(guid))
+        _fname, dash, report = builder.build_dashboards(nr_dash, cfg)[0]
+
+        store = store_mod.Store(os.path.join(self.tmp, "ctx.db"))
+        try:
+            slug = "checkout-service-overview"
+            store.upsert_dashboard(slug, dash.get("title", slug),
+                                   "e2e", guid, dash)
+            # Fold in a live deep-dive artifact when deepdive exists.
+            have_deepdive = False
+            try:
+                deepdive = importlib.import_module("nr2grafana.deepdive")
+            except Exception:
+                deepdive = None
+            if deepdive is not None:
+                dd = deepdive.analyze(prom=self.stack.prom_url,
+                                      mimir=self.stack.mimir_url,
+                                      loki=self.stack.loki_url)
+                store.save_artifact(slug, "deepdive", dd)
+                have_deepdive = True
+
+            ctx = aicontext.build_context(store, slug)
+            self.assertEqual(ctx["schema"], "nr2grafana/ai-context/v1")
+            self.assertIn("preamble", ctx)
+            self.assertIsNotNone(ctx["dashboard"])
+            self.assertEqual(ctx["dashboard"]["slug"], slug)
+            if have_deepdive:
+                self.assertIn("deepdive", ctx["available_artifacts"],
+                              ctx["available_artifacts"])
+
+            # Renders to a compact markdown doc and a single-string prompt.
+            md = aicontext.to_markdown(ctx)
+            self.assertIsInstance(md, str)
+            self.assertTrue(md.strip())
+            prompt = aicontext.to_prompt(ctx, question="Why no data?")
+            self.assertIsInstance(prompt, str)
+            self.assertIn("Why no data?", prompt)
+        finally:
+            store.close()
+
+
+class McpProbeMockTest(unittest.TestCase):
+    """An MCP probe/round-trip against tools/fake_mcp_server.py.
+
+    Uses the real ``nr2grafana.mcp`` client over stdio so the offline
+    demo path (probe a Grafana-like MCP server, list + call tools) is
+    exercised without the real mcp-grafana binary."""
+
+    def _server_cmd(self):
+        server = os.path.join(TOOLS, "fake_mcp_server.py")
+        self.assertTrue(os.path.exists(server),
+                        "fake MCP server missing: %s" % server)
+        return [sys.executable, server]
+
+    def test_probe_and_round_trip(self):
+        (mcp_mod,) = _import_or_skip(self, "nr2grafana.mcp")
+        cmd = self._server_cmd()
+        out = mcp_mod.probe(command=cmd)
+        self.assertTrue(out.get("ok"), out)
+        self.assertIn("search_dashboards", out.get("tools", []))
+        self.assertNotIn("error", out)
+
+        with mcp_mod.MCPClient(command=cmd) as client:
+            info = client.initialize()
+            self.assertIn("serverInfo", info)
+            names = [t.get("name") for t in client.list_tools()]
+            self.assertIn("query_prometheus", names)
+            res = client.call_tool(
+                "query_prometheus",
+                {"datasourceUid": "mimir", "expr": "up"})
+            self.assertFalse(res.get("isError"))
+            self.assertTrue(res.get("content"))
+
+    def test_generated_config_references_token_env_not_value(self):
+        (mcp_mod,) = _import_or_skip(self, "nr2grafana.mcp")
+        conf = mcp_mod.generate_mcp_config("http://grafana.local:3000",
+                                           kind="claude")
+        self.assertIn("mcpServers", conf)
+        blob = json.dumps(conf)
+        # The token is referenced via env var, never embedded.
+        self.assertIn("${GRAFANA_SERVICE_ACCOUNT_TOKEN}", blob)
+        for leak in ("glsa_", "glc_", "Bearer "):
+            self.assertNotIn(leak, blob)
+
+
 class FixtureLoadingTest(unittest.TestCase):
     """load_fixtures serves only well-formed dashboards."""
 

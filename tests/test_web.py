@@ -674,6 +674,121 @@ def _stub_optimize():
     return m
 
 
+def _stub_deepdive():
+    m = types.ModuleType("nr2grafana.deepdive")
+
+    def analyze(prom=None, mimir=None, loki=None, grafana=None,
+                cfg=None, log=None):
+        if log:
+            log("deepdive stub analyzing prom=%s" % prom)
+        return {"schema": "nr2grafana/deepdive/v1",
+                "findings": [
+                    {"severity": "WARN", "area": "cardinality",
+                     "title": "Drop unused metric foo_total",
+                     "evidence": {"series": 120000},
+                     "config": [{"target": "prometheus-relabel",
+                                 "language": "yaml",
+                                 "snippet": "action: drop", "note": ""}],
+                     "est_savings": {"monthly_usd": 8.0,
+                                     "compute": {"cores": 1.0}},
+                     "keeps_performance": True, "keeps_durability": True,
+                     "keeps_availability": True}]}
+
+    m.analyze = analyze
+    return m
+
+
+def _stub_packing():
+    m = types.ModuleType("nr2grafana.packing")
+    m.kube = True
+
+    def kubectl_available():
+        return m.kube
+
+    def analyze(cfg=None, prices=None, log=None):
+        if log:
+            log("packing stub analyzing")
+        return {"schema": "nr2grafana/packing/v1", "available": True,
+                "findings": [{"severity": "INFO", "area": "efficiency",
+                              "title": "Bin-pack to r-class nodes",
+                              "config": []}],
+                "karpenter": {"proposed_nodepool_yaml":
+                              "kind: NodePool\n",
+                              "est_savings": {"monthly_usd": 90.0}}}
+
+    m.kubectl_available = kubectl_available
+    m.analyze = analyze
+    return m
+
+
+def _stub_aicontext():
+    m = types.ModuleType("nr2grafana.aicontext")
+
+    def build_context(store, slug="", include=None, grafana=None,
+                      deepdive=None, redact=True):
+        return {"schema": "nr2grafana/ai-context/v1", "slug": slug,
+                "preamble": "you are troubleshooting a NR->Grafana "
+                            "migration",
+                "has_deepdive": bool(deepdive),
+                "grafana": bool(grafana), "artifacts": {}}
+
+    def to_markdown(context):
+        return ("# nr2grafana AI context\n\nslug: %s\n"
+                % context.get("slug", ""))
+
+    def to_prompt(context, question=""):
+        return "PROMPT %s" % question
+
+    def troubleshoot(assistant, context, question=""):
+        return {"answer": "stub answer to: %s" % question,
+                "backend": getattr(assistant, "backend_name", "api")}
+
+    m.build_context = build_context
+    m.to_markdown = to_markdown
+    m.to_prompt = to_prompt
+    m.troubleshoot = troubleshoot
+    return m
+
+
+def _stub_mcp():
+    m = types.ModuleType("nr2grafana.mcp")
+    m.probe_calls = []
+
+    class MCPError(Exception):
+        pass
+
+    def generate_mcp_config(grafana_url="", kind="claude",
+                            n2g_context_path="", include_grafana=True):
+        if kind not in ("claude", "kiro", "generic"):
+            raise MCPError("unknown MCP config kind %r" % kind)
+        servers = {}
+        if include_grafana:
+            servers["grafana"] = {
+                "command": "mcp-grafana", "args": [],
+                "env": {"GRAFANA_URL": grafana_url or "${GRAFANA_URL}",
+                        "GRAFANA_SERVICE_ACCOUNT_TOKEN":
+                        "${GRAFANA_SERVICE_ACCOUNT_TOKEN}"}}
+        if n2g_context_path:
+            servers["nr2grafana-context"] = {"command": "npx", "args": []}
+        return {"mcpServers": servers}
+
+    def probe(command=None, url="", headers=None, timeout=30):
+        m.probe_calls.append({"command": command, "url": url})
+        if command or url:
+            return {"ok": True, "tools": ["search_dashboards"],
+                    "server": {"name": "grafana"}}
+        return {"ok": False, "tools": [], "error": "no target"}
+
+    def config_note(kind="claude"):
+        return "merge into your client's MCP config"
+
+    m.MCPError = MCPError
+    m.generate_mcp_config = generate_mcp_config
+    m.probe = probe
+    m.config_note = config_note
+    return m
+
+
 STUBS = {
     "nr2grafana.requirements": _stub_requirements(),
     "nr2grafana.artifacts": _stub_artifacts(),
@@ -689,6 +804,10 @@ STUBS = {
     "nr2grafana.usage": _stub_usage(),
     "nr2grafana.costmodel": _stub_costmodel(),
     "nr2grafana.optimize": _stub_optimize(),
+    "nr2grafana.deepdive": _stub_deepdive(),
+    "nr2grafana.packing": _stub_packing(),
+    "nr2grafana.aicontext": _stub_aicontext(),
+    "nr2grafana.mcp": _stub_mcp(),
 }
 
 
@@ -2211,6 +2330,149 @@ class CostRouteTests(WebServerTestCase):
         code, st = self.api("GET", "/api/state")
         self.assertEqual(code, 200)
         self.assertTrue(st["features"].get("cost"))
+
+
+class DeepDiveAiMcpTests(WebServerTestCase):
+    """1.6 routes: deep-dive + packing jobs, AI context / troubleshoot,
+    MCP config + probe, and the ai-context downloads."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        websrv.SESSION.grafana_url = "http://gf.local:3000"
+        websrv.SESSION.grafana_token = "tok"
+        websrv.SESSION.anthropic_api_key = "sk-ant-test"
+        cls.slug = "dd-dash"
+        _seed_dash(cls.store, cls.slug, expr="up")
+
+    def setUp(self):
+        STUBS["nr2grafana.packing"].kube = True
+
+    def test_deepdive_job_persists_instance_artifact(self):
+        code, resp = self.api("POST", "/api/deepdive",
+                              {"prom": "http://mimir:9090"})
+        self.assertEqual(code, 200)
+        job = poll_job(self.base, resp["job"])
+        self.assertEqual(job["status"], "done")
+        self.assertTrue(any("deepdive stub" in ln for ln in job["log"]))
+        self.assertEqual(job["result"]["deepdive"]["schema"],
+                         "nr2grafana/deepdive/v1")
+        art = self.store.get_artifact(websrv._INSTANCE_SLUG, "deepdive")
+        self.assertIsNotNone(art)
+        # no --kube: packing did not run
+        self.assertNotIn("packing", job["result"])
+
+    def test_deepdive_kube_runs_packing(self):
+        code, resp = self.api("POST", "/api/deepdive", {"kube": True})
+        self.assertEqual(code, 200)
+        job = poll_job(self.base, resp["job"])
+        self.assertEqual(job["status"], "done")
+        self.assertEqual(job["result"]["packing"]["schema"],
+                         "nr2grafana/packing/v1")
+        self.assertIsNotNone(
+            self.store.get_artifact(websrv._INSTANCE_SLUG, "packing"))
+
+    def test_deepdive_kube_without_kubectl_degrades(self):
+        STUBS["nr2grafana.packing"].kube = False
+        code, resp = self.api("POST", "/api/deepdive", {"kube": True})
+        job = poll_job(self.base, resp["job"])
+        self.assertEqual(job["status"], "done")
+        self.assertFalse(job["result"]["packing"].get("available"))
+        self.assertTrue(any("kubectl not available" in ln
+                            for ln in job["log"]))
+
+    def test_get_deepdive_returns_stored(self):
+        code, resp = self.api("POST", "/api/deepdive", {})
+        poll_job(self.base, resp["job"])
+        code, body = self.api("GET", "/api/deepdive")
+        self.assertEqual(code, 200)
+        self.assertEqual(body["deepdive"]["schema"],
+                         "nr2grafana/deepdive/v1")
+
+    def test_get_deepdive_404_before_run(self):
+        # a fresh store slug never analyzed
+        code, body = self.api("GET", "/api/deepdive?slug=never-run")
+        self.assertEqual(code, 404)
+        self.assertIn("error", body)
+
+    def test_ai_context_json_and_markdown(self):
+        code, body = self.api("GET", "/api/ai/context?slug=" + self.slug)
+        self.assertEqual(code, 200)
+        self.assertEqual(body["schema"], "nr2grafana/ai-context/v1")
+        code, headers, raw = http_bin(
+            self.base, "/api/ai/context?slug=%s&format=markdown"
+            % self.slug)
+        self.assertEqual(code, 200)
+        self.assertIn("text/markdown", headers.get("Content-Type", ""))
+        self.assertIn(b"nr2grafana AI context", raw)
+
+    def test_ai_troubleshoot_job(self):
+        code, resp = self.api("POST", "/api/ai/troubleshoot",
+                              {"slug": self.slug,
+                               "question": "why no data?"})
+        self.assertEqual(code, 200)
+        job = poll_job(self.base, resp["job"])
+        self.assertEqual(job["status"], "done")
+        self.assertIn("why no data?", job["result"]["answer"])
+
+    def test_ai_troubleshoot_needs_backend(self):
+        websrv.SESSION.anthropic_api_key = ""
+        websrv.SESSION.ai_command = ""
+        try:
+            code, body = self.api("POST", "/api/ai/troubleshoot",
+                                  {"question": "x"})
+            self.assertEqual(code, 400)
+            self.assertIn("AI backend", body["error"])
+        finally:
+            websrv.SESSION.anthropic_api_key = "sk-ant-test"
+
+    def test_download_ai_context_md_and_json(self):
+        code, headers, raw = http_bin(
+            self.base, "/download/ai-context.md?slug=" + self.slug)
+        self.assertEqual(code, 200)
+        self.assertIn("attachment",
+                      headers.get("Content-Disposition", ""))
+        self.assertIn("ai-context.md",
+                      headers.get("Content-Disposition", ""))
+        code, headers, raw = http_bin(
+            self.base, "/download/ai-context.json?slug=" + self.slug)
+        self.assertEqual(code, 200)
+        self.assertEqual(json.loads(raw.decode())["schema"],
+                         "nr2grafana/ai-context/v1")
+
+    def test_mcp_config_get_and_post(self):
+        code, body = self.api("GET", "/api/mcp/config?kind=claude")
+        self.assertEqual(code, 200)
+        entry = body["config"]["mcpServers"]["grafana"]
+        self.assertEqual(entry["env"]["GRAFANA_SERVICE_ACCOUNT_TOKEN"],
+                         "${GRAFANA_SERVICE_ACCOUNT_TOKEN}")
+        # POST persists the non-secret prefs
+        code, body = self.api("POST", "/api/mcp/config",
+                              {"kind": "kiro", "include_grafana": True})
+        self.assertEqual(code, 200)
+        self.assertTrue(body["ok"])
+        self.assertEqual(self.store.get_setting("web.mcp_kind"), "kiro")
+        # no token ever written to disk
+        with open(self.db_path, encoding="utf-8") as f:
+            self.assertNotIn("tok", f.read().replace("mcp_", ""))
+
+    def test_mcp_probe(self):
+        code, body = self.api("POST", "/api/mcp/probe",
+                              {"command": "mcp-grafana"})
+        self.assertEqual(code, 200)
+        self.assertTrue(body["ok"])
+        self.assertIn("search_dashboards", body["tools"])
+
+    def test_mcp_probe_requires_target(self):
+        code, body = self.api("POST", "/api/mcp/probe", {})
+        self.assertEqual(code, 400)
+        self.assertIn("error", body)
+
+    def test_state_features_include_16(self):
+        code, st = self.api("GET", "/api/state")
+        self.assertEqual(code, 200)
+        for feat in ("deepdive", "packing", "ai_context", "mcp"):
+            self.assertTrue(st["features"].get(feat), feat)
 
 
 class JobInternalsTests(unittest.TestCase):

@@ -87,6 +87,20 @@ What it does:
   series — each with an estimated saving and paste-ready Promtail/Alloy/
   OTel/Loki/Prometheus config. It never proposes dropping anything your
   dashboards depend on. See [docs/cost-optimization.md](docs/cost-optimization.md).
+- **Deep LGTM + Karpenter optimization** (`deepdive` / web UI **Stack**):
+  analyzes capacity, cardinality/churn, right-sizing (compute saved at
+  peak × 1.5, never below peak), node bin-packing/consolidation,
+  durability/availability, data-transfer cost, and the observability
+  Karpenter NodePool — proposing configs (including a paste-ready
+  optimized NodePool YAML) with estimated savings and explicit risk flags,
+  **never trading away durability, availability, or performance**.
+- **AI as a first-class tenant** (`ai-context`, `ai troubleshoot`, web UI
+  **AI**): every artifact is packaged into one compact, self-explaining
+  context bundle (markdown/JSON, secrets redacted) so an AI — your local
+  CLI agent (`claude`/`kiro`) or an API key — can troubleshoot the
+  dashboards and the whole stack. Plus **Grafana MCP** config generation
+  (`mcp config`) wiring the Grafana MCP server + nr2grafana context into
+  Claude/Kiro. See [docs/deep-dive-and-ai.md](docs/deep-dive-and-ai.md).
 - **Change tracking**: every fix is logged locally and can be codified
   back into the mapping config.
 - **Optional AI assistance**: Claude diagnoses and fixes failing panels

@@ -176,6 +176,137 @@ DEFAULT_PLUGINS = [
     "grafana-azure-monitor-datasource",
 ]
 
+# --- deep-dive self-metric scenario (generic; NO customer values) ---------
+# The fake Prometheus/Mimir/Loki self-metrics endpoint (SelfMetricsHandler)
+# serves the component self-metrics deepdive.analyze reads so the whole
+# deep-dive runs offline against a deterministic, obviously-actionable
+# scenario:
+#   * Mimir  -- series churn (created/h >> churn threshold), a low
+#     samples/series ratio, TWO Prometheus replicas remote-writing with no
+#     HA tracker (double ingest), real series capacity well below the
+#     configured 10M limit, and a high-cardinality top-metric/top-label mix.
+#   * Loki   -- tiny flushed chunks (p50 well under the 200 KB warn line)
+#     dominated by idle/max_age flush reasons, plus failed flushes.
+#   * Tempo  -- a trickle of spans (effectively unused).
+# Every name below is a generic Helm/Mimir default, not a customer value.
+DEFAULT_MIMIR_INGESTERS = [
+    "mimir-ingester-zone-a-0", "mimir-ingester-zone-a-1",
+    "mimir-ingester-zone-b-0", "mimir-ingester-zone-b-1",
+    "mimir-ingester-zone-c-0", "mimir-ingester-zone-c-1",
+]
+DEFAULT_LOKI_INGESTERS = ["loki-ingester-0", "loki-ingester-1",
+                          "loki-ingester-2"]
+DEFAULT_TEMPO_INGESTERS = ["tempo-ingester-0", "tempo-ingester-1",
+                           "tempo-ingester-2"]
+# Two spoke Prometheis remote-writing the same series (no HA tracker) ->
+# the "double ingest" finding. Generic instance labels, not real hosts.
+DEFAULT_RW_INSTANCES = ["prometheus-spoke-0", "prometheus-spoke-1"]
+# A generic cluster/env label value (NOT a customer cluster name).
+DEFAULT_SELF_CLUSTER = "spoke-a"
+
+# The self-metrics endpoint understands exactly these metric names; any
+# other PromQL expression returns an empty vector (like the real API when
+# a metric is absent), so deepdive degrades gracefully.
+SELF_METRICS = frozenset([
+    "cortex_distributor_received_samples_total",
+    "cortex_ingester_memory_series",
+    "cortex_ingester_active_series",
+    "cortex_ingester_memory_series_created_total",
+    "cortex_ingester_memory_series_removed_total",
+    "cortex_request_duration_seconds_bucket",
+    "cortex_limits_overrides",
+    "cortex_limits_defaults",
+    "container_memory_working_set_bytes",
+    "container_spec_memory_limit_bytes",
+    "prometheus_remote_storage_bytes_total",
+    "prometheus_remote_storage_samples_total",
+    "prometheus_tsdb_head_series",
+    "prometheus_remote_storage_shards",
+    "prometheus_build_info",
+    "loki_distributor_lines_received_total",
+    "loki_distributor_bytes_received_total",
+    "loki_ingester_memory_streams",
+    "loki_ingester_memory_chunks",
+    "loki_ingester_streams_created_total",
+    "loki_ingester_chunks_flushed_total",
+    "loki_ingester_failed_flushes_total",
+    "loki_ingester_chunk_size_bytes_bucket",
+    "loki_ingester_chunk_utilization_bucket",
+    "loki_ingester_chunk_age_seconds_bucket",
+    "loki_ingester_wal_bytes_in_use",
+    "tempo_distributor_spans_received_total",
+    "tempo_distributor_bytes_received_total",
+    "tempo_metrics_generator_registry_active_series",
+])
+
+_G = 1024 ** 3
+
+
+def default_self_metrics():
+    """Deterministic self-metric scenario for the deep-dive (see above).
+
+    Plain numbers, computed once; no RNG and no wall clock, so identical
+    inputs yield an identical deep-dive. Public so tests/demos can tweak a
+    single value (e.g. flip ``ha_tracker_present``) before starting.
+    """
+    mim = list(DEFAULT_MIMIR_INGESTERS)
+    loki = list(DEFAULT_LOKI_INGESTERS)
+    tempo = list(DEFAULT_TEMPO_INGESTERS)
+    insts = list(DEFAULT_RW_INSTANCES)
+    # ~7 GiB RSS / 1.6M series ~= 4.7 KB/series; 12 GiB limit ingesters.
+    series = dict((p, 1600000) for p in mim)
+    return {
+        # -- Mimir --------------------------------------------------------
+        "mimir_ingesters": mim,
+        "ingesters_per_zone": 2,
+        "series_per_ingester": series,
+        "active_series": sum(series.values()),
+        "mimir_rss": dict((p, int(7.0 * _G)) for p in mim),
+        "mimir_mem_limit": dict((p, int(12 * _G)) for p in mim),
+        "replication_factor": 3,
+        "samples_s": 22000.0,
+        "created_per_h": 1300000.0,     # 13.5%/h churn of in-memory series
+        "removed_per_h": 1250000.0,
+        "push_latency_p50": 0.012,
+        "push_latency_p99": 0.085,
+        "limits": {
+            "max_global_series_per_user": 10000000,
+            "ingestion_rate": 250000,
+            "max_global_exemplars_per_user": 100000,
+        },
+        "prom_replicas": {DEFAULT_SELF_CLUSTER: 2},
+        "ha_tracker_present": False,
+        # -- remote_write (spoke Prometheis) ------------------------------
+        "rw_instances": insts,
+        # ~0.3 MB/s/instance compressed -> ~1.5 TB/month wire volume, the
+        # order of magnitude the reference sees at ~22k samples/s.
+        "rw_wire_bytes_s": dict((i, 300000.0) for i in insts),
+        "rw_samples_s": dict((i, 11000.0) for i in insts),
+        "rw_head_series": dict((i, 1600000) for i in insts),
+        "rw_shards": dict((i, 4) for i in insts),
+        # -- Loki ---------------------------------------------------------
+        "loki_ingesters": loki,
+        "loki_lines_s": 330.0,
+        "loki_bytes_s": 223000.0,
+        "loki_streams": dict((p, 42000) for p in loki),
+        "loki_chunks": dict((p, 61000) for p in loki),
+        "loki_streams_created_h": 180000.0,
+        "loki_flush_reasons": {"idle": 52000.0, "max_age": 14000.0,
+                               "full": 900.0},
+        "loki_failed_flushes_h": 340.0,
+        "loki_chunk_size_p50": 90000.0,   # < 200 KB warn line
+        "loki_chunk_util_p50": 0.14,
+        "loki_chunk_age_p50": 240.0,
+        "loki_wal": dict((p, int(1.8 * _G)) for p in loki),
+        "loki_rss": dict((p, int(3.0 * _G)) for p in loki),
+        # -- Tempo --------------------------------------------------------
+        "tempo_ingesters": tempo,
+        "tempo_spans_s": 0.5,             # effectively unused
+        "tempo_bytes_s": 1800.0,
+        "tempo_mg_active_series": 1200.0,
+        "tempo_rss": dict((p, int(1.0 * _G)) for p in tempo),
+    }
+
 _TOKEN_RE = re.compile(r"[A-Za-z_:][A-Za-z0-9_:]*")
 _BY_RE = re.compile(r"\bby\s*\(([^)]*)\)", re.IGNORECASE)
 _SELECTOR_RE = re.compile(r"\{([^}]*)\}")
@@ -232,6 +363,8 @@ class MockState(object):
                 self.loki_labels[lbl] = _gen_values(lbl, int(cnt))
         self.facet_values: List[str] = ["a", "b"]
         self.default_value: float = DEFAULT_VALUE
+        # deep-dive self-metric scenario (served by SelfMetricsHandler).
+        self.self_metrics: Dict[str, Any] = default_self_metrics()
         # Metrics whose fake Grafana series intentionally DISAGREE with
         # the New Relic side (a strong ramp instead of the shared
         # baseline curve), so the comparison view shows real
@@ -759,6 +892,244 @@ def _loki_volume(state: MockState, matcher: str,
 
 
 # ---------------------------------------------------------------------------
+# deep-dive self-metrics (cortex_* / loki_* / tempo_* / remote_write / RSS)
+# ---------------------------------------------------------------------------
+
+_HQUANT_RE = re.compile(r"histogram_quantile\s*\(\s*([0-9.]+)")
+_COUNT_RE = re.compile(r"\bcount\s*(?:\(|by\b|without\b)")
+_SUM_RE = re.compile(r"\bsum\s*\(")
+
+
+def _numstr(v: Any) -> str:
+    """Prometheus sample value as a string (integral values stay integral)."""
+    f = float(v)
+    if f == int(f):
+        return str(int(f))
+    return repr(f)
+
+
+def _by_labels(expr: str) -> set:
+    """Every label named in any ``by (...)`` clause of the expression."""
+    out = set()
+    for m in _BY_RE.finditer(expr):
+        for part in m.group(1).split(","):
+            p = part.strip()
+            if p:
+                out.add(p)
+    return out
+
+
+def _sel_eq(expr: str, key: str) -> Optional[str]:
+    """Value of an equality matcher ``key="val"`` in the first selector."""
+    m = _SELECTOR_RE.search(expr)
+    if not m:
+        return None
+    for label, op, val in _MATCHER_RE.findall(m.group(1)):
+        if label == key and op == "=":
+            return val
+    return None
+
+
+def _selfmetric_query(state: MockState, expr: str,
+                      now: Optional[float] = None) -> Dict[str, Any]:
+    """Answer a self-metric PromQL instant query from the scenario.
+
+    Returns a Prometheus ``/api/v1/query`` vector payload. The expression
+    is not fully parsed: the referenced self-metric plus the aggregation
+    shape (``sum``/``count``/``by (label)``/``histogram_quantile``/
+    ``rate``/``increase``) select a pre-computed, deterministic result, so
+    the deep-dive sees consistent numbers without a live TSDB. Unknown
+    metrics yield an empty vector; the ``syntax_error`` marker yields an
+    error, like the real API.
+    """
+    ts = int(now if now is not None else time.time())
+    sm = state.self_metrics
+
+    def vec(samples: List[Any]) -> Dict[str, Any]:
+        return {"status": "success",
+                "data": {"resultType": "vector",
+                         "result": [{"metric": lbl,
+                                     "value": [ts, _numstr(v)]}
+                                    for lbl, v in samples]}}
+
+    empty = {"status": "success",
+             "data": {"resultType": "vector", "result": []}}
+    if "syntax_error" in expr:
+        return {"status": "error", "errorType": "bad_data",
+                "error": "parse error: unexpected \"syntax_error\""}
+    tokens = set(_TOKEN_RE.findall(expr))
+    known = [m for m in SELF_METRICS if m in tokens]
+    if not known:
+        return empty
+    metric = known[0]
+    by = _by_labels(expr)
+    has_count = _COUNT_RE.search(expr) is not None
+    has_sum = _SUM_RE.search(expr) is not None
+    hq = _HQUANT_RE.search(expr)
+    quant = float(hq.group(1)) if hq else None
+
+    def per_pod(mapping: Dict[str, Any],
+                order: List[str]) -> Dict[str, Any]:
+        if has_count:
+            return vec([({}, len(order))])
+        if "pod" in by or not has_sum:
+            lbls = ("namespace" in by)
+            ns = _sel_eq(expr, "namespace") or ""
+            out = []
+            for p in order:
+                lb = {"pod": p}
+                if lbls and ns:
+                    lb["namespace"] = ns
+                out.append((lb, mapping[p]))
+            return vec(out)
+        return vec([({}, sum(mapping[p] for p in order))])
+
+    # -- Mimir ------------------------------------------------------------
+    if metric == "cortex_distributor_received_samples_total":
+        return vec([({}, sm["samples_s"])])
+    if metric == "cortex_ingester_active_series":
+        return vec([({}, sm["active_series"])])
+    if metric == "cortex_ingester_memory_series":
+        return per_pod(sm["series_per_ingester"], sm["mimir_ingesters"])
+    if metric == "cortex_ingester_memory_series_created_total":
+        return vec([({}, sm["created_per_h"])])
+    if metric == "cortex_ingester_memory_series_removed_total":
+        return vec([({}, sm["removed_per_h"])])
+    if metric == "cortex_request_duration_seconds_bucket":
+        val = sm["push_latency_p99"] if (quant or 0) >= 0.9 \
+            else sm["push_latency_p50"]
+        return vec([({}, val)])
+    if metric in ("cortex_limits_overrides", "cortex_limits_defaults"):
+        return vec([({"limit_name": k}, v)
+                    for k, v in sorted(sm["limits"].items())])
+    if metric == "container_memory_working_set_bytes":
+        ns = _sel_eq(expr, "namespace")
+        if ns == "loki":
+            return per_pod(sm["loki_rss"], sm["loki_ingesters"])
+        if ns == "tempo":
+            return per_pod(sm["tempo_rss"], sm["tempo_ingesters"])
+        return per_pod(sm["mimir_rss"], sm["mimir_ingesters"])
+    if metric == "container_spec_memory_limit_bytes":
+        ns = _sel_eq(expr, "namespace")
+        if ns == "loki":
+            return per_pod(sm["loki_wal"], sm["loki_ingesters"])
+        return per_pod(sm["mimir_mem_limit"], sm["mimir_ingesters"])
+
+    # -- remote_write -----------------------------------------------------
+    if metric == "prometheus_build_info":
+        reps = sm["prom_replicas"]
+        if has_count and "cluster" in by:
+            # count by (cluster) (count by (cluster, replica) (...)) -> the
+            # replica count per cluster (the final value deepdive wants).
+            return vec([({"cluster": c}, n) for c, n in sorted(reps.items())])
+        out = []
+        for c, n in sorted(reps.items()):
+            for r in range(int(n)):
+                out.append(({"cluster": c,
+                             "prometheus_replica": "replica-%d" % r}, 1))
+        return vec(out)
+    if metric == "prometheus_remote_storage_bytes_total":
+        return vec([({"instance": i}, sm["rw_wire_bytes_s"][i])
+                    for i in sm["rw_instances"]])
+    if metric == "prometheus_remote_storage_samples_total":
+        return vec([({"instance": i}, sm["rw_samples_s"][i])
+                    for i in sm["rw_instances"]])
+    if metric == "prometheus_tsdb_head_series":
+        return vec([({"instance": i}, sm["rw_head_series"][i])
+                    for i in sm["rw_instances"]])
+    if metric == "prometheus_remote_storage_shards":
+        return vec([({"instance": i}, sm["rw_shards"][i])
+                    for i in sm["rw_instances"]])
+
+    # -- Loki -------------------------------------------------------------
+    if metric == "loki_distributor_lines_received_total":
+        return vec([({}, sm["loki_lines_s"])])
+    if metric == "loki_distributor_bytes_received_total":
+        return vec([({}, sm["loki_bytes_s"])])
+    if metric == "loki_ingester_memory_streams":
+        return per_pod(sm["loki_streams"], sm["loki_ingesters"])
+    if metric == "loki_ingester_memory_chunks":
+        return per_pod(sm["loki_chunks"], sm["loki_ingesters"])
+    if metric == "loki_ingester_streams_created_total":
+        return vec([({}, sm["loki_streams_created_h"])])
+    if metric == "loki_ingester_chunks_flushed_total":
+        return vec([({"reason": r}, v)
+                    for r, v in sorted(sm["loki_flush_reasons"].items())])
+    if metric == "loki_ingester_failed_flushes_total":
+        return vec([({}, sm["loki_failed_flushes_h"])])
+    if metric == "loki_ingester_chunk_size_bytes_bucket":
+        return vec([({}, sm["loki_chunk_size_p50"])])
+    if metric == "loki_ingester_chunk_utilization_bucket":
+        return vec([({}, sm["loki_chunk_util_p50"])])
+    if metric == "loki_ingester_chunk_age_seconds_bucket":
+        return vec([({}, sm["loki_chunk_age_p50"])])
+    if metric == "loki_ingester_wal_bytes_in_use":
+        return per_pod(sm["loki_wal"], sm["loki_ingesters"])
+
+    # -- Tempo ------------------------------------------------------------
+    if metric == "tempo_distributor_spans_received_total":
+        return vec([({}, sm["tempo_spans_s"])])
+    if metric == "tempo_distributor_bytes_received_total":
+        return vec([({}, sm["tempo_bytes_s"])])
+    if metric == "tempo_metrics_generator_registry_active_series":
+        return vec([({}, sm["tempo_mg_active_series"])])
+    return empty
+
+
+def _cardinality_label_values(state: MockState) -> Dict[str, Any]:
+    """Mimir ``/api/v1/cardinality/label_values`` for ``__name__``.
+
+    Ranks metrics by series count high-to-low so the obviously-unused
+    waste metrics top the list (same inventory the tsdb status uses).
+    """
+    card = [{"label_value": m,
+             "series_count": _tsdb_metric_series(state, m)}
+            for m in state.metric_names()]
+    card.sort(key=lambda r: (-r["series_count"], r["label_value"]))
+    return {"label_names_count": 1, "label_values_count": len(card),
+            "labels": [{"label_name": "__name__",
+                        "label_values_count": len(card),
+                        "cardinality": card}]}
+
+
+def _cardinality_label_names(state: MockState) -> Dict[str, Any]:
+    """Mimir ``/api/v1/cardinality/label_names`` -- labels by value count."""
+    labels = []
+    for lbl in sorted(state.prom_labels):
+        cnt = state.prom_label_card.get(
+            lbl, len(state.prom_labels.get(lbl, [])))
+        labels.append({"label_name": lbl, "label_values_count": int(cnt)})
+    labels.sort(key=lambda r: (-r["label_values_count"], r["label_name"]))
+    return {"label_names_count": len(labels), "cardinality": labels}
+
+
+def _cardinality_active_series(state: MockState) -> Dict[str, Any]:
+    """Mimir ``/api/v1/cardinality/active_series`` -- a small data list."""
+    data = [{"__name__": m} for m in state.metric_names()]
+    return {"data": data}
+
+
+def _loki_series(state: MockState, cap: int = 2000) -> Dict[str, Any]:
+    """Loki ``/loki/api/v1/series`` -- streams for stream-label cardinality.
+
+    A small grid of ``service_name`` x ``level`` streams plus a large fan
+    of id-like ``request_id`` streams (the stream explosion) so any
+    consumer counting distinct label values sees ``request_id`` blow past
+    the warn threshold.
+    """
+    out: List[Dict[str, str]] = []
+    svcs = state.loki_labels.get("service_name") or ["checkout"]
+    levels = [lv for lv in (state.loki_labels.get("level") or ["info"])]
+    for s in svcs:
+        for lv in levels:
+            out.append({"service_name": s, "level": lv, "job": "app"})
+    for rid in (state.loki_labels.get("request_id") or [])[:cap]:
+        out.append({"service_name": "checkout", "level": "debug",
+                    "request_id": rid})
+    return {"status": "success", "data": out}
+
+
+# ---------------------------------------------------------------------------
 # HTTP plumbing
 # ---------------------------------------------------------------------------
 
@@ -1252,19 +1623,143 @@ class NerdGraphHandler(_JSONHandler):
 
 
 # ---------------------------------------------------------------------------
+# fake Prometheus / Mimir / Loki self-metrics endpoint (deep-dive)
+# ---------------------------------------------------------------------------
+
+class SelfMetricsHandler(_JSONHandler):
+    """Serves LGTM component self-metrics for ``deepdive.analyze``.
+
+    Answers the PromQL and Mimir/Loki introspection endpoints deepdive
+    reads directly (``PROM_URL`` / ``MIMIR_URL`` / ``LOKI_URL`` style),
+    so the whole deep-dive runs offline against the deterministic
+    scenario in :func:`default_self_metrics`:
+
+    * ``/api/v1/query`` -- component self-metrics (cortex_*, loki_*,
+      tempo_*, prometheus_remote_storage_*, container_memory_working_set_
+      bytes) via :func:`_selfmetric_query`.
+    * ``/api/v1/cardinality/{label_values,label_names,active_series}`` --
+      the Mimir cardinality API.
+    * ``/api/v1/status/tsdb`` and the label endpoints (shared with the
+      fake Grafana proxy inventory).
+    * ``/loki/api/v1/series`` -- Loki stream-label cardinality.
+
+    A leading ``/prometheus`` path segment (the Mimir query base) is
+    tolerated. No auth: this mirrors an in-cluster port-forward, where
+    deepdive talks to the component straight, not through Grafana.
+    """
+
+    server_version = "mock-selfmetrics/1.6"
+
+    def route(self, method: str) -> None:
+        parsed = urllib.parse.urlsplit(self.path)
+        path = parsed.path
+        if path.startswith("/prometheus/"):
+            path = path[len("/prometheus"):]
+        elif path == "/prometheus":
+            path = "/"
+        parts = [p for p in path.split("/") if p]
+        query = urllib.parse.parse_qs(parsed.query)
+        state = self.state
+
+        if method == "GET" and parts in (["ready"], ["healthz"],
+                                         ["api", "v1", "status",
+                                          "buildinfo"]):
+            self._send(200, {"status": "success", "data": {}})
+            return
+        if method in ("GET", "POST") and parts == ["api", "v1", "query"]:
+            expr = self._expr(method, query)
+            self._send(200, _selfmetric_query(state, expr))
+            return
+        if method in ("GET", "POST") and \
+                parts == ["api", "v1", "query_range"]:
+            # deepdive uses instant queries; a range request collapses to
+            # the same instant vector, which callers still parse.
+            expr = self._expr(method, query)
+            self._send(200, _selfmetric_query(state, expr))
+            return
+        if method == "GET" and \
+                parts == ["api", "v1", "cardinality", "label_values"]:
+            self._send(200, _cardinality_label_values(state))
+            return
+        if method == "GET" and \
+                parts == ["api", "v1", "cardinality", "label_names"]:
+            self._send(200, _cardinality_label_names(state))
+            return
+        if method == "GET" and \
+                parts == ["api", "v1", "cardinality", "active_series"]:
+            self._send(200, _cardinality_active_series(state))
+            return
+        if method == "GET" and parts == ["api", "v1", "status", "tsdb"]:
+            self._send(200, {"status": "success",
+                             "data": _tsdb_status(state)})
+            return
+        if method == "GET" and \
+                parts == ["api", "v1", "label", "__name__", "values"]:
+            self._send(200, {"status": "success",
+                             "data": state.metric_names()})
+            return
+        if method == "GET" and parts == ["api", "v1", "labels"]:
+            self._send(200, {"status": "success",
+                             "data": sorted(state.prom_labels)})
+            return
+        if method == "GET" and len(parts) == 5 and \
+                parts[:3] == ["api", "v1", "label"] and \
+                parts[4] == "values":
+            label = urllib.parse.unquote(parts[3])
+            self._send(200, {"status": "success",
+                             "data": state.prom_labels.get(label, [])})
+            return
+        if method == "GET" and parts == ["loki", "api", "v1", "series"]:
+            self._send(200, _loki_series(state))
+            return
+        self._send(404, {"status": "error", "errorType": "not_found",
+                         "error": "no self-metrics route for %s %s"
+                                  % (method, parsed.path)})
+
+    def _expr(self, method: str,
+              query: Dict[str, List[str]]) -> str:
+        """PromQL expression from the query string or a POST form body."""
+        if query.get("query"):
+            return query["query"][0]
+        if method == "POST":
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                n = 0
+            raw = self.rfile.read(n).decode("utf-8", "replace") \
+                if n > 0 else ""
+            form = urllib.parse.parse_qs(raw)
+            if form.get("query"):
+                return form["query"][0]
+        return ""
+
+
+# ---------------------------------------------------------------------------
 # server lifecycle
 # ---------------------------------------------------------------------------
 
 class MockStack(object):
     """Handles for a running mock stack; stop() shuts both servers."""
 
-    def __init__(self, grafana_server, nr_server, state: MockState):
+    def __init__(self, grafana_server, nr_server, state: MockState,
+                 selfmetrics_server=None):
         self._servers = [grafana_server, nr_server]
         self.state = state
         self.grafana_url = "http://127.0.0.1:%d" \
             % grafana_server.server_address[1]
         self.nr_url = "http://127.0.0.1:%d" \
             % nr_server.server_address[1]
+        # The self-metrics endpoint drives the deep-dive offline. Its one
+        # base URL serves the Prometheus, Mimir (cardinality) and Loki
+        # roles, so a caller can point prom/mimir/loki at it alike.
+        self.selfmetrics_url = ""
+        if selfmetrics_server is not None:
+            self._servers.append(selfmetrics_server)
+            self.selfmetrics_url = "http://127.0.0.1:%d" \
+                % selfmetrics_server.server_address[1]
+        self.prom_url = self.selfmetrics_url
+        self.mimir_url = self.selfmetrics_url
+        self.loki_url = self.selfmetrics_url
         self._threads: List[threading.Thread] = []
 
     @property
@@ -1302,13 +1797,16 @@ class MockStack(object):
 def start_mock(port: int = 0, nr_port: int = 0,
                state: Optional[MockState] = None,
                fixtures_dir: str = "",
-               verbose: bool = False) -> MockStack:
-    """Start the fake Grafana and fake NerdGraph servers.
+               verbose: bool = False,
+               selfmetrics_port: int = 0) -> MockStack:
+    """Start the fake Grafana, NerdGraph and self-metrics servers.
 
-    ``port``/``nr_port`` 0 binds ephemeral ports (read the actual URLs
-    from the returned handles). Pass a prepared :class:`MockState` to
-    customize inventory/credentials; otherwise fixtures are loaded from
-    ``fixtures/newrelic/`` (or ``fixtures_dir``).
+    ``port``/``nr_port``/``selfmetrics_port`` 0 binds ephemeral ports
+    (read the actual URLs from the returned handles). Pass a prepared
+    :class:`MockState` to customize inventory/credentials; otherwise
+    fixtures are loaded from ``fixtures/newrelic/`` (or ``fixtures_dir``).
+    The self-metrics server backs ``deepdive.analyze`` offline; its URL is
+    exposed as ``stack.prom_url`` / ``.mimir_url`` / ``.loki_url``.
     """
     if state is None:
         state = MockState(fixtures=load_fixtures(fixtures_dir))
@@ -1318,11 +1816,14 @@ def start_mock(port: int = 0, nr_port: int = 0,
                                          GrafanaHandler)
     nr_server = ThreadingHTTPServer(("127.0.0.1", nr_port),
                                     NerdGraphHandler)
-    for srv in (grafana_server, nr_server):
+    selfmetrics_server = ThreadingHTTPServer(
+        ("127.0.0.1", selfmetrics_port), SelfMetricsHandler)
+    for srv in (grafana_server, nr_server, selfmetrics_server):
         srv.daemon_threads = True
         srv.state = state  # type: ignore[attr-defined]
         srv.verbose = verbose  # type: ignore[attr-defined]
-    stack = MockStack(grafana_server, nr_server, state)
+    stack = MockStack(grafana_server, nr_server, state,
+                      selfmetrics_server=selfmetrics_server)
     stack._start()
     return stack
 
@@ -1335,6 +1836,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                     help="fake Grafana port (default 3000)")
     ap.add_argument("--nr-port", type=int, default=3001,
                     help="fake NerdGraph port (default 3001)")
+    ap.add_argument("--selfmetrics-port", type=int, default=3002,
+                    help="fake self-metrics port for the deep-dive "
+                         "(default 3002)")
     ap.add_argument("--token", default=DEFAULT_GRAFANA_TOKEN,
                     help="Grafana bearer token the mock accepts")
     ap.add_argument("--nr-key", default=DEFAULT_NR_API_KEY,
@@ -1350,15 +1854,19 @@ def main(argv: Optional[List[str]] = None) -> int:
                       fixtures=load_fixtures(args.fixtures))
     try:
         stack = start_mock(port=args.port, nr_port=args.nr_port,
-                           state=state, verbose=args.verbose)
+                           state=state, verbose=args.verbose,
+                           selfmetrics_port=args.selfmetrics_port)
     except OSError as e:
-        print("cannot bind mock servers: %s (ports %d/%d in use?)"
-              % (e, args.port, args.nr_port), file=sys.stderr)
+        print("cannot bind mock servers: %s (ports %d/%d/%d in use?)"
+              % (e, args.port, args.nr_port, args.selfmetrics_port),
+              file=sys.stderr)
         return 1
     print("mock Grafana:   %s   (token: %s)"
           % (stack.grafana_url, state.grafana_token))
     print("mock NerdGraph: %s/graphql   (API key: %s)"
           % (stack.nr_url, state.nr_api_key))
+    print("mock self-metrics (deep-dive): %s   "
+          "(point --prom/--mimir/--loki here)" % stack.selfmetrics_url)
     print("serving %d fixture dashboard(s); Ctrl-C to stop"
           % len(state.fixtures))
     print("point nr2grafana at the mock NR side with: "

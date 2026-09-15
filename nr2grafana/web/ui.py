@@ -1050,6 +1050,84 @@ details.jd pre { margin: 0; border: 0;
 .recs-head { display: flex; align-items: center; gap: var(--s2);
   flex-wrap: wrap; margin-bottom: var(--s3); }
 .recs-head .grow { flex: 1; }
+
+/* =============================================== stack (1.6) */
+.stack-fields { display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0 var(--s4); }
+.stack-fields .fld label { margin-top: var(--s3); }
+.stack-toggle { display: flex; align-items: center; gap: var(--s2);
+  margin: var(--s3) 0 0; font-size: var(--fs-md);
+  color: var(--text); font-weight: 600; }
+.stack-toggle input { width: auto; margin: 0; }
+.stack-toggle .field-help { font-weight: 400; margin: 0; }
+.stack-group { font-size: var(--fs-xs); font-weight: 700;
+  letter-spacing: .08em; text-transform: uppercase;
+  color: var(--faint); margin: var(--s5) 0 var(--s2);
+  padding-bottom: 4px; border-bottom: 1px solid var(--border-soft);
+  display: flex; align-items: center; gap: 6px; }
+.stack-group:first-child { margin-top: var(--s3); }
+.stack-group svg.i { color: var(--muted); }
+.stack-group .gc { margin-left: auto; font-weight: 600;
+  letter-spacing: 0; text-transform: none; }
+.risk-row { display: flex; flex-wrap: wrap; gap: 3px;
+  margin: var(--s2) 0 0; }
+.pack-floor td { background: var(--green-bg) !important; }
+.pack-note { font-size: var(--fs-sm); color: var(--muted);
+  margin: var(--s2) 0; }
+.np-card { border: 1px solid var(--border-soft);
+  border-radius: var(--r-md); background: var(--bg);
+  padding: var(--s2) var(--s3); margin-bottom: var(--s2); }
+.np-card .np-name { font-weight: 650; font-family: var(--mono);
+  font-size: var(--fs-md); }
+.np-card .np-kv { font-size: var(--fs-sm); color: var(--muted);
+  margin-top: 2px; }
+.np-card .np-kv b { color: var(--text); }
+.ai-actions { display: flex; flex-wrap: wrap; gap: var(--s2);
+  align-items: center; margin: var(--s2) 0; }
+.ai-actions .grow { flex: 1; }
+.mcp-tool { display: flex; gap: 8px; align-items: baseline;
+  padding: 4px 0; border-bottom: 1px solid var(--border-soft);
+  font-size: var(--fs-sm); }
+.mcp-tool:last-child { border-bottom: 0; }
+.mcp-tool .mono { color: var(--accent); flex: 0 0 auto; }
+.mcp-tool .desc { color: var(--muted); }
+.ctx-legend { font-size: var(--fs-sm); color: var(--muted);
+  border-left: 3px solid var(--accent); padding: 2px 0 2px 10px;
+  margin: var(--s3) 0; background: var(--accent-soft);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0; }
+.ans-box { border: 1px solid var(--border-soft);
+  border-radius: var(--r-md); background: var(--bg);
+  padding: var(--s3); margin-top: var(--s3);
+  white-space: pre-wrap; word-break: break-word;
+  font-size: var(--fs-md); }
+.stack-head { display: flex; flex-wrap: wrap; align-items: baseline;
+  gap: 4px var(--s4); border: 1px solid var(--border-soft);
+  border-left: 3px solid var(--green); border-radius: var(--r-md);
+  background: var(--green-bg); padding: var(--s3) var(--s4);
+  margin: var(--s3) 0; }
+.stack-head .sh-money { font-size: 28px; font-weight: 750;
+  color: var(--green); letter-spacing: -.02em;
+  font-variant-numeric: tabular-nums; }
+.stack-head .sh-and { color: var(--muted); font-size: var(--fs-lg); }
+.stack-head .sh-cores { font-size: 22px; font-weight: 700;
+  font-variant-numeric: tabular-nums; }
+.stack-head .sh-cap { flex-basis: 100%; color: var(--muted);
+  font-size: var(--fs-sm); margin-top: 2px; }
+.pack-tbl { overflow-x: auto; margin: var(--s2) 0; }
+.pack-tbl table { width: 100%; border-collapse: collapse;
+  font-size: var(--fs-sm); }
+.pack-tbl th, .pack-tbl td { padding: 6px 10px; text-align: left;
+  border-bottom: 1px solid var(--border-soft); white-space: nowrap; }
+.pack-tbl th { color: var(--muted); font-weight: 600;
+  font-size: var(--fs-xs); text-transform: uppercase;
+  letter-spacing: .05em; }
+.pack-tbl td.num { text-align: right;
+  font-variant-numeric: tabular-nums; }
+.pack-tbl td.mono { font-family: var(--mono); }
+.pack-tbl tr.pack-floor td { font-weight: 650; }
+.finding-group { margin-top: var(--s3); }
+.stack-yaml pre { max-height: 460px; overflow: auto; }
 </style>
 </head>
 <body>
@@ -1137,6 +1215,14 @@ details.jd pre { margin: 0; border: 0;
           aria-hidden="true"><line x1="12" y1="1" x2="12" y2="23">
           </line><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1
           0 7H6"></path></svg></span> Cost &amp; efficiency</a>
+      <a href="#/stack" data-r="stack">
+        <span class="ico"><svg class="i" viewBox="0 0 24 24"
+          fill="none" stroke="currentColor" stroke-width="1.7"
+          stroke-linecap="round" stroke-linejoin="round"
+          aria-hidden="true"><polygon points="12 2 2 7 12 12 22 7
+          12 2"></polygon><polyline points="2 17 12 22 22 17">
+          </polyline><polyline points="2 12 12 17 22 12"></polyline>
+          </svg></span> Stack deep-dive</a>
     </nav>
     <div class="sidebar-foot">
       Local only &mdash; API keys stay in server memory,
@@ -2605,7 +2691,7 @@ function renderPills() {
 var VIEWS = { overview: vOverview, connect: vConnect,
               convert: vConvert, datasources: vDatasources,
               import: vImport, changes: vChanges, ai: vAI,
-              cost: vCost };
+              cost: vCost, stack: vStack };
 var ALIASES = { setup: 'connect', dashboards: 'overview',
                 test: 'overview' };
 
@@ -5011,35 +5097,409 @@ function mdLite(text) {
   return out;
 }
 
+/* The AI view is AI-first: it packages every artifact into a
+   context bundle an AI can consume, lets you troubleshoot the
+   migration + LGTM stack with that bundle, wires a Grafana MCP
+   server into your local agent, and keeps the free-form chat. */
+function ensureAic() {
+  if (!App.aic) {
+    App.aic = { slug: '', context: null, ctxErr: null,
+      ctxLoading: false, answer: null, ansErr: null,
+      ansBusy: false, question: '', mcpKind: 'claude',
+      mcpConfig: null, mcpErr: null, mcpTarget: '',
+      probe: null, probeErr: null };
+  }
+  return App.aic;
+}
+
 async function vAI(view) {
   crumb('AI Assistant');
   var s = App.state || await api('/api/state');
-  var enabled = aiBackend(s.session) !== 'none';
+  App.state = s;
+  ensureAic();
+  if (!App.dashboards.length) {
+    try {
+      App.dashboards =
+        (await api('/api/dashboards')).dashboards || [];
+    } catch (e) { /* scope selector just offers whole-instance */ }
+  }
+  view.innerHTML =
+    '<h1>AI Assistant</h1>' +
+    '<p class="lead">Everything nr2grafana knows &mdash; your ' +
+    'dashboards, diagnoses, parity, cost and the ' +
+    stackTermRaw('The LGTM stack: Loki (logs), Grafana, Tempo ' +
+      '(traces) and Mimir (long-term Prometheus metrics).') +
+    ' LGTM deep-dive &mdash; packaged for an AI to troubleshoot ' +
+    'and optimize the whole stack without risking it.</p>' +
+    '<section id="ai-context" class="card"></section>' +
+    '<section id="ai-troubleshoot" class="card"></section>' +
+    '<section id="ai-mcp" class="card"></section>' +
+    '<section id="ai-chat"></section>';
+  renderAiContext();
+  renderAiTroubleshoot();
+  renderAiMcp();
+  renderAiChat(view);
+}
+
+/* ---- AI context bundle ---- */
+function aiScopeSelect(id, slug) {
+  var opts = '<option value="">Whole workspace</option>' +
+    (App.dashboards || []).map(function (d) {
+      var sg = d.slug || d.name || '';
+      return '<option value="' + esc(sg) + '"' +
+        (sg === slug ? ' selected' : '') + '>' + esc(sg) +
+        '</option>';
+    }).join('');
+  return '<select id="' + id + '">' + opts + '</select>';
+}
+
+function renderAiContext() {
+  var el = $('#ai-context'); if (!el) return;
+  var a = App.aic;
+  var q = a.slug ? '?slug=' + encodeURIComponent(a.slug) : '';
+  el.innerHTML =
+    '<h2>' + ico('sparkle', 15) + ' AI context bundle</h2>' +
+    '<p class="kv">A compact, structured snapshot of every ' +
+    'artifact &mdash; summaries and top-N, not raw dumps &mdash; ' +
+    'with a legend and a task preamble, ready to paste into any ' +
+    'AI. Secret-looking values are redacted.</p>' +
+    '<div class="ai-actions">' +
+    '<label style="margin:0">Scope</label>' +
+    aiScopeSelect('aic-scope', a.slug) +
+    '<span class="grow"></span>' +
+    '<button class="btn" id="aic-refresh" type="button">' +
+    ico('refresh', 13) + ' Build bundle</button>' +
+    '<button class="btn" id="aic-copy" type="button">' +
+    ico('copy', 13) + ' Copy AI context</button>' +
+    '<a class="btn" href="/download/ai-context.md' + q + '">' +
+    ico('download', 13) + ' .md</a>' +
+    '<a class="btn" href="/download/ai-context.json' + q + '">' +
+    ico('download', 13) + ' .json</a></div>' +
+    '<div id="aic-body"></div>';
+  $('#aic-scope').onchange = function () {
+    a.slug = this.value; a.context = null; renderAiContext();
+    loadAiContext();
+  };
+  $('#aic-refresh').onclick = function () {
+    a.context = null; loadAiContext();
+  };
+  $('#aic-copy').onclick = async function () {
+    var btn = this; busy(btn, true);
+    try {
+      var md = await apiText('/api/ai/context?format=markdown' +
+        (a.slug ? '&slug=' + encodeURIComponent(a.slug) : ''));
+      copyText(md, btn);
+    } catch (e) { toast(e.message, 'err'); }
+    busy(btn, false);
+  };
+  renderAicBody();
+  if (!a.context && !a.ctxLoading && !a.ctxErr) loadAiContext();
+}
+
+async function loadAiContext() {
+  var a = App.aic;
+  a.ctxLoading = true; a.ctxErr = null; renderAicBody();
+  try {
+    var q = a.slug ? '?slug=' + encodeURIComponent(a.slug) : '';
+    var r = await api('/api/ai/context' + q);
+    a.context = (r && r.context) || r || null;
+  } catch (e) { a.ctxErr = e.message; }
+  a.ctxLoading = false; renderAicBody();
+}
+
+/* Keys rendered as prose, not JSON, when present. */
+var CTX_META = { schema: 1, generated_at: 1, redacted: 1,
+  version: 1 };
+function renderAicBody() {
+  var el = $('#aic-body'); if (!el) return;
+  var a = App.aic;
+  if (a.ctxLoading) {
+    el.innerHTML = '<div class="skel" style="height:70px"></div>';
+    return;
+  }
+  if (a.ctxErr) {
+    el.innerHTML = errorCard('Could not build the AI context ' +
+      'bundle.', a.ctxErr); return;
+  }
+  var ctx = a.context;
+  if (!ctx) { el.innerHTML = ''; return; }
+  var preamble = ctx.task || ctx.preamble || ctx.task_preamble ||
+    '';
+  var legend = ctx.legend;
+  var html = '';
+  if (preamble) {
+    html += '<div class="ctx-legend"><b>Task preamble</b><br>' +
+      esc(String(preamble)) + '</div>';
+  }
+  if (legend && typeof legend === 'object') {
+    html += jsonDetails('Legend — what each field means', legend);
+  } else if (typeof legend === 'string' && legend) {
+    html += '<div class="ctx-legend">' + esc(legend) + '</div>';
+  }
+  var keys = Object.keys(ctx).filter(function (k) {
+    return !CTX_META[k] && k !== 'task' && k !== 'preamble' &&
+      k !== 'task_preamble' && k !== 'legend';
+  });
+  var avail = ctx.available_artifacts || [];
+  var hasDash = ctx.dashboard &&
+    Object.keys(ctx.dashboard).length > 0;
+  /* Nothing to summarize yet: don't dump the raw "missing artifacts"
+     list on a first-run user -- show a clear next action instead. */
+  if (!hasDash && !avail.length) {
+    html += '<div class="empty"><span class="eico">' +
+      ico('sparkle', 26) + '</span><b>Nothing to bundle yet.</b><br>' +
+      'Convert a New Relic dashboard or run a Stack deep-dive, and ' +
+      'this bundle fills with the diagnosis, parity, cost and stack ' +
+      'findings an AI needs to troubleshoot everything at once.' +
+      '<div class="btnbar" style="justify-content:center;' +
+      'margin-top:var(--s3)">' +
+      '<a class="btn primary" href="#/convert">' + ico('download', 13) +
+      ' Fetch &amp; convert a dashboard</a>' +
+      '<a class="btn" href="#/stack">' + ico('zap', 13) +
+      ' Run a Stack deep-dive</a></div></div>';
+    el.innerHTML = html;
+    return;
+  }
+  if (!keys.length) {
+    html += '<div class="empty">The bundle is empty &mdash; ' +
+      'convert a dashboard or run a deep-dive first.</div>';
+  }
+  keys.forEach(function (k) {
+    var v = ctx[k];
+    if (v == null) return;
+    if (typeof v === 'object' && !Object.keys(v).length) return;
+    html += jsonDetails(humanize(k), v);
+  });
+  el.innerHTML = html;
+}
+
+/* ---- troubleshoot with AI ---- */
+function renderAiTroubleshoot() {
+  var el = $('#ai-troubleshoot'); if (!el) return;
+  var a = App.aic;
+  var enabled = aiBackend((App.state || {}).session) !== 'none';
+  var head = '<h2>' + ico('zap', 15) +
+    ' Troubleshoot with AI</h2>';
+  if (!enabled) {
+    el.innerHTML = head + '<div class="empty"><span class="eico">' +
+      ico('sparkle', 26) + '</span><b>AI is not configured.</b>' +
+      '<br>Add an Anthropic API key or a local console AI command ' +
+      'in <a href="#/connect">Connect</a> to troubleshoot with ' +
+      'the full context bundle.</div>';
+    return;
+  }
+  el.innerHTML = head +
+    '<p class="kv">Ask a question and the full context bundle ' +
+    'above is sent with it &mdash; the AI can reason over your ' +
+    'dashboards and the whole LGTM stack at once.</p>' +
+    '<div class="row" style="align-items:stretch">' +
+    '<textarea id="ts-q" style="flex:1;min-height:60px" ' +
+    'placeholder="e.g. Why do half my migrated panels show ' +
+    'no data, and where can I safely cut LGTM cost?">' +
+    esc(a.question || '') + '</textarea></div>' +
+    '<div class="btnbar"><button class="btn primary" id="ts-go" ' +
+    'type="button">' + ico('play', 13) + ' Ask</button>' +
+    '<span class="kv">scope: ' +
+    esc(a.slug || 'whole workspace') + '</span></div>' +
+    '<div id="ts-answer"></div>';
+  var go = $('#ts-go');
+  go.onclick = function () { onTroubleshoot(go); };
+  renderTsAnswer();
+}
+
+function renderTsAnswer() {
+  var el = $('#ts-answer'); if (!el) return;
+  var a = App.aic;
+  if (a.ansBusy) {
+    el.innerHTML = '<div class="ans-box"><span class="skel" ' +
+      'style="width:14px;height:14px;border-radius:50%;' +
+      'display:inline-block"></span> thinking&hellip;</div>';
+    return;
+  }
+  if (a.ansErr) {
+    el.innerHTML = errorCard('The AI could not answer.', a.ansErr);
+    return;
+  }
+  if (!a.answer) { el.innerHTML = ''; return; }
+  el.innerHTML = '<div class="ans-box">' +
+    (a.answer.backend ? '<span class="chip info" ' +
+      'style="float:right">' + esc(a.answer.backend) +
+      '</span>' : '') +
+    mdLite(a.answer.answer || a.answer.reply || '') + '</div>';
+}
+
+async function onTroubleshoot(btn) {
+  var a = App.aic;
+  var ta = $('#ts-q');
+  a.question = ta ? ta.value.trim() : '';
+  if (!a.question) { toast('Type a question first', 'err'); return; }
+  a.ansBusy = true; a.ansErr = null; a.answer = null;
+  renderTsAnswer(); busy(btn, true);
+  try {
+    var body = { question: a.question };
+    if (a.slug) body.slug = a.slug;
+    var r = await api('/api/ai/troubleshoot', body);
+    if (r && r.job) r = await pollJob(r.job);
+    a.answer = r || {};
+  } catch (e) { a.ansErr = e.message; toast(e.message, 'err'); }
+  a.ansBusy = false; busy(btn, false); renderTsAnswer();
+  refreshState();
+}
+
+/* ---- Grafana MCP panel ---- */
+function renderAiMcp() {
+  var el = $('#ai-mcp'); if (!el) return;
+  var a = App.aic;
+  el.innerHTML =
+    '<h2>' + ico('database', 15) + ' Grafana ' +
+    stackTermRaw('MCP (Model Context Protocol): a standard way to ' +
+      'give an AI agent live tools. The Grafana MCP server lets ' +
+      'your agent query Grafana, datasources and dashboards ' +
+      'directly.') + ' MCP</h2>' +
+    '<p class="kv">Generate a ready MCP config that wires the ' +
+    'Grafana MCP server into your local AI (Claude, Kiro). The ' +
+    'service-account token is referenced from an environment ' +
+    'variable &mdash; never written into the file.</p>' +
+    '<div class="ai-actions">' +
+    '<label style="margin:0">Target agent</label>' +
+    '<div class="seg" role="group">' +
+    ['claude', 'kiro', 'generic'].map(function (k) {
+      return '<button type="button" data-mcpkind="' + k + '"' +
+        (a.mcpKind === k ? ' class="on"' : '') + '>' +
+        esc(k === 'claude' ? 'Claude' : k === 'kiro' ? 'Kiro' :
+          'Generic') + '</button>';
+    }).join('') + '</div>' +
+    '<span class="grow"></span>' +
+    '<button class="btn primary" id="mcp-gen" type="button">' +
+    ico('wrench', 13) + ' Generate config</button></div>' +
+    '<div id="mcp-config"></div>' +
+    '<div class="ai-actions" style="margin-top:var(--s3)">' +
+    '<label style="margin:0">Probe an MCP server</label>' +
+    '<input id="mcp-target" placeholder="http://localhost:8000/sse ' +
+    'or a stdio command" value="' + esc(a.mcpTarget || '') +
+    '" style="flex:1;min-width:200px" spellcheck="false" ' +
+    'autocomplete="off">' +
+    '<button class="btn" id="mcp-probe" type="button">' +
+    ico('play', 13) + ' Probe MCP server</button></div>' +
+    '<div id="mcp-probe-out"></div>';
+  $all('[data-mcpkind]', el).forEach(function (b) {
+    b.onclick = function () {
+      a.mcpKind = b.getAttribute('data-mcpkind');
+      a.mcpConfig = null; renderAiMcp();
+    };
+  });
+  $('#mcp-gen').onclick = function () { loadMcpConfig(this); };
+  $('#mcp-probe').onclick = function () { onMcpProbe(this); };
+  renderMcpConfig();
+  renderMcpProbe();
+}
+
+async function loadMcpConfig(btn) {
+  var a = App.aic;
+  busy(btn, true);
+  try {
+    var r = await api('/api/mcp/config?kind=' +
+      encodeURIComponent(a.mcpKind));
+    a.mcpConfig = (r && r.config) || r || null;
+    a.mcpErr = null;
+  } catch (e) { a.mcpErr = e.message; toast(e.message, 'err'); }
+  busy(btn, false); renderMcpConfig();
+}
+
+function renderMcpConfig() {
+  var el = $('#mcp-config'); if (!el) return;
+  var a = App.aic;
+  if (a.mcpErr) {
+    el.innerHTML = errorCard('Could not generate the MCP config.',
+      a.mcpErr); return;
+  }
+  if (!a.mcpConfig) { el.innerHTML = ''; return; }
+  var txt = typeof a.mcpConfig === 'string' ? a.mcpConfig :
+    JSON.stringify(a.mcpConfig, null, 2);
+  var id = 'mcpcfg-' + uid();
+  el.innerHTML = '<div class="rec-cfg"><div class="cfg-bar">' +
+    '<label style="margin:0">MCP config (' + esc(a.mcpKind) +
+    ')</label><span style="margin-left:auto"></span>' +
+    copyBtn(id, 'MCP config') + '</div>' +
+    '<pre id="' + id + '">' + esc(txt) + '</pre>' +
+    '<div class="cfg-note">Set ' +
+    '<span class="mono">GRAFANA_SERVICE_ACCOUNT_TOKEN</span> in ' +
+    'your environment; the token is never written into this ' +
+    'file.</div></div>';
+}
+
+async function onMcpProbe(btn) {
+  var a = App.aic;
+  var inp = $('#mcp-target');
+  a.mcpTarget = inp ? inp.value.trim() : '';
+  a.probe = null; a.probeErr = null;
+  busy(btn, true); renderMcpProbe();
+  try {
+    var body = {};
+    var tgt = a.mcpTarget;
+    if (tgt) {
+      if (/^https?:\/\//i.test(tgt)) body.url = tgt;
+      else body.command = tgt;
+    }
+    a.probe = await api('/api/mcp/probe', body);
+  } catch (e) { a.probeErr = e.message; toast(e.message, 'err'); }
+  busy(btn, false); renderMcpProbe();
+}
+
+function renderMcpProbe() {
+  var el = $('#mcp-probe-out'); if (!el) return;
+  var a = App.aic;
+  if (a.probeErr) {
+    el.innerHTML = errorCard('MCP probe failed.', a.probeErr);
+    return;
+  }
+  var p = a.probe;
+  if (!p) { el.innerHTML = ''; return; }
+  if (p.ok === false || p.error) {
+    el.innerHTML = errorCard('The MCP server did not respond.',
+      p.error || 'no tools returned'); return;
+  }
+  var tools = p.tools || [];
+  el.innerHTML = '<div class="ai-box">' +
+    chip('connected', 'ok') + ' ' +
+    chip(tools.length + ' tool' + (tools.length === 1 ? '' : 's'),
+      'info') +
+    (tools.length ? '<div style="margin-top:8px">' +
+      tools.map(function (t) {
+        var nm = typeof t === 'string' ? t : (t.name || '');
+        var desc = (t && t.description) || '';
+        return '<div class="mcp-tool"><span class="mono">' +
+          esc(nm) + '</span><span class="desc">' +
+          esc(truncStr(desc, 120)) + '</span></div>';
+      }).join('') + '</div>' : '') + '</div>';
+}
+
+/* ---- assistant chat (unchanged behaviour) ---- */
+function renderAiChat(view) {
+  var el = $('#ai-chat'); if (!el) return;
+  var enabled = aiBackend((App.state || {}).session) !== 'none';
+  if (!enabled) {
+    el.innerHTML = '<h2>' + ico('sparkle', 15) +
+      ' Assistant chat</h2><div class="empty">' +
+      'Configure an AI backend in <a href="#/connect">Connect' +
+      '</a> to chat about individual queries.</div>';
+    return;
+  }
   var msgs = App.ai.map(function (m) {
     return '<div class="msg ' + m.role + '">' +
       mdLite(m.content) + '</div>';
   }).join('');
-  view.innerHTML =
-    '<h1>AI Assistant</h1>' +
-    '<p class="lead">Ask about failing queries, PromQL/LogQL ' +
-    'translation, datasource setup, or anything about this ' +
-    'migration.</p>' +
-    (!enabled ?
-      '<div class="empty"><span class="eico">' +
-      ico('sparkle', 26) + '</span><b>AI is not configured.</b>' +
-      '<br>Pick a backend in <a href="#/connect">Connect</a> ' +
-      '&mdash; an Anthropic API key or a local console AI ' +
-      'command &mdash; to enable the assistant.</div>' :
-      '<div class="card"><div id="chatlog">' + (msgs ||
-        '<div class="kv">Try: &quot;Why would ' +
-        'http_server_request_duration_seconds_bucket return no ' +
-        'data?&quot;</div>') + '</div>' +
-      '<div class="row" style="margin-top:10px">' +
-      '<textarea id="ai-input" style="flex:1;min-height:44px" ' +
-      'placeholder="Ask the assistant..."></textarea>' +
-      '<button class="btn primary" id="ai-send">Send</button>' +
-      '</div></div>');
-  if (!enabled) return;
+  el.innerHTML = '<h2>' + ico('sparkle', 15) +
+    ' Assistant chat</h2>' +
+    '<div class="card"><div id="chatlog">' + (msgs ||
+      '<div class="kv">Try: &quot;Why would ' +
+      'http_server_request_duration_seconds_bucket return no ' +
+      'data?&quot;</div>') + '</div>' +
+    '<div class="row" style="margin-top:10px">' +
+    '<textarea id="ai-input" style="flex:1;min-height:44px" ' +
+    'placeholder="Ask the assistant..."></textarea>' +
+    '<button class="btn primary" id="ai-send">Send</button>' +
+    '</div></div>';
   var logEl = $('#chatlog');
   logEl.scrollTop = logEl.scrollHeight;
   async function send() {
@@ -5049,7 +5509,7 @@ async function vAI(view) {
     App.ai.push({ role: 'user', content: text });
     input.value = '';
     App.aiBusy = true;
-    vAI(view);
+    renderAiChat(view);
     try {
       var r = await api('/api/ai/chat', { messages: App.ai });
       App.ai.push({ role: 'assistant', content: r.reply || '' });
@@ -5059,7 +5519,7 @@ async function vAI(view) {
       toast(e.message, 'err');
     }
     App.aiBusy = false;
-    vAI(view);
+    renderAiChat(view);
     refreshState();
   }
   $('#ai-send').onclick = send;
@@ -5587,13 +6047,14 @@ function welcomeHtml() {
 /* ============================================== help / shortcuts */
 var GKEYS = { o: '#/overview', c: '#/connect', f: '#/convert',
   d: '#/datasources', m: '#/compare', i: '#/import',
-  h: '#/changes', a: '#/ai', e: '#/cost' };
+  h: '#/changes', a: '#/ai', e: '#/cost', s: '#/stack' };
 var HELP_KEYS = [
   ['g then o', 'Overview'], ['g then c', 'Connect'],
   ['g then f', 'Fetch & Convert'], ['g then d', 'Datasources'],
   ['g then m', 'Compare'], ['g then i', 'Import'],
   ['g then h', 'Changes (history)'], ['g then a', 'AI Assistant'],
   ['g then e', 'Cost & efficiency'],
+  ['g then s', 'Stack deep-dive'],
   ['?', 'Show this help'], ['j', 'Toggle background jobs'],
   ['t', 'Cycle theme'], ['Esc', 'Close dialogs / drawers']];
 
@@ -5718,6 +6179,685 @@ function pollJob(jid) {
       }, function (e) { clearInterval(t); reject(e); });
     }, 700);
   });
+}
+
+/* ============================================ stack deep-dive (1.6) */
+/* Plain-text fetch, mirroring api() but returning the raw body --
+   used to Copy the AI-context markdown and pull config text. */
+async function apiText(path) {
+  var res;
+  try { res = await fetch(path); }
+  catch (e) {
+    throw new Error('Cannot reach the nr2grafana server (' +
+                    e.message + '). Is it still running?');
+  }
+  if (!res.ok) {
+    var msg = 'HTTP ' + res.status;
+    try { var j = await res.json(); if (j && j.error) msg = j.error; }
+    catch (e2) { /* non-JSON error body */ }
+    throw new Error(msg);
+  }
+  return await res.text();
+}
+
+/* One-line truncation for compact rows (MCP tool descriptions). */
+function truncStr(s, n) {
+  s = s == null ? '' : String(s);
+  n = n || 120;
+  return s.length > n ? s.slice(0, n - 1) + '…' : s;
+}
+
+/* Plain-language glossary for every LGTM / Kubernetes term the Stack
+   and AI views surface. Hovering the (i) explains it in one line. */
+var STACK_TERMS = {
+  'active series': 'one active series is a unique metric + label-' +
+    'value combination held in an ingester\'s memory; ingester RAM ' +
+    'and Mimir cost both scale with it.',
+  'bytes per series': 'measured ingester memory (RSS) divided by ' +
+    'active series; multiply by your series ceiling for the real RAM ' +
+    'capacity -- the configured max_global_series limit is a guard, ' +
+    'not a capacity number.',
+  'bin-pack': 'fitting the same set of pods onto the fewest nodes ' +
+    'that still respect every safety rule (zone spread, one ingester ' +
+    'per node) -- fewer, better-used nodes at the same durability.',
+  'zone-aware': 'zone-aware replication places each of the 3 copies ' +
+    'of a series in a different failure zone, so losing one node (or ' +
+    'zone) drops only one copy and quorum survives. It is what makes ' +
+    'packing two ingesters per node safe -- never disable it to save ' +
+    'nodes.',
+  'churn': 'how fast series are created and retired; high churn (low ' +
+    'samples per series) bloats the head block and TSDB index without ' +
+    'adding useful data -- usually an unbounded label like a pod id.',
+  'right-size': 'set a pod\'s CPU/memory request to its observed peak ' +
+    'plus headroom (CPU peak x1.5, memory peak x1.3), never below the ' +
+    'peak -- frees requested capacity for packing without starving ' +
+    'the workload.',
+  'spot': 'spare EC2 capacity at a steep discount that AWS can ' +
+    'reclaim with ~2 minutes notice; safe for stateless components, ' +
+    'never for stateful ingesters (a reclaim risks ring churn / WAL ' +
+    'loss).',
+  'on-demand': 'standard, non-reclaimable EC2 capacity; the safe ' +
+    'choice for stateful Mimir/Loki/Tempo ingesters.',
+  'consolidation': 'Karpenter reclaiming underused or empty nodes and ' +
+    're-packing their pods onto fewer nodes -- the main cost lever, ' +
+    'gated by disruption budgets so it never evicts more than one ' +
+    'ingester at a time.',
+  'PDB': 'a PodDisruptionBudget caps how many pods of a group may be ' +
+    'down at once; maxUnavailable must be >= 1 on ingesters (0 blocks ' +
+    'both node drains and consolidation).',
+  'NodePool': 'the Karpenter object that decides what nodes to launch ' +
+    '(instance families, capacity type, limits, disruption rules) for ' +
+    'a set of pods.',
+  'Sigma-limits': 'the sum of every pod\'s memory *limit* on a node ' +
+    'divided by the node\'s capacity; above 1.0 a simultaneous burst ' +
+    'can OOM the node even though requests fit.',
+  'remote_write': 'the Prometheus/agent path that ships samples to ' +
+    'Mimir; dropping unused metrics here (write_relabel) cuts ingest ' +
+    'cost while keeping full-fidelity data locally for debugging.'
+};
+function stackTermRaw(text) {
+  return '<span class="term-i" title="' + esc(text) +
+    '" tabindex="0" role="img" aria-label="' + esc(text) + '">' +
+    ico('info', 13) + '</span>';
+}
+function stackTerm(term) {
+  var t = STACK_TERMS[term];
+  if (!t) return '';
+  return stackTermRaw(term + ': ' + t);
+}
+
+/* deepdive/packing area -> one of the 7 contract display groups. */
+var AREA_TO_GROUP = {
+  capacity: 'capacity',
+  cardinality: 'cardinality', churn: 'cardinality',
+  efficiency: 'efficiency', loki: 'efficiency', tempo: 'efficiency',
+  rightsizing: 'efficiency', 'right-sizing': 'efficiency',
+  packing: 'efficiency',
+  durability: 'durability',
+  cost: 'cost',
+  network: 'network',
+  karpenter: 'karpenter' };
+var GROUP_ORDER = ['capacity', 'cardinality', 'efficiency',
+  'durability', 'cost', 'network', 'karpenter', 'other'];
+var GROUP_LBL = { capacity: 'Capacity', cardinality: 'Cardinality',
+  efficiency: 'Efficiency', durability: 'Durability', cost: 'Cost',
+  network: 'Network', karpenter: 'Karpenter', other: 'Other' };
+var GROUP_ICO = { capacity: 'database', cardinality: 'search',
+  efficiency: 'zap', durability: 'checkcircle', cost: 'wrench',
+  network: 'arrow', karpenter: 'database', other: 'info' };
+/* deepdive severities are FAIL/WARN/INFO; map to chip + card classes. */
+var STACK_SEV_CLS = { FAIL: 'err', WARN: 'warn', INFO: 'info',
+  fail: 'err', warn: 'warn', info: 'info', blocker: 'err',
+  high: 'err', medium: 'warn', low: 'info' };
+var STACK_SEV_CARD = { FAIL: 'high', WARN: 'medium', INFO: 'low',
+  fail: 'high', warn: 'medium', info: 'low', blocker: 'high',
+  high: 'high', medium: 'medium', low: 'low' };
+var STACK_SEV_ORDER = { FAIL: 0, fail: 0, blocker: 0, high: 0,
+  WARN: 1, warn: 1, medium: 1, INFO: 2, info: 2, low: 2 };
+
+function ensureStack() {
+  if (!App.stack) {
+    App.stack = { prom: '', mimir: '', loki: '', kube: false,
+      slug: '', deepdive: null, packing: null, loading: false,
+      err: null, ran: false };
+  }
+  return App.stack;
+}
+
+async function vStack(view) {
+  crumb('Stack deep-dive');
+  var s = App.state || await api('/api/state');
+  App.state = s;
+  var st = ensureStack();
+  if (!st.deepdive && !st.ran && !st.loading) {
+    try {
+      var prev = await api('/api/deepdive' +
+        (st.slug ? '?slug=' + encodeURIComponent(st.slug) : ''));
+      if (prev && prev.deepdive) {
+        st.deepdive = prev.deepdive;
+        st.packing = prev.packing || null;
+        st.ran = true;
+      }
+    } catch (e) { /* no prior run: the form is shown */ }
+  }
+  view.innerHTML =
+    '<h1>Stack deep-dive</h1>' +
+    '<p class="lead">Read the LGTM stack\'s own metrics ' +
+    '(' + stackTermRaw('cortex_*, loki_*, tempo_* and container ' +
+      'memory -- the components report their own health.') +
+    ' self-metrics) and, optionally, your Kubernetes topology, then ' +
+    'get safe ways to reclaim ' + stackTerm('active series') +
+    ' capacity, cores and dollars &mdash; every recommendation ' +
+    'states its risk and <b>defaults to the option that keeps ' +
+    'durability, availability and performance</b>.</p>' +
+    '<div class="card">' + stackFormHtml() + '</div>' +
+    consoleHtml('stack-console', 'Deep-dive log') +
+    '<section id="stack-headline"></section>' +
+    '<section id="stack-findings"></section>' +
+    '<section id="stack-packing"></section>' +
+    '<section id="stack-karpenter"></section>';
+  wireStackForm();
+  renderStackResults();
+}
+
+function stackFieldHtml(id, label, value, placeholder) {
+  return '<div class="fld"><label>' + esc(label) + '</label>' +
+    '<input id="' + id + '" value="' + esc(value || '') +
+    '" placeholder="' + esc(placeholder) + '" autocomplete="off" ' +
+    'spellcheck="false"></div>';
+}
+
+function stackFormHtml() {
+  var st = App.stack;
+  return '<div class="stack-fields">' +
+    stackFieldHtml('sd-prom', 'Prometheus URL', st.prom,
+      'http://localhost:9090') +
+    stackFieldHtml('sd-mimir', 'Mimir URL', st.mimir,
+      'http://localhost:8080/prometheus') +
+    stackFieldHtml('sd-loki', 'Loki URL', st.loki,
+      'http://localhost:3100') +
+    '</div>' +
+    '<label class="stack-toggle"><input type="checkbox" id="sd-kube"' +
+    (st.kube ? ' checked' : '') + '> Include Kubernetes ' +
+    stackTerm('bin-pack') +
+    '<span class="field-help">Needs <span class="mono">kubectl</span>' +
+    ' on PATH; adds node topology, ' + stackTerm('right-size') +
+    ' right-sizing, packing and Karpenter. The metric deep-dive runs ' +
+    'with or without a cluster.</span></label>' +
+    '<div class="btnbar" style="margin-top:var(--s3)">' +
+    '<button class="btn primary" id="sd-run" type="button">' +
+    ico('zap', 14) + ' Run deep-dive</button>' +
+    '<span class="kv">Leave the URLs blank to read the metrics ' +
+    'through your configured Grafana datasources.</span></div>';
+}
+
+function wireStackForm() {
+  var st = App.stack;
+  var p = $('#sd-prom'), m = $('#sd-mimir'), l = $('#sd-loki');
+  if (p) p.onchange = function () { st.prom = p.value.trim(); };
+  if (m) m.onchange = function () { st.mimir = m.value.trim(); };
+  if (l) l.onchange = function () { st.loki = l.value.trim(); };
+  var k = $('#sd-kube');
+  if (k) k.onchange = function () { st.kube = k.checked; };
+  var run = $('#sd-run');
+  if (run) run.onclick = function () { onRunDeepdive(run); };
+}
+
+async function onRunDeepdive(btn) {
+  var st = App.stack;
+  var p = $('#sd-prom'), m = $('#sd-mimir'), l = $('#sd-loki'),
+      k = $('#sd-kube');
+  if (p) st.prom = p.value.trim();
+  if (m) st.mimir = m.value.trim();
+  if (l) st.loki = l.value.trim();
+  if (k) st.kube = k.checked;
+  st.loading = true; st.err = null;
+  busy(btn, true); renderStackResults();
+  var body = { kube: !!st.kube };
+  if (st.prom) body.prom = st.prom;
+  if (st.mimir) body.mimir = st.mimir;
+  if (st.loki) body.loki = st.loki;
+  if (st.slug) body.slug = st.slug;
+  try {
+    var job = await startJob('deepdive', '/api/deepdive', body,
+      logInto($('#stack-console')));
+    var r = (job && job.result) || {};
+    st.deepdive = r.deepdive || null;
+    st.packing = r.packing || null;
+    st.ran = true;
+    toast('Deep-dive complete', 'ok');
+  } catch (e) { st.err = e.message; toast(e.message, 'err'); }
+  st.loading = false; busy(btn, false);
+  renderStackResults();
+  refreshState();
+}
+
+function renderStackResults() {
+  renderStackHeadline();
+  renderStackFindings();
+  renderStackPacking();
+  renderStackKarpenter();
+}
+
+/* ---- risk / evidence / savings chips (shared by findings) ---- */
+function riskChips(f) {
+  f = f || {};
+  var dims = [['keeps_performance', 'performance'],
+              ['keeps_durability', 'durability'],
+              ['keeps_availability', 'availability']];
+  var out = '';
+  dims.forEach(function (d) {
+    var v = f[d[0]];
+    if (v === true) {
+      out += chip('keeps ' + d[1], 'ok',
+        'Safe: this recommendation does not reduce ' + d[1] + '.');
+    } else if (v === false) {
+      out += chip('may reduce ' + d[1] + ' — review', 'warn',
+        'CAUTION: this could reduce ' + d[1] + '. Read the rationale ' +
+        'and prefer the safe option; nothing is applied ' +
+        'automatically.');
+    }
+  });
+  if (f.keeps_intact === true && !out) {
+    out += chip('safe', 'ok', 'Keeps durability, availability and ' +
+      'performance intact.');
+  }
+  var caveat = f.caveat || f.risk_note || f.warning;
+  if (caveat) out += chip('caveat', 'warn', String(caveat));
+  return out;
+}
+
+function evidenceChips(ev) {
+  ev = ev || {};
+  return Object.keys(ev).map(function (k) {
+    var v = ev[k];
+    if (v == null || typeof v === 'object') return '';
+    var disp = typeof v === 'number' ? fmtNumP(v) :
+      (v === true ? 'yes' : v === false ? 'no' : String(v));
+    return chip(humanize(k) + ': ' + disp, 'dim');
+  }).join('');
+}
+
+function stackSaveHtml(es) {
+  es = es || {};
+  var bits = '';
+  if (es.monthly_usd != null) {
+    bits += '<span class="save-money">~' +
+      esc(fmtMoney(num(es.monthly_usd))) + ' / mo</span>';
+  }
+  if (es.series != null) {
+    bits += chip('-' + fmtNumP(num(es.series)) + ' series', 'info');
+  }
+  if (es.streams != null) {
+    bits += chip('-' + fmtNumP(num(es.streams)) + ' streams', 'info');
+  }
+  if (es.bytes_per_day != null) {
+    bits += chip('-' + fmtBytes(num(es.bytes_per_day)) + '/day',
+      'info');
+  }
+  var comp = es.compute;
+  if (comp && typeof comp === 'object') {
+    if (comp.cores != null) {
+      bits += chip('-' + fmtNumP(num(comp.cores)) + ' cores', 'info');
+    }
+    if (comp.gib != null || comp.mem_gib != null) {
+      bits += chip('-' + fmtNumP(num(comp.gib != null ? comp.gib :
+        comp.mem_gib)) + ' GiB', 'info');
+    }
+    if (comp.nodes != null) {
+      bits += chip('-' + fmtNumP(num(comp.nodes)) + ' nodes', 'info');
+    }
+  } else if (comp != null) {
+    bits += chip('-' + fmtNumP(num(comp)) + ' cores', 'info');
+  }
+  if (es.cores != null) {
+    bits += chip('-' + fmtNumP(num(es.cores)) + ' cores', 'info');
+  }
+  if (!bits) return '';
+  return '<span class="kv">estimated savings</span>' + bits;
+}
+
+function sevLabel(sev) {
+  var s = String(sev || 'INFO');
+  return s.length <= 4 ? s.toUpperCase() : s;
+}
+
+function stackFindingCard(f) {
+  f = f || {};
+  var sev = f.severity || 'INFO';
+  var cardSev = STACK_SEV_CARD[sev] || 'low';
+  var evHtml = evidenceChips(f.evidence);
+  var save = stackSaveHtml(f.est_savings);
+  var risk = riskChips(f);
+  return '<div class="rec-card sev-' + cardSev + '">' +
+    '<div class="rec-head"><span class="rec-title">' +
+    esc(f.title || f.finding || 'Finding') + '</span>' +
+    chip(sevLabel(sev), STACK_SEV_CLS[sev] || 'dim') +
+    (f.area ? chip(f.area, 'purple') : '') + '</div>' +
+    (f.rationale || f.detail ?
+      '<div class="rec-rationale">' + esc(f.rationale || f.detail) +
+      '</div>' : '') +
+    (evHtml ? '<div class="rec-ev">' + evHtml + '</div>' : '') +
+    (save ? '<div class="rec-save">' + save + '</div>' : '') +
+    (risk ? '<div class="risk-row">' + risk + '</div>' : '') +
+    cfgHtml(f.config || []) + '</div>';
+}
+
+/* Every finding from the deep-dive AND the (optional) packing run,
+   excluding karpenter-area findings which live in the Karpenter card. */
+function allStackFindings(includeKarpenter) {
+  var st = App.stack;
+  var out = [];
+  if (st.deepdive && st.deepdive.findings) {
+    out = out.concat(st.deepdive.findings);
+  }
+  if (st.packing && st.packing.findings) {
+    out = out.concat(st.packing.findings);
+  }
+  if (includeKarpenter) return out;
+  return out.filter(function (f) {
+    return (f.area || '').toLowerCase() !== 'karpenter';
+  });
+}
+
+/* ---- headline: $ and cores saveable, safely ---- */
+function stackTotals() {
+  var st = App.stack;
+  var dd = st.deepdive || {}, pk = st.packing || {};
+  var usd = 0, cores = 0, nodes = 0;
+  allStackFindings(true).forEach(function (f) {
+    if (f.keeps_intact === false) return;  /* headline = safe only */
+    var es = f.est_savings || {};
+    usd += num(es.monthly_usd);
+    var c = es.compute;
+    if (c && typeof c === 'object') cores += num(c.cores);
+    else if (c != null) cores += num(c);
+    cores += num(es.cores);
+  });
+  var pes = pk.est_savings ||
+    (pk.packing_sim && pk.packing_sim.est_savings) || {};
+  usd += num(pes.monthly_usd);
+  cores += num(pes.cores);
+  nodes += num(pes.nodes);
+  var kes = (pk.karpenter && pk.karpenter.est_savings) || {};
+  if (!num(pes.monthly_usd)) usd += num(kes.monthly_usd);
+  if (!num(pes.nodes)) nodes += num(kes.nodes);
+  var ov = dd.saveable || dd.summary || {};
+  if (ov.monthly_usd_saveable != null) usd = num(ov.monthly_usd_saveable);
+  if (ov.cores_saveable != null) cores = num(ov.cores_saveable);
+  return { usd: usd, cores: cores, nodes: nodes };
+}
+
+function renderStackHeadline() {
+  var el = $('#stack-headline'); if (!el) return;
+  var st = App.stack;
+  if (!st.deepdive && !st.packing) {
+    if (st.err) { el.innerHTML = errorCard('Deep-dive failed.',
+      st.err); return; }
+    el.innerHTML = ''; return;
+  }
+  var t = stackTotals();
+  if (t.usd <= 0 && t.cores <= 0 && t.nodes <= 0) {
+    el.innerHTML = ''; return;
+  }
+  var parts = [];
+  if (t.usd > 0) {
+    parts.push('<span class="sh-money">~' +
+      esc(fmtMoney(t.usd)) + ' / mo</span>');
+  }
+  if (t.cores > 0) {
+    if (parts.length) parts.push('<span class="sh-and">and</span>');
+    parts.push('<span class="sh-cores">~' + esc(fmtNumP(t.cores)) +
+      ' cores</span>');
+  }
+  if (t.nodes > 0) {
+    if (parts.length) parts.push('<span class="sh-and">and</span>');
+    parts.push('<span class="sh-cores">~' + esc(fmtNumP(t.nodes)) +
+      ' nodes</span>');
+  }
+  el.innerHTML = '<div class="stack-head">' +
+    ico('checkcircle', 22) + '<span class="sh-and">estimated</span>' +
+    parts.join(' ') +
+    '<span class="sh-and">saveable</span>' +
+    '<span class="sh-cap">Without reducing durability, ' +
+    'availability or performance. Every figure is an estimate from ' +
+    'your metrics and pricing assumptions, not an exact bill; ' +
+    'anything that would trade away safety is excluded here and ' +
+    'flagged with an amber caveat below.</span></div>';
+}
+
+/* ---- findings grouped by area ---- */
+function renderStackFindings() {
+  var el = $('#stack-findings'); if (!el) return;
+  var st = App.stack;
+  if (st.loading && !st.deepdive) {
+    el.innerHTML = '<h2>' + ico('search', 15) + ' Findings</h2>' +
+      '<div class="card"><div class="skel" ' +
+      'style="height:80px"></div></div>';
+    return;
+  }
+  if (!st.deepdive && !st.packing) { el.innerHTML = ''; return; }
+  var findings = allStackFindings(false);
+  var head = '<h2>' + ico('search', 15) + ' Findings</h2>';
+  if (!findings.length) {
+    el.innerHTML = head + '<div class="empty"><span class="eico">' +
+      ico('check', 26) + '</span><b>No issues found.</b><br>' +
+      'The metrics the deep-dive read look healthy, or there is not ' +
+      'enough signal to recommend a change. Nice and lean.</div>';
+    return;
+  }
+  var buckets = {};
+  findings.forEach(function (f) {
+    var g = AREA_TO_GROUP[(f.area || '').toLowerCase()] || 'other';
+    (buckets[g] = buckets[g] || []).push(f);
+  });
+  var html = head;
+  GROUP_ORDER.forEach(function (g) {
+    var list = buckets[g];
+    if (!list || !list.length) return;
+    list.sort(function (a, b) {
+      var d = (STACK_SEV_ORDER[a.severity] == null ? 3 :
+                STACK_SEV_ORDER[a.severity]) -
+              (STACK_SEV_ORDER[b.severity] == null ? 3 :
+                STACK_SEV_ORDER[b.severity]);
+      if (d) return d;
+      return num((b.est_savings || {}).monthly_usd) -
+             num((a.est_savings || {}).monthly_usd);
+    });
+    html += '<div class="finding-group"><div class="stack-group">' +
+      ico(GROUP_ICO[g] || 'zap', 13) + ' ' + esc(GROUP_LBL[g]) +
+      '<span class="gc">' + list.length + '</span></div>' +
+      list.map(stackFindingCard).join('') + '</div>';
+  });
+  el.innerHTML = html;
+}
+
+/* ---- packing: candidate-shapes table ---- */
+function pctStr(v) {
+  if (v == null || !isFinite(Number(v))) return '–';
+  var n = Number(v);
+  if (n <= 1.5 && n >= -1.5) n = n * 100;  /* fraction -> percent */
+  return Math.round(n) + '%';
+}
+
+function packTableHtml(pk) {
+  var sim = pk.packing_sim || pk.packing || pk || {};
+  var cands = sim.candidates || sim.shapes || [];
+  if (!cands.length) return '';
+  var rows = cands.map(function (c, i) {
+    var floor = c.floor === true ||
+      (i === 0 && c.floor !== false);
+    var shape = c.shape || c.instance_type || c.name || '?';
+    var nodes = c.nodes != null ? c.nodes : c.node_count;
+    var cost = c.cost_mo != null ? c.cost_mo :
+      (c.monthly_usd != null ? c.monthly_usd : c['$/mo']);
+    var memu = c.avg_mem_util != null ? c.avg_mem_util :
+      (c.mem_util != null ? c.mem_util : c.memory_util);
+    var lim = c.max_mem_limit_over_alloc != null ?
+      c.max_mem_limit_over_alloc :
+      (c.sigma_limits_over_capacity != null ?
+        c.sigma_limits_over_capacity :
+        c.limits_over_capacity);
+    var limCell = lim == null ? '&ndash;' :
+      esc((Math.round(num(lim) * 100) / 100).toFixed(2)) +
+      (num(lim) > 1 ? ' <span title="a simultaneous burst can OOM ' +
+        'this node" style="color:var(--amber)">⚠</span>' : '');
+    return '<tr' + (floor ? ' class="pack-floor"' : '') + '>' +
+      '<td class="mono">' + esc(String(shape)) + '</td>' +
+      '<td class="num">' + esc(fmtNumP(num(nodes))) + '</td>' +
+      '<td class="num">' + esc(fmtMoney(num(cost))) + '</td>' +
+      '<td class="num">' + esc(pctStr(memu)) + '</td>' +
+      '<td class="num">' + limCell + '</td></tr>';
+  }).join('');
+  return '<div class="pack-tbl"><table><thead><tr>' +
+    '<th>Candidate shape</th><th>Nodes</th><th>$/mo</th>' +
+    '<th>Mem util</th><th>' + stackTermRaw(STACK_TERMS['Sigma-limits']) +
+    ' &Sigma;limits/capacity</th></tr></thead><tbody>' + rows +
+    '</tbody></table></div>';
+}
+
+function renderStackPacking() {
+  var el = $('#stack-packing'); if (!el) return;
+  var st = App.stack;
+  var pk = st.packing;
+  if (!pk) { el.innerHTML = ''; return; }
+  var head = '<h2>' + ico('database', 15) +
+    ' Node topology &amp; ' + stackTerm('bin-pack') +
+    ' bin-pack</h2>';
+  if (pk.available === false) {
+    el.innerHTML = head + '<div class="empty"><span class="eico">' +
+      ico('database', 26) + '</span><b>Kubernetes analysis skipped.' +
+      '</b><br>' + esc(pk.note || 'kubectl is not available on ' +
+      'PATH.') + '<br>The metric-driven deep-dive above is ' +
+      'unaffected.</div>';
+    return;
+  }
+  var sim = pk.packing_sim || pk.packing || pk || {};
+  var tbl = packTableHtml(pk);
+  var curNote = '';
+  var cur = sim.current_cost != null ? sim.current_cost :
+    sim.current_monthly_usd;
+  var curNodes = sim.current_nodes;
+  if (cur != null || curNodes != null) {
+    var b = [];
+    if (curNodes != null) b.push(esc(fmtNumP(num(curNodes))) +
+      ' node(s)');
+    if (cur != null) b.push(esc(fmtMoney(num(cur))) + ' / mo');
+    curNote = '<p class="pack-note">Current pool: ' +
+      b.join(' &middot; ') + '. The highlighted row is the ' +
+      'bin-pack <b>floor</b> &mdash; the cheapest shape that still ' +
+      'holds every pod under the zone and one-ingester-per-node ' +
+      'rules.</p>';
+  }
+  var intro = '<p class="kv">The same pods re-packed onto each ' +
+    'candidate instance shape, with daemon overhead subtracted and ' +
+    'the ' + stackTerm('zone-aware') + ' zone / anti-affinity rules ' +
+    'honored. A memory-optimized (r-class) shape is usually the ' +
+    'honest floor for ingesters; a &Sigma;limits/capacity above 1.0 ' +
+    'means a burst could OOM the node, so it is not safe even if it ' +
+    'is cheaper.</p>';
+  if (!tbl) {
+    el.innerHTML = head + curNote +
+      '<div class="empty"><span class="eico">' + ico('database', 26) +
+      '</span><b>No packing simulation returned.</b><br>' +
+      'The cluster topology did not yield candidate shapes to ' +
+      'compare.</div>';
+    return;
+  }
+  el.innerHTML = head + '<div class="card">' + intro + curNote +
+    tbl + '</div>';
+}
+
+/* ---- Karpenter card ---- */
+function npSummaryHtml(np) {
+  np = np || {};
+  var name = np.name || np.metadata_name ||
+    (np.metadata && np.metadata.name) || 'nodepool';
+  var bits = [];
+  var fams = np.instance_families || np.families ||
+    np.instance_family;
+  if (fams) {
+    bits.push('<b>families</b> ' +
+      esc(Array.isArray(fams) ? fams.join(', ') : String(fams)));
+  }
+  if (np.capacity_type || np.capacity_types) {
+    var ct = np.capacity_type || np.capacity_types;
+    bits.push('<b>capacity</b> ' +
+      esc(Array.isArray(ct) ? ct.join(', ') : String(ct)));
+  }
+  if (np.consolidation_policy || np.consolidationPolicy) {
+    bits.push('<b>consolidation</b> ' +
+      esc(String(np.consolidation_policy || np.consolidationPolicy)));
+  }
+  if (np.consolidate_after || np.consolidateAfter) {
+    bits.push('<b>consolidateAfter</b> ' +
+      esc(String(np.consolidate_after || np.consolidateAfter)));
+  }
+  if (np.expire_after || np.expireAfter) {
+    bits.push('<b>expireAfter</b> ' +
+      esc(String(np.expire_after || np.expireAfter)));
+  }
+  if (np.limits) {
+    var lim = np.limits;
+    bits.push('<b>limits</b> ' + esc(typeof lim === 'object' ?
+      Object.keys(lim).map(function (k) {
+        return k + '=' + lim[k]; }).join(' ') : String(lim)));
+  }
+  if (np.nodes != null || np.node_count != null) {
+    bits.push('<b>nodes</b> ' +
+      esc(fmtNumP(num(np.nodes != null ? np.nodes :
+        np.node_count))));
+  }
+  var kvHtml = bits.length ?
+    '<div class="np-kv">' + bits.join(' &middot; ') + '</div>' :
+    '<div class="np-kv">no summary fields reported</div>';
+  return '<div class="np-card"><div class="np-name">' + esc(name) +
+    '</div>' + kvHtml +
+    (np.raw || np.spec ? jsonDetails('nodepool spec',
+      np.raw || np.spec) : '') + '</div>';
+}
+
+function renderStackKarpenter() {
+  var el = $('#stack-karpenter'); if (!el) return;
+  var st = App.stack;
+  var kp = st.packing && st.packing.karpenter;
+  if (!kp) { el.innerHTML = ''; return; }
+  var head = '<h2>' + ico('database', 15) + ' ' +
+    stackTermRaw(STACK_TERMS['NodePool']) + ' Karpenter</h2>';
+  var nps = kp.nodepools || [];
+  var npHtml = nps.length ? nps.map(npSummaryHtml).join('') :
+    '<p class="pack-note">No current observability NodePool ' +
+    'detected.</p>';
+  var kfindings = (kp.findings || []).slice().sort(function (a, b) {
+    return (STACK_SEV_ORDER[a.severity] == null ? 3 :
+             STACK_SEV_ORDER[a.severity]) -
+           (STACK_SEV_ORDER[b.severity] == null ? 3 :
+             STACK_SEV_ORDER[b.severity]);
+  }).map(stackFindingCard).join('');
+  var yamlHtml = '';
+  var yaml = kp.proposed_nodepool_yaml || kp.proposed_yaml || '';
+  if (yaml) {
+    var yid = 'npyaml-' + uid();
+    yamlHtml = '<div class="rec-cfg stack-yaml"><div class="cfg-bar">' +
+      '<label style="margin:0">Proposed optimized NodePool</label>' +
+      chip('YAML', 'dim') + '<span style="margin-left:auto"></span>' +
+      copyBtn(yid, 'NodePool YAML') + '</div>' +
+      '<pre id="' + yid + '">' + esc(yaml) + '</pre>' +
+      (kp.proposed_ec2nodeclass_note ? '<div class="cfg-note">' +
+        esc(kp.proposed_ec2nodeclass_note) + '</div>' : '') +
+      '</div>';
+  }
+  var kes = kp.est_savings || {};
+  var savBits = '';
+  if (kes.monthly_usd != null) {
+    savBits += '<span class="save-money">~' +
+      esc(fmtMoney(num(kes.monthly_usd))) + ' / mo</span>';
+  }
+  if (kes.nodes != null) {
+    savBits += chip('-' + fmtNumP(num(kes.nodes)) + ' nodes', 'info');
+  }
+  if (kes.keeps_availability === true) {
+    savBits += chip('keeps availability', 'ok',
+      'On-demand ingesters and disruption budgets that respect PDBs ' +
+      '-- consolidation never evicts more than one ingester at once.');
+  } else if (kes.keeps_availability === false) {
+    savBits += chip('review availability — caution', 'warn',
+      'This proposal could affect availability; review before ' +
+      'applying.');
+  }
+  var savLine = savBits ?
+    '<div class="rec-save"><span class="kv">estimated savings</span>' +
+    savBits + '</div>' : '';
+  var intro = '<p class="kv">The observability workloads run on ' +
+    'their own Karpenter NodePool, where cost and availability meet. ' +
+    'The proposed NodePool keeps stateful ingesters on ' +
+    stackTerm('on-demand') + ' on-demand, adds ' +
+    stackTerm('consolidation') + ' consolidation with a budget that ' +
+    'respects ' + stackTerm('PDB') + ' PDBs, and is generic &mdash; ' +
+    'replace the placeholder cluster / AMI / role / subnet values ' +
+    'before applying.</p>';
+  el.innerHTML = '<section class="card">' + head + intro + npHtml +
+    savLine + kfindings + yamlHtml + '</section>';
 }
 
 async function vCost(view) {

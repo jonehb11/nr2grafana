@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -1523,6 +1524,390 @@ def cmd_cost_pricing(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# deep-dive / AI context / Grafana MCP (1.6)
+# ---------------------------------------------------------------------------
+
+# Store slug for instance-wide artifacts (deep-dive/packing/cost are not
+# tied to one dashboard). Mirrors web/server.py's _INSTANCE_SLUG.
+_INSTANCE_SLUG = "__instance__"
+
+# Deep-dive/packing severity ordering for ranked output.
+_DD_SEV_RANK = {"FAIL": 0, "WARN": 1, "INFO": 2}
+
+
+def _import_soft(name: str):
+    """Import a sibling module, returning None on failure (deepdive /
+    packing are built by sibling agents and may be absent mid-build)."""
+    import importlib
+    try:
+        return importlib.import_module("nr2grafana." + name)
+    except Exception:  # pragma: no cover - only when a sibling is absent
+        return None
+
+
+def _dd_risk(finding: Dict[str, Any]) -> str:
+    """One-line risk flag for a finding: 'safe' when it keeps
+    performance/durability/availability, else a loud caution listing
+    what it would affect."""
+    labels = (("keeps_performance", "performance"),
+              ("keeps_durability", "durability"),
+              ("keeps_availability", "availability"))
+    bad = [label for key, label in labels if finding.get(key) is False]
+    if bad:
+        return "CAUTION: affects " + "/".join(bad)
+    if any(key in finding for key, _ in labels):
+        return "safe (keeps perf/durability/availability)"
+    return ""
+
+
+def _dd_rank(findings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return sorted(
+        findings or [],
+        key=lambda f: (_DD_SEV_RANK.get(str(f.get("severity", "")).upper(),
+                                        3),
+                       str(f.get("area", "")), str(f.get("title", ""))))
+
+
+def _print_findings(title: str, findings: List[Dict[str, Any]]) -> None:
+    ranked = _dd_rank(findings)
+    print()
+    print(title)
+    if not ranked:
+        print("  (no findings)")
+        return
+    print("  %-6s %-12s %-38s %-13s %s"
+          % ("SEV", "AREA", "FINDING", "EST $/MO", "RISK"))
+    for f in ranked:
+        est = f.get("est_savings") or {}
+        usd = est.get("monthly_usd")
+        usd_str = ("$%.2f" % usd) if isinstance(usd, (int, float)) else "-"
+        print("  %-6s %-12s %-38s %-13s %s"
+              % (str(f.get("severity", "?")).upper()[:6],
+                 str(f.get("area", ""))[:12],
+                 str(f.get("title", ""))[:38], usd_str, _dd_risk(f)))
+
+
+def _dd_headline(findings: List[Dict[str, Any]]) -> None:
+    """Headline of estimated safe monthly savings (findings that do not
+    reduce durability/availability/performance)."""
+    usd = 0.0
+    cores = 0.0
+    for f in findings or []:
+        if f.get("keeps_durability") is False \
+                or f.get("keeps_availability") is False \
+                or f.get("keeps_performance") is False:
+            continue
+        est = f.get("est_savings") or {}
+        v = est.get("monthly_usd")
+        if isinstance(v, (int, float)):
+            usd += v
+        compute = est.get("compute") or {}
+        if isinstance(compute, dict):
+            c = compute.get("cores")
+            if isinstance(c, (int, float)):
+                cores += c
+    if usd or cores:
+        print()
+        print("estimated $%.2f/mo and %.1f core(s) saveable without "
+              "reducing durability, availability or performance"
+              % (usd, cores))
+
+
+def _write_deepdive_config(out_dir: str, deepdive: Dict[str, Any],
+                           packing: Optional[Dict[str, Any]]) -> str:
+    """Write each finding's config snippet into out_dir/config/ grouped
+    by target, plus the proposed Karpenter NodePool YAML. Returns the
+    config dir path, or '' when there is nothing to write."""
+    buckets: Dict[str, List[str]] = {}
+
+    def add(title: str, cfgs: Any) -> None:
+        for cfg in cfgs or []:
+            snippet = cfg.get("snippet") or ""
+            if not snippet.strip():
+                continue
+            target = cfg.get("target") or "other"
+            fname = _COST_CONFIG_FILES.get(target, "%s.yaml" % target)
+            header = "# --- %s ---" % title
+            if cfg.get("note"):
+                header += "\n# %s" % cfg["note"]
+            buckets.setdefault(fname, []).append(
+                header + "\n" + snippet.rstrip() + "\n")
+
+    for f in deepdive.get("findings") or []:
+        add(f.get("title") or f.get("area") or "finding", f.get("config"))
+    if isinstance(packing, dict):
+        for f in packing.get("findings") or []:
+            add(f.get("title") or "finding", f.get("config"))
+        karpenter = packing.get("karpenter") or {}
+        yaml_text = karpenter.get("proposed_nodepool_yaml")
+        if isinstance(yaml_text, str) and yaml_text.strip():
+            buckets["karpenter-nodepool.yaml"] = [yaml_text.rstrip() + "\n"]
+    if not buckets:
+        return ""
+    cfg_dir = os.path.join(out_dir, "config")
+    os.makedirs(cfg_dir, exist_ok=True)
+    for fname, parts in sorted(buckets.items()):
+        with open(os.path.join(cfg_dir, fname), "w",
+                  encoding="utf-8") as fh:
+            fh.write("\n".join(parts))
+    return cfg_dir
+
+
+def cmd_deepdive(args: argparse.Namespace) -> int:
+    """Deep-dive the LGTM stack from component self-metrics and, when
+    --kube is given and kubectl is on PATH, Kubernetes topology / bin-
+    packing / Karpenter. Prints findings ranked by severity with
+    estimated savings and risk flags; writes deepdive-report.json plus
+    config/ snippets. Exit 1 if any FAIL-severity finding is present."""
+    deepdive_mod = _import_soft("deepdive")
+    if deepdive_mod is None or not hasattr(deepdive_mod, "analyze"):
+        _err("deep-dive is unavailable (nr2grafana.deepdive not "
+             "importable)")
+        return 2
+    try:
+        cfg = load_config(getattr(args, "config", "") or "")
+    except (FileNotFoundError, json.JSONDecodeError) as e:
+        _err(str(e))
+        return 2
+    if getattr(args, "pricing", ""):
+        try:
+            loaded = _load_json(args.pricing)
+        except (json.JSONDecodeError, OSError) as e:
+            _err("pricing file: %s" % e)
+            return 2
+        if isinstance(loaded, dict):
+            cfg = dict(cfg)
+            cfg["pricing"] = loaded
+    log = lambda m: print(m, file=sys.stderr)
+    grafana = None
+    if getattr(args, "grafana_url", "") or os.environ.get("GRAFANA_URL"):
+        try:
+            grafana = _grafana_live(args)
+        except SystemExit:  # missing url -> just skip the live client
+            grafana = None
+    deepdive = deepdive_mod.analyze(
+        prom=getattr(args, "prom", "") or None,
+        mimir=getattr(args, "mimir", "") or None,
+        loki=getattr(args, "loki", "") or None,
+        grafana=grafana, cfg=cfg, log=log)
+    findings = deepdive.get("findings") or []
+    packing: Optional[Dict[str, Any]] = None
+    if getattr(args, "kube", False):
+        packing_mod = _import_soft("packing")
+        if packing_mod is None or not hasattr(packing_mod, "analyze"):
+            print("note: Kubernetes packing analysis unavailable "
+                  "(nr2grafana.packing not importable)", file=sys.stderr)
+        elif packing_mod.kubectl_available():
+            prices = cfg.get("pricing") \
+                if isinstance(cfg.get("pricing"), dict) else None
+            packing = packing_mod.analyze(cfg=cfg, prices=prices, log=log)
+        else:
+            print("note: kubectl not available -- skipping Kubernetes "
+                  "topology / packing / Karpenter analysis (the metric "
+                  "deep-dive below is unaffected)", file=sys.stderr)
+
+    _print_findings("== LGTM stack findings ==", findings)
+    if isinstance(packing, dict) and packing.get("findings"):
+        _print_findings("== Kubernetes / bin-pack / Karpenter ==",
+                        packing.get("findings"))
+    _print_headline_all(findings, packing)
+
+    out_dir = args.out or "."
+    os.makedirs(out_dir, exist_ok=True)
+    report: Dict[str, Any] = {
+        "schema": "nr2grafana/deepdive-report/v1",
+        "deepdive": deepdive}
+    if packing is not None:
+        report["packing"] = packing
+    report_path = os.path.join(out_dir, "deepdive-report.json")
+    _write_json(report_path, report)
+    cfg_dir = _write_deepdive_config(out_dir, deepdive, packing)
+    print("report -> %s" % report_path, file=sys.stderr)
+    if cfg_dir:
+        print("config -> %s" % cfg_dir, file=sys.stderr)
+    print(dim_note(), file=sys.stderr)
+    fails = sum(1 for f in findings
+                if str(f.get("severity", "")).upper() == "FAIL")
+    if isinstance(packing, dict):
+        fails += sum(1 for f in packing.get("findings") or []
+                     if str(f.get("severity", "")).upper() == "FAIL")
+    return 1 if fails else 0
+
+
+def _print_headline_all(findings: List[Dict[str, Any]],
+                        packing: Optional[Dict[str, Any]]) -> None:
+    combined = list(findings or [])
+    if isinstance(packing, dict):
+        combined += list(packing.get("findings") or [])
+    _dd_headline(combined)
+
+
+def _ai_assistant(args: argparse.Namespace):
+    """Resolve an AI backend: an Anthropic API key (arg or env) wins,
+    else a local console agent command. Returns a duck-typed assistant
+    (with .available / .chat) or None when nothing is configured."""
+    ai_mod = _import_soft("ai")
+    if ai_mod is None:
+        return None
+    api_key = getattr(args, "anthropic_key", "") \
+        or os.environ.get("ANTHROPIC_API_KEY", "")
+    command = getattr(args, "command", "") \
+        or os.environ.get("N2G_AI_COMMAND", "")
+    model = getattr(args, "model", "") or os.environ.get("N2G_AI_MODEL", "")
+    get = getattr(ai_mod, "get_assistant", None)
+    if get is not None:
+        return get(api_key=api_key, model=model, command=command)
+    if api_key and hasattr(ai_mod, "AIAssist"):
+        return ai_mod.AIAssist(api_key, model)
+    return None
+
+
+def _ai_context_bundle(store, aicontext_mod, slug: str) -> Dict[str, Any]:
+    """Build the AI context bundle for ``slug`` (empty = whole
+    workspace), threading in the instance-wide deep-dive when present."""
+    deepdive = None
+    try:
+        deepdive = store.get_artifact(slug or _INSTANCE_SLUG, "deepdive")
+    except Exception:
+        deepdive = None
+    return aicontext_mod.build_context(store, slug=slug, deepdive=deepdive,
+                                       redact=True)
+
+
+def cmd_ai_context(args: argparse.Namespace) -> int:
+    """Export the compact, LLM-optimized AI context bundle (JSON or, with
+    --markdown, Markdown) to stdout or a file."""
+    aicontext_mod = _import_soft("aicontext")
+    if aicontext_mod is None or not hasattr(aicontext_mod,
+                                            "build_context"):
+        _err("ai-context is unavailable (nr2grafana.aicontext not "
+             "importable)")
+        return 2
+    store = _open_store_soft()
+    if store is None:
+        _err("the local store is required for ai-context -- run "
+             "'convert --package' first")
+        return 1
+    try:
+        slug = getattr(args, "slug", "") or ""
+        context = _ai_context_bundle(store, aicontext_mod, slug)
+        if getattr(args, "markdown", False):
+            text = aicontext_mod.to_markdown(context)
+        else:
+            text = json.dumps(context, indent=2, ensure_ascii=False)
+        out = getattr(args, "out", "") or ""
+        if out:
+            with open(out, "w", encoding="utf-8") as f:
+                f.write(text + "\n")
+            print("ai-context -> %s" % out, file=sys.stderr)
+        else:
+            print(text)
+    finally:
+        store.close()
+    return 0
+
+
+def cmd_ai_troubleshoot(args: argparse.Namespace) -> int:
+    """Ask the configured AI backend a question with the full context
+    bundle attached. Never crashes on AI errors -- they surface as the
+    answer text (aicontext.troubleshoot never raises)."""
+    aicontext_mod = _import_soft("aicontext")
+    if aicontext_mod is None or not hasattr(aicontext_mod,
+                                            "build_context"):
+        _err("AI troubleshooting is unavailable (nr2grafana.aicontext "
+             "not importable)")
+        return 2
+    assistant = _ai_assistant(args)
+    if assistant is None or not getattr(assistant, "available", False):
+        _err("no AI backend configured -- set ANTHROPIC_API_KEY or pass "
+             "--command for a local console agent (e.g. --command "
+             "'claude -p {prompt}')")
+        return 2
+    store = _open_store_soft()
+    if store is None:
+        _err("the local store is required -- run 'convert --package' "
+             "first")
+        return 1
+    try:
+        slug = getattr(args, "slug", "") or ""
+        context = _ai_context_bundle(store, aicontext_mod, slug)
+        result = aicontext_mod.troubleshoot(
+            assistant, context, getattr(args, "question", "") or "")
+    finally:
+        store.close()
+    print(result.get("answer") or "(no answer returned)")
+    backend = result.get("backend") or ""
+    if backend:
+        print("\n[%s backend]" % backend, file=sys.stderr)
+    return 0
+
+
+def cmd_mcp_config(args: argparse.Namespace) -> int:
+    """Emit a ready MCP servers config wiring the Grafana MCP server (and
+    optionally the nr2grafana context) into a local AI client. The
+    Grafana token is referenced via env, never written to the file."""
+    mcp_mod = _import_soft("mcp")
+    if mcp_mod is None or not hasattr(mcp_mod, "generate_mcp_config"):
+        _err("MCP integration is unavailable (nr2grafana.mcp not "
+             "importable)")
+        return 2
+    grafana_url = getattr(args, "grafana_url", "") \
+        or os.environ.get("GRAFANA_URL", "")
+    try:
+        cfg = mcp_mod.generate_mcp_config(
+            grafana_url, kind=args.kind,
+            n2g_context_path=getattr(args, "context", "") or "",
+            include_grafana=not getattr(args, "no_grafana", False))
+    except Exception as e:
+        _err(str(e))
+        return 2
+    text = json.dumps(cfg, indent=2)
+    out = getattr(args, "out", "") or ""
+    if out:
+        with open(out, "w", encoding="utf-8") as f:
+            f.write(text + "\n")
+        print("mcp config -> %s" % out, file=sys.stderr)
+    else:
+        print(text)
+    note = getattr(mcp_mod, "config_note", None)
+    if callable(note):
+        print("note: %s" % note(args.kind), file=sys.stderr)
+    return 0
+
+
+def cmd_mcp_probe(args: argparse.Namespace) -> int:
+    """Probe a Grafana MCP server (initialize + list tools) over stdio
+    (--command) or HTTP/SSE (--url). probe() never raises."""
+    mcp_mod = _import_soft("mcp")
+    if mcp_mod is None or not hasattr(mcp_mod, "probe"):
+        _err("MCP integration is unavailable (nr2grafana.mcp not "
+             "importable)")
+        return 2
+    url = getattr(args, "url", "") or ""
+    command = getattr(args, "command", "") or ""
+    cmd_list = None
+    if command.strip():
+        import shlex
+        cmd_list = shlex.split(command)
+    if not url and not cmd_list:
+        _err("provide --url (http/SSE) or --command (stdio) to probe")
+        return 2
+    result = mcp_mod.probe(command=cmd_list, url=url)
+    if result.get("ok"):
+        tools = result.get("tools") or []
+        server = result.get("server") or {}
+        name = server.get("name") if isinstance(server, dict) else ""
+        print("ok -- MCP server reachable%s, %d tool(s)"
+              % ((" (%s)" % name) if name else "", len(tools)))
+        for t in tools:
+            print("  - %s" % t)
+        return 0
+    _err("MCP probe failed: %s" % (result.get("error")
+                                   or "unknown error"))
+    return 1
+
+
+# ---------------------------------------------------------------------------
 # web
 # ---------------------------------------------------------------------------
 
@@ -1851,6 +2236,102 @@ def main(argv: List[str] = None) -> int:
                        dest="set_values", metavar="KEY=VALUE",
                        help="override a pricing assumption (repeatable)")
     co_pr.set_defaults(func=cmd_cost_pricing)
+
+    # -- deep-dive / AI context / Grafana MCP (1.6) ---------------------
+
+    p_dd = sub.add_parser(
+        "deepdive",
+        help="deep-dive the LGTM stack from component self-metrics "
+             "(capacity, cardinality, churn, network, Loki, Tempo) and, "
+             "with --kube, Kubernetes topology / bin-pack / Karpenter; "
+             "prints safe, dollar-estimated findings and writes "
+             "deepdive-report.json + config/ snippets")
+    p_dd.add_argument("--prom", default="",
+                      help="Prometheus query URL (component self-metrics)")
+    p_dd.add_argument("--mimir", default="",
+                      help="Mimir query URL (component self-metrics)")
+    p_dd.add_argument("--loki", default="", help="Loki query URL")
+    p_dd.add_argument("--kube", action="store_true",
+                      help="also analyze Kubernetes topology, bin-pack "
+                           "and Karpenter (needs kubectl on PATH; degrades "
+                           "cleanly without a cluster)")
+    p_dd.add_argument("--pricing", default="",
+                      help="pricing assumptions JSON file (overrides the "
+                           "built-in defaults)")
+    p_dd.add_argument("--config", "-c", default="",
+                      help="mapping config JSON")
+    p_dd.add_argument("--out", "-o", default=".",
+                      help="output dir for deepdive-report.json + config/ "
+                           "(default: current directory)")
+    add_grafana_args(p_dd)
+    p_dd.set_defaults(func=cmd_deepdive)
+
+    p_aic = sub.add_parser(
+        "ai-context",
+        help="export a compact, LLM-optimized context bundle of every "
+             "artifact (dashboard, requirements, diagnosis, parity, "
+             "cost, deep-dive) so an AI can troubleshoot the migration "
+             "and the LGTM stack")
+    p_aic.add_argument("slug", nargs="?", default="",
+                       help="dashboard slug (default: whole workspace)")
+    p_aic.add_argument("--markdown", "-m", action="store_true",
+                       help="emit Markdown instead of JSON")
+    p_aic.add_argument("--out", "-o", default="",
+                       help="write to FILE instead of stdout")
+    p_aic.set_defaults(func=cmd_ai_context)
+
+    p_ai = sub.add_parser(
+        "ai",
+        help="AI troubleshooting over the exported context bundle")
+    p_ai.set_defaults(func=_need_sub(p_ai))
+    aisub = p_ai.add_subparsers(dest="ai_command")
+    ai_ts = aisub.add_parser(
+        "troubleshoot",
+        help="ask the configured AI backend a question with the full "
+             "context bundle attached")
+    ai_ts.add_argument("slug", nargs="?", default="",
+                       help="dashboard slug (default: whole workspace)")
+    ai_ts.add_argument("--question", "-q", default="",
+                       help="the troubleshooting question")
+    ai_ts.add_argument("--command", default="",
+                       help="local console AI agent command (e.g. "
+                            "'claude -p {prompt}'); or set N2G_AI_COMMAND")
+    ai_ts.add_argument("--anthropic-key", dest="anthropic_key",
+                       default="",
+                       help="Anthropic API key; or set ANTHROPIC_API_KEY")
+    ai_ts.add_argument("--model", default="", help="AI model override")
+    ai_ts.set_defaults(func=cmd_ai_troubleshoot)
+
+    p_mcp = sub.add_parser(
+        "mcp",
+        help="Grafana MCP: generate a local-AI config or probe a server")
+    p_mcp.set_defaults(func=_need_sub(p_mcp))
+    mcpsub = p_mcp.add_subparsers(dest="mcp_command")
+    mc_cfg = mcpsub.add_parser(
+        "config",
+        help="emit a ready MCP servers config wiring the Grafana MCP "
+             "server (+ optional nr2grafana context) into your local AI; "
+             "the token is referenced via env, never written to the file")
+    mc_cfg.add_argument("--kind", default="claude",
+                        choices=["claude", "kiro", "generic"],
+                        help="target AI client (default: %(default)s)")
+    mc_cfg.add_argument("--context", default="",
+                        help="path to an exported nr2grafana AI context so "
+                             "the assistant can read it alongside Grafana")
+    mc_cfg.add_argument("--no-grafana", action="store_true",
+                        help="omit the Grafana MCP server entry")
+    mc_cfg.add_argument("--out", "-o", default="",
+                        help="write to FILE instead of stdout")
+    add_grafana_args(mc_cfg)
+    mc_cfg.set_defaults(func=cmd_mcp_config)
+    mc_pr = mcpsub.add_parser(
+        "probe",
+        help="probe a Grafana MCP server (initialize + list tools)")
+    mc_pr.add_argument("--url", default="",
+                       help="http/SSE MCP endpoint")
+    mc_pr.add_argument("--command", default="",
+                       help="stdio MCP server command (e.g. 'mcp-grafana')")
+    mc_pr.set_defaults(func=cmd_mcp_probe)
 
     p_web = sub.add_parser(
         "web", help="launch the localhost web UI")
