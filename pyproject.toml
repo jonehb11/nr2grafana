@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nr2grafana"
-version = "1.5.0"
+version = "1.6.0"
 description = "Convert New Relic dashboards to Grafana (LGTM stack) dashboards: NRQL -> PromQL/LogQL/TraceQL, batch fetch and convert"
 readme = "README.md"
 requires-python = ">=3.9"
