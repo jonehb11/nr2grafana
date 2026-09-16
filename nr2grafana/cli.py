@@ -1908,6 +1908,258 @@ def cmd_mcp_probe(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# AWS TCO trend analysis (1.7) -- read-only Cost Explorer
+# ---------------------------------------------------------------------------
+
+class _BoundAWS:
+    """Read-only wrapper over the awscost module pre-binding a profile
+    and/or region into any function whose signature accepts them. The
+    module is passed straight through when neither override is set."""
+
+    def __init__(self, mod, profile="", region=""):
+        self._mod = mod
+        self._profile = profile
+        self._region = region
+
+    def __getattr__(self, name):
+        import inspect
+        attr = getattr(self._mod, name)
+        if not inspect.isroutine(attr):
+            return attr
+        try:
+            params = inspect.signature(attr).parameters
+        except (TypeError, ValueError):
+            return attr
+
+        def wrapper(*args, **kwargs):
+            if self._profile and "profile" in params \
+                    and "profile" not in kwargs:
+                kwargs["profile"] = self._profile
+            if self._region and "region" in params \
+                    and "region" not in kwargs:
+                kwargs["region"] = self._region
+            return attr(*args, **kwargs)
+
+        return wrapper
+
+
+def _bound_aws(awscost, profile="", region=""):
+    if profile or region:
+        return _BoundAWS(awscost, profile, region)
+    return awscost
+
+
+def _call_tco_analyze(tco, aws, **kwargs):
+    """Call tco.analyze with only the kwargs its signature accepts."""
+    import inspect
+    try:
+        params = inspect.signature(tco.analyze).parameters
+    except (TypeError, ValueError):
+        params = {}
+    if any(p.kind == p.VAR_KEYWORD for p in params.values()):
+        return tco.analyze(aws, **kwargs)
+    filtered = {k: v for k, v in kwargs.items() if k in params}
+    return tco.analyze(aws, **filtered)
+
+
+def _tco_artifacts_soft(store):
+    """(deepdive, traffic, packing, change_log) from the store for the
+    instance-wide slug; each degrades to None when absent."""
+    if store is None:
+        return None, None, None, None
+    dd = tr = pk = cl = None
+    try:
+        dd = store.get_artifact(_INSTANCE_SLUG, "deepdive")
+        tr = store.get_artifact(_INSTANCE_SLUG, "traffic")
+        pk = store.get_artifact(_INSTANCE_SLUG, "packing")
+        cl = store.list_changes()
+    except Exception:
+        pass
+    return dd, tr, pk, cl
+
+
+def _print_tco(report: Dict[str, Any]) -> None:
+    """Terminal summary: per-service trend table, run-rate + growth
+    headline, projection, observability attribution and change
+    correlation. All figures are ESTIMATES from the user's own CE
+    data."""
+    total = report.get("total") or {}
+    trend = total.get("trend") or {}
+    series = total.get("series") or []
+    print()
+    print("%-32s %-14s %-10s %s"
+          % ("SERVICE", "LATEST $/MO", "GROWTH %", "DIRECTION"))
+    for svc in report.get("by_service") or []:
+        s_series = svc.get("series") or []
+        latest = s_series[-1][1] if s_series else svc.get("latest")
+        s_trend = svc.get("trend") or {}
+        latest_str = ("$%.2f" % latest) \
+            if isinstance(latest, (int, float)) else "-"
+        growth = s_trend.get("pct_growth")
+        growth_str = ("%+.1f%%" % growth) \
+            if isinstance(growth, (int, float)) else "-"
+        print("%-32s %-14s %-10s %s"
+              % (str(svc.get("service", "?"))[:32], latest_str,
+                 growth_str, s_trend.get("direction", "")))
+    run_rate = trend.get("run_rate")
+    growth = trend.get("pct_growth")
+    print()
+    print("total monthly run-rate: %s   growth: %s   direction: %s"
+          % (("$%.2f" % run_rate)
+             if isinstance(run_rate, (int, float)) else "-",
+             ("%+.1f%%" % growth)
+             if isinstance(growth, (int, float)) else "-",
+             trend.get("direction", "n/a")))
+    if series:
+        first_m, first_v = series[0]
+        last_m, last_v = series[-1]
+        print("  %s: $%.2f  ->  %s: $%.2f  (%d month(s))"
+              % (first_m, float(first_v), last_m, float(last_v),
+                 len(series)))
+    forecast = total.get("forecast") or {}
+    fseries = forecast.get("series") or forecast.get("next") or []
+    if fseries:
+        nxt = fseries[0]
+        try:
+            print("  projected next month (%s): $%.2f"
+                  % (nxt[0], float(nxt[1])))
+        except (TypeError, ValueError, IndexError):
+            pass
+    attr = report.get("observability_attribution") or {}
+    usd = attr.get("monthly_usd")
+    if isinstance(usd, (int, float)):
+        print()
+        print("estimated observability share: $%.2f/mo (ESTIMATE)" % usd)
+    corr = report.get("change_correlation") or {}
+    events = corr.get("events") or corr.get("correlations") or []
+    if events:
+        print()
+        print("change correlation (correlation, not proof):")
+        for ev in events[:8]:
+            print("  - %s" % (ev.get("summary")
+                              or ev.get("title") or ev))
+    anomalies = report.get("anomalies") or []
+    if anomalies:
+        print()
+        print("%d cost anomaly(ies) detected" % len(anomalies))
+
+
+def cmd_tco_analyze(args: argparse.Namespace) -> int:
+    """Analyze AWS total cost of ownership trends over time via Cost
+    Explorer (read-only, local aws CLI auth). Prints a trend table,
+    run-rate + projection, observability attribution and change
+    correlation; writes tco-report.json. All figures are ESTIMATES."""
+    awscost = _import_soft("awscost")
+    tco = _import_soft("tco")
+    if awscost is None or not hasattr(awscost, "aws_available"):
+        _err("AWS TCO analysis is unavailable (nr2grafana.awscost not "
+             "importable)")
+        return 2
+    if tco is None or not hasattr(tco, "analyze"):
+        _err("AWS TCO analysis is unavailable (nr2grafana.tco not "
+             "importable)")
+        return 2
+    if not awscost.aws_available():
+        _err("AWS CLI not found / not configured -- install the aws CLI "
+             "and configure read-only credentials (aws configure / SSO) "
+             "to analyze TCO")
+        return 2
+    profile = getattr(args, "profile", "") or ""
+    region = getattr(args, "region", "") or ""
+    months = max(1, min(int(getattr(args, "months", 6) or 6), 36))
+    group_by = getattr(args, "group_by", "SERVICE") or "SERVICE"
+    raw_buckets = getattr(args, "buckets", "") or ""
+    buckets = [b.strip() for b in raw_buckets.split(",") if b.strip()] \
+        or None
+    log = lambda m: print(m, file=sys.stderr)
+    client = _bound_aws(awscost, profile, region)
+    store = _open_store_soft()
+    dd, tr, pk, cl = _tco_artifacts_soft(store)
+    print("discovering AWS cost over %d month(s) via Cost Explorer "
+          "(read-only, local auth)..." % months, file=sys.stderr)
+    try:
+        report = _call_tco_analyze(
+            tco, client, store=store, deepdive=dd, traffic=tr,
+            packing=pk, change_log=cl, months=months, group_by=group_by,
+            buckets=buckets, profile=profile, region=region, log=log)
+    except Exception as e:
+        _err("TCO analysis failed: %s" % e)
+        if store is not None:
+            store.close()
+        return 1
+    _print_tco(report)
+    print(dim_note(), file=sys.stderr)
+    if store is not None:
+        try:
+            store.save_artifact(_INSTANCE_SLUG, "tco", report)
+            snap = getattr(tco, "snapshot", None)
+            if callable(snap):
+                snap(store, report)
+            else:
+                store.save_artifact(_INSTANCE_SLUG, "tco-snapshot",
+                                    report)
+        except Exception as e:
+            print("note: could not record TCO in the local store (%s)"
+                  % e, file=sys.stderr)
+        store.close()
+    out_dir = getattr(args, "out", "") or "."
+    os.makedirs(out_dir, exist_ok=True)
+    report_path = os.path.join(out_dir, "tco-report.json")
+    _write_json(report_path, report)
+    print("report -> %s" % report_path, file=sys.stderr)
+    return 0
+
+
+def cmd_tco_identity(args: argparse.Namespace) -> int:
+    """Print the AWS caller identity (which account/role the read-only
+    analysis runs as). Never mutates anything."""
+    awscost = _import_soft("awscost")
+    if awscost is None or not hasattr(awscost, "aws_available"):
+        _err("AWS access is unavailable (nr2grafana.awscost not "
+             "importable)")
+        return 2
+    if not awscost.aws_available():
+        _err("AWS CLI not found / not configured -- install the aws CLI "
+             "and configure read-only credentials (aws configure / SSO)")
+        return 2
+    client = _bound_aws(awscost, getattr(args, "profile", "") or "",
+                        getattr(args, "region", "") or "")
+    try:
+        identity = client.caller_identity()
+    except Exception as e:
+        _err("could not read AWS identity: %s -- check your aws "
+             "credentials (read-only)" % e)
+        return 1
+    print(json.dumps(identity, indent=2, sort_keys=True))
+    print("read-only: nr2grafana only ever issues get-/list-/describe- "
+          "AWS calls", file=sys.stderr)
+    return 0
+
+
+def cmd_tco_trend(args: argparse.Namespace) -> int:
+    """Diff the dated TCO snapshots recorded over time."""
+    tco = _import_soft("tco")
+    if tco is None or not hasattr(tco, "trend_over_snapshots"):
+        _err("TCO trend is unavailable (nr2grafana.tco not importable)")
+        return 2
+    store = _open_store_soft()
+    if store is None:
+        _err("the local store is required for 'tco trend' -- run "
+             "'tco analyze' first")
+        return 1
+    try:
+        trend = tco.trend_over_snapshots(store)
+    except Exception as e:
+        _err("could not compute snapshot trend: %s" % e)
+        return 1
+    finally:
+        store.close()
+    print(json.dumps(trend, indent=2, sort_keys=True))
+    print(dim_note(), file=sys.stderr)
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # web
 # ---------------------------------------------------------------------------
 
@@ -2332,6 +2584,57 @@ def main(argv: List[str] = None) -> int:
     mc_pr.add_argument("--command", default="",
                        help="stdio MCP server command (e.g. 'mcp-grafana')")
     mc_pr.set_defaults(func=cmd_mcp_probe)
+
+    # -- AWS TCO trend analysis (1.7) -----------------------------------
+
+    p_tco = sub.add_parser(
+        "tco",
+        help="analyze AWS total cost of ownership trends over time via "
+             "Cost Explorer (strictly READ-ONLY, using your local aws "
+             "CLI auth); ties cost movements to the optimizations this "
+             "tool has made and forecasts. All figures are ESTIMATES.")
+    p_tco.set_defaults(func=_need_sub(p_tco))
+    tcosub = p_tco.add_subparsers(dest="tco_command")
+
+    t_an = tcosub.add_parser(
+        "analyze",
+        help="discover monthly AWS spend, attribute the observability "
+             "share, correlate with recorded optimizations and forecast; "
+             "writes tco-report.json (ESTIMATES from your own CE data)")
+    t_an.add_argument("--months", type=int, default=6,
+                      help="months of history to analyze "
+                           "(default: %(default)s)")
+    t_an.add_argument("--group-by", dest="group_by", default="SERVICE",
+                      choices=["SERVICE", "USAGE_TYPE"],
+                      help="Cost Explorer grouping (default: %(default)s)")
+    t_an.add_argument("--profile", default="",
+                      help="aws CLI profile (blank = default credential "
+                           "chain; keys are never read or written)")
+    t_an.add_argument("--region", default="us-east-1",
+                      help="AWS region for Cost Explorer "
+                           "(default: %(default)s)")
+    t_an.add_argument("--buckets", default="",
+                      help="comma-separated S3 bucket names to attribute "
+                           "to observability (mimir/loki/tempo)")
+    t_an.add_argument("--out", "-o", default=".",
+                      help="output dir for tco-report.json "
+                           "(default: current directory)")
+    t_an.set_defaults(func=cmd_tco_analyze)
+
+    t_id = tcosub.add_parser(
+        "identity",
+        help="print the AWS caller identity (which account/role the "
+             "read-only analysis runs as)")
+    t_id.add_argument("--profile", default="",
+                      help="aws CLI profile (blank = default chain)")
+    t_id.add_argument("--region", default="us-east-1",
+                      help="AWS region (default: %(default)s)")
+    t_id.set_defaults(func=cmd_tco_identity)
+
+    t_tr = tcosub.add_parser(
+        "trend",
+        help="diff the dated TCO snapshots recorded over time")
+    t_tr.set_defaults(func=cmd_tco_trend)
 
     p_web = sub.add_parser(
         "web", help="launch the localhost web UI")

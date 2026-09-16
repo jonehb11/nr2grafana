@@ -210,7 +210,7 @@ class NoCommandTests(unittest.TestCase):
 
 class VersionTests(unittest.TestCase):
     def test_package_version(self):
-        self.assertEqual(nr2grafana.__version__, "1.6.0")
+        self.assertEqual(nr2grafana.__version__, "1.7.0")
 
 
 class _TempDbMixin:
@@ -1535,11 +1535,145 @@ class McpCommandTests(unittest.TestCase):
         self.assertIn("config", out)
 
 
+def _tco_stub_modules(available=True):
+    import types
+    awscost = types.ModuleType("nr2grafana.awscost")
+
+    class AWSError(Exception):
+        pass
+
+    awscost.AWSError = AWSError
+    awscost.identity_calls = []
+
+    def aws_available():
+        return available
+
+    def caller_identity(profile="", region=""):
+        awscost.identity_calls.append({"profile": profile,
+                                       "region": region})
+        return {"Account": "123456789012",
+                "Arn": "arn:aws:iam::123456789012:user/migrator"}
+
+    awscost.aws_available = aws_available
+    awscost.caller_identity = caller_identity
+
+    tco = types.ModuleType("nr2grafana.tco")
+    tco.calls = []
+    tco.snapshot_calls = []
+
+    def analyze(aws, store=None, deepdive=None, traffic=None,
+                packing=None, change_log=None, months=6,
+                group_by="SERVICE", buckets=None, log=None):
+        tco.calls.append({"months": months, "group_by": group_by,
+                          "buckets": buckets})
+        if log:
+            log("tco stub analyzing")
+        return {"schema": "nr2grafana/tco/v1", "currency": "USD",
+                "months": months,
+                "total": {
+                    "series": [["2026-01", 100.0], ["2026-02", 130.0]],
+                    "trend": {"direction": "up", "pct_growth": 30.0,
+                              "run_rate": 130.0},
+                    "forecast": {"series": [["2026-03", 160.0]]}},
+                "by_service": [{"service": "AmazonEC2",
+                                "series": [["2026-02", 80.0]],
+                                "trend": {"direction": "up",
+                                          "pct_growth": 12.0}}],
+                "observability_attribution": {"monthly_usd": 40.0},
+                "anomalies": [{"service": "AmazonEC2"}],
+                "change_correlation": {"events": []},
+                "assumptions": ["estimate"]}
+
+    def snapshot(store, report):
+        tco.snapshot_calls.append(report)
+        store.save_artifact("__instance__", "tco-snapshot", report)
+
+    def trend_over_snapshots(store):
+        return {"snapshots": 2, "deltas": [{"month": "2026-02",
+                                            "delta_usd": 30.0}]}
+
+    tco.analyze = analyze
+    tco.snapshot = snapshot
+    tco.trend_over_snapshots = trend_over_snapshots
+    return {"nr2grafana.awscost": awscost, "nr2grafana.tco": tco}
+
+
+class TcoCommandTests(_TempDbMixin, unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.out = os.path.join(self.tmp.name, "tco-out")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+        super().tearDown()
+
+    def _run(self, argv, available=True):
+        stubs = _tco_stub_modules(available=available)
+        with mock.patch.dict("sys.modules", stubs):
+            code, sout, serr = run_cli(argv)
+        return code, sout, serr, stubs
+
+    def test_analyze_prints_trend_and_writes_report(self):
+        code, sout, serr, stubs = self._run(
+            ["tco", "analyze", "--months", "4", "--group-by",
+             "USAGE_TYPE", "--buckets", "mimir,loki", "-o", self.out])
+        self.assertEqual(code, 0)
+        self.assertIn("run-rate", sout)
+        self.assertIn("$130.00", sout)
+        self.assertIn("observability share", sout)
+        call = stubs["nr2grafana.tco"].calls[-1]
+        self.assertEqual(call["months"], 4)
+        self.assertEqual(call["group_by"], "USAGE_TYPE")
+        self.assertEqual(call["buckets"], ["mimir", "loki"])
+        report_path = os.path.join(self.out, "tco-report.json")
+        self.assertTrue(os.path.isfile(report_path))
+        with open(report_path, encoding="utf-8") as f:
+            report = json.load(f)
+        self.assertEqual(report["schema"], "nr2grafana/tco/v1")
+        # snapshot recorded in the local store
+        self.assertTrue(stubs["nr2grafana.tco"].snapshot_calls)
+
+    def test_analyze_unavailable_exits_two(self):
+        code, sout, serr, stubs = self._run(
+            ["tco", "analyze", "-o", self.out], available=False)
+        self.assertEqual(code, 2)
+        self.assertIn("AWS CLI not found", serr)
+
+    def test_identity_prints_account(self):
+        code, sout, serr, stubs = self._run(
+            ["tco", "identity", "--profile", "prod"])
+        self.assertEqual(code, 0)
+        ident = json.loads(sout)
+        self.assertEqual(ident["Account"], "123456789012")
+        self.assertEqual(
+            stubs["nr2grafana.awscost"].identity_calls[-1]["profile"],
+            "prod")
+        self.assertIn("read-only", serr)
+
+    def test_identity_unavailable_exits_two(self):
+        code, sout, serr, stubs = self._run(
+            ["tco", "identity"], available=False)
+        self.assertEqual(code, 2)
+        self.assertIn("AWS CLI not found", serr)
+
+    def test_trend_diffs_snapshots(self):
+        code, sout, serr, stubs = self._run(["tco", "trend"])
+        self.assertEqual(code, 0)
+        trend = json.loads(sout)
+        self.assertEqual(trend["snapshots"], 2)
+
+    def test_tco_without_subcommand_prints_help(self):
+        code, out, err = run_cli(["tco"])
+        self.assertEqual(code, 2)
+        self.assertIn("analyze", out + err)
+
+
 class NewCommandsListedTests(unittest.TestCase):
     def test_new_commands_appear_in_top_level_help(self):
         code, out, err = run_cli([])
         self.assertEqual(code, 2)
-        for name in ("deepdive", "ai-context", "ai", "mcp"):
+        for name in ("deepdive", "ai-context", "ai", "mcp", "tco"):
             self.assertIn(name, out)
 
 

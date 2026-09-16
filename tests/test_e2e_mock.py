@@ -1008,6 +1008,159 @@ class McpProbeMockTest(unittest.TestCase):
             self.assertNotIn(leak, blob)
 
 
+class TcoMockTest(unittest.TestCase):
+    """The 1.7 TCO trend engine end to end against the fake ``aws`` CLI.
+
+    Points :mod:`nr2grafana.awscost` at ``tools/fake_aws.py`` via the
+    ``N2G_AWS_BIN`` override and drives ``tco.analyze`` over its canned,
+    deterministic, upward Cost Explorer bill: an upward trend is
+    detected, a forecast is produced, observability attribution is
+    computed and the seeded anomaly is surfaced. It also proves the
+    read-only guard refuses a mutating command -- both at the awscost
+    boundary (refused before exec) and at the fake CLI itself (which
+    exits non-zero on any non-read subcommand). The ``tco`` sibling is
+    imported lazily and the analyze test skips when it is not yet
+    written; the read-only leg exercises the already-present awscost."""
+
+    BUCKETS = ["mimir-blocks", "loki-chunks", "tempo-traces"]
+
+    def setUp(self):
+        self.fake = os.path.join(TOOLS, "fake_aws.py")
+        self.assertTrue(os.path.exists(self.fake),
+                        "fake aws CLI missing: %s" % self.fake)
+        prev = os.environ.get("N2G_AWS_BIN")
+        os.environ["N2G_AWS_BIN"] = self.fake
+
+        def _restore():
+            if prev is None:
+                os.environ.pop("N2G_AWS_BIN", None)
+            else:
+                os.environ["N2G_AWS_BIN"] = prev
+        self.addCleanup(_restore)
+
+    def _awscost(self):
+        (awscost,) = _import_or_skip(self, "nr2grafana.awscost")
+        return awscost
+
+    def test_fake_aws_drives_awscost_read_only(self):
+        """awscost, pointed at the fake, reads a believable upward bill
+        (grouped both ways), a forecast, one anomaly, the caller identity
+        and S3 bucket sizes -- all through the real read-only shell-out."""
+        awscost = self._awscost()
+        self.assertTrue(awscost.aws_available())
+
+        def _total(entry):
+            return sum(float(g["Metrics"]["UnblendedCost"]["Amount"])
+                       for g in entry["Groups"])
+
+        for group_by in ("SERVICE", "USAGE_TYPE"):
+            cu = awscost.get_cost_and_usage(
+                "2026-03-01", "2026-09-01", group_by=group_by)
+            rows = cu["ResultsByTime"]
+            self.assertGreaterEqual(len(rows), 4)
+            self.assertGreater(_total(rows[-1]), _total(rows[0]),
+                               "%s bill is not upward" % group_by)
+            self.assertTrue(rows[0]["Groups"])
+
+        fc = awscost.get_cost_forecast("2026-09-01", "2026-12-01")
+        self.assertTrue(fc.get("ForecastResultsByTime"))
+        self.assertIn("Amount", fc.get("Total", {}))
+
+        anoms = awscost.get_anomalies("2026-06-01", "2026-09-01")
+        self.assertEqual(len(anoms), 1)
+        self.assertGreater(anoms[0]["Impact"]["TotalImpact"], 0)
+
+        ident = awscost.caller_identity()
+        self.assertEqual(ident.get("Account"), "123456789012")
+        self.assertNotIn("Secret", json.dumps(ident))
+
+        sizes = awscost.s3_bucket_sizes(self.BUCKETS)
+        for b in self.BUCKETS:
+            self.assertIsNotNone(sizes[b]["bytes"])
+            self.assertIsNotNone(sizes[b]["objects"])
+            self.assertNotIn("error", sizes[b])
+
+    def test_mutating_command_is_refused(self):
+        """A mutating command is impossible to run: refused by the
+        awscost guard before exec, and independently refused (non-zero
+        exit) by the fake CLI even if it were invoked directly."""
+        awscost = self._awscost()
+        for service, sub in (("ce", "create-anomaly-monitor"),
+                             ("ec2", "terminate-instances"),
+                             ("s3api", "delete-bucket")):
+            with self.assertRaises(awscost.AWSError):
+                awscost.run_aws(service, sub)
+
+        # The fake CLI itself refuses (non-zero) a non-read subcommand...
+        import subprocess
+        proc = subprocess.run(
+            [sys.executable, self.fake, "ce", "create-anomaly-monitor",
+             "--monitor", "x"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertNotEqual(proc.returncode, 0)
+        # ...but serves a read subcommand (exit 0).
+        proc = subprocess.run(
+            [sys.executable, self.fake, "sts", "get-caller-identity"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(proc.returncode, 0)
+        self.assertIn("123456789012",
+                      proc.stdout.decode("utf-8", "replace"))
+
+    def test_tco_analyze_end_to_end(self):
+        """tco.analyze over the fake bill: upward trend + forecast +
+        by-service breakdown + observability attribution + the seeded
+        anomaly, all threaded through awscost's read-only shell-out."""
+        awscost, tco = _import_or_skip(
+            self, "nr2grafana.awscost", "nr2grafana.tco")
+        change_log = [{
+            "date": "2026-05-15",
+            "action": ("dropped metric "
+                       "apiserver_request_duration_seconds_bucket"),
+            "source": "optimize",
+        }]
+        res = tco.analyze(awscost, months=6, buckets=self.BUCKETS,
+                          change_log=change_log)
+        self.assertEqual(res.get("schema"), "nr2grafana/tco/v1")
+
+        # -- upward total trend -----------------------------------------
+        total = res.get("total") or {}
+        series = total.get("series") or []
+        self.assertGreaterEqual(len(series), 4, series)
+        first_usd = float(series[0][1])
+        last_usd = float(series[-1][1])
+        self.assertGreater(last_usd, first_usd,
+                           "total cost series is not upward: %s" % series)
+        trend = total.get("trend") or {}
+        self.assertTrue(trend, "no trend computed")
+        direction = trend.get("direction")
+        if direction is not None:
+            self.assertEqual(direction, "up",
+                             "trend direction not up: %s" % trend)
+
+        # -- forecast present -------------------------------------------
+        self.assertTrue(total.get("forecast"),
+                        "no forecast in TCO report")
+
+        # -- by-service breakdown ---------------------------------------
+        by_service = res.get("by_service") or []
+        self.assertTrue(by_service, "no by-service breakdown")
+
+        # -- observability attribution computed -------------------------
+        attribution = res.get("observability_attribution")
+        self.assertIsInstance(attribution, dict)
+        self.assertTrue(attribution,
+                        "observability attribution not computed")
+
+        # -- the seeded anomaly is surfaced -----------------------------
+        anomalies = res.get("anomalies") or []
+        self.assertTrue(anomalies, "seeded anomaly not surfaced")
+
+        # -- the contract's remaining top-level sections exist ----------
+        self.assertIn("change_correlation", res)
+        self.assertTrue(res.get("assumptions"),
+                        "TCO report must carry labeled assumptions")
+
+
 class FixtureLoadingTest(unittest.TestCase):
     """load_fixtures serves only well-formed dashboards."""
 

@@ -758,7 +758,8 @@ def _stub_mcp():
         pass
 
     def generate_mcp_config(grafana_url="", kind="claude",
-                            n2g_context_path="", include_grafana=True):
+                            n2g_context_path="", include_grafana=True,
+                            include_aws_cost=False):
         if kind not in ("claude", "kiro", "generic"):
             raise MCPError("unknown MCP config kind %r" % kind)
         servers = {}
@@ -768,6 +769,12 @@ def _stub_mcp():
                 "env": {"GRAFANA_URL": grafana_url or "${GRAFANA_URL}",
                         "GRAFANA_SERVICE_ACCOUNT_TOKEN":
                         "${GRAFANA_SERVICE_ACCOUNT_TOKEN}"}}
+        if include_aws_cost:
+            servers["aws-cost-explorer"] = {
+                "command": "uvx",
+                "args": ["awslabs.cost-explorer-mcp-server@latest"],
+                "env": {"AWS_PROFILE": "${AWS_PROFILE}",
+                        "AWS_REGION": "${AWS_REGION}"}}
         if n2g_context_path:
             servers["nr2grafana-context"] = {"command": "npx", "args": []}
         return {"mcpServers": servers}
@@ -786,6 +793,89 @@ def _stub_mcp():
     m.generate_mcp_config = generate_mcp_config
     m.probe = probe
     m.config_note = config_note
+    return m
+
+
+def _stub_awscost():
+    m = types.ModuleType("nr2grafana.awscost")
+    m.available = True  # toggled by tests
+
+    class AWSError(Exception):
+        pass
+
+    def aws_available():
+        return m.available
+
+    def caller_identity(profile="", region=""):
+        return {"Account": "123456789012",
+                "Arn": "arn:aws:iam::123456789012:user/migrator",
+                "UserId": "AIDAEXAMPLE"}
+
+    def get_cost_and_usage(*a, **k):
+        return {"ResultsByTime": []}
+
+    def get_cost_forecast(*a, **k):
+        return {"Total": {"Amount": "0"}}
+
+    def get_anomalies(*a, **k):
+        return []
+
+    def s3_bucket_sizes(*a, **k):
+        return {}
+
+    m.AWSError = AWSError
+    m.aws_available = aws_available
+    m.caller_identity = caller_identity
+    m.get_cost_and_usage = get_cost_and_usage
+    m.get_cost_forecast = get_cost_forecast
+    m.get_anomalies = get_anomalies
+    m.s3_bucket_sizes = s3_bucket_sizes
+    return m
+
+
+def _stub_tco():
+    m = types.ModuleType("nr2grafana.tco")
+    m.snapshot_calls = []
+    m.analyze_calls = []
+
+    def analyze(aws, store=None, deepdive=None, traffic=None,
+                packing=None, change_log=None, months=6,
+                group_by="SERVICE", buckets=None, log=None):
+        m.analyze_calls.append({"months": months, "group_by": group_by,
+                                "buckets": buckets,
+                                "has_deepdive": bool(deepdive)})
+        if log:
+            log("tco stub analyzing %d month(s)" % months)
+        return {"schema": "nr2grafana/tco/v1",
+                "generated_at": "2026-01-01T00:00:00Z",
+                "currency": "USD", "months": months,
+                "total": {
+                    "series": [["2026-01", 100.0], ["2026-02", 120.0]],
+                    "trend": {"direction": "up", "pct_growth": 20.0,
+                              "run_rate": 120.0},
+                    "forecast": {"series": [["2026-03", 140.0]]}},
+                "by_service": [{"service": "AmazonEC2",
+                                "series": [["2026-01", 60.0]],
+                                "trend": {"direction": "up",
+                                          "pct_growth": 10.0}}],
+                "observability_attribution": {"monthly_usd": 45.0,
+                                              "estimate": True},
+                "anomalies": [{"service": "AmazonEC2", "impact": 15.0}],
+                "change_correlation": {"events": []},
+                "recommendations": [],
+                "assumptions": ["estimate from your Cost Explorer data"],
+                "group_by": group_by, "buckets": buckets or []}
+
+    def snapshot(store, report):
+        m.snapshot_calls.append(report)
+        store.save_artifact("__instance__", "tco-snapshot", report)
+
+    def trend_over_snapshots(store):
+        return {"snapshots": 1, "deltas": []}
+
+    m.analyze = analyze
+    m.snapshot = snapshot
+    m.trend_over_snapshots = trend_over_snapshots
     return m
 
 
@@ -808,6 +898,8 @@ STUBS = {
     "nr2grafana.packing": _stub_packing(),
     "nr2grafana.aicontext": _stub_aicontext(),
     "nr2grafana.mcp": _stub_mcp(),
+    "nr2grafana.awscost": _stub_awscost(),
+    "nr2grafana.tco": _stub_tco(),
 }
 
 
@@ -2473,6 +2565,128 @@ class DeepDiveAiMcpTests(WebServerTestCase):
         self.assertEqual(code, 200)
         for feat in ("deepdive", "packing", "ai_context", "mcp"):
             self.assertTrue(st["features"].get(feat), feat)
+
+
+class TcoRouteTests(WebServerTestCase):
+    """1.7 AWS TCO routes: identity, tco job (persists tco +
+    snapshot), GET/download, MCP aws_cost toggle, feature flags."""
+
+    def setUp(self):
+        STUBS["nr2grafana.awscost"].available = True
+        STUBS["nr2grafana.tco"].snapshot_calls = []
+        STUBS["nr2grafana.tco"].analyze_calls = []
+
+    def test_aws_identity(self):
+        code, body = self.api("GET", "/api/aws/identity")
+        self.assertEqual(code, 200)
+        self.assertEqual(body["identity"]["Account"], "123456789012")
+        self.assertTrue(body["read_only"])
+
+    def test_aws_identity_with_profile(self):
+        code, body = self.api(
+            "GET", "/api/aws/identity?profile=prod&region=eu-west-1")
+        self.assertEqual(code, 200)
+        self.assertEqual(body["profile"], "prod")
+        self.assertEqual(body["region"], "eu-west-1")
+
+    def test_aws_identity_unavailable_400(self):
+        STUBS["nr2grafana.awscost"].available = False
+        code, body = self.api("GET", "/api/aws/identity")
+        self.assertEqual(code, 400)
+        self.assertIn("AWS CLI", body["error"])
+
+    def test_tco_job_persists_tco_and_snapshot(self):
+        code, resp = self.api("POST", "/api/tco",
+                              {"months": 4, "group_by": "USAGE_TYPE"})
+        self.assertEqual(code, 200)
+        job = poll_job(self.base, resp["job"])
+        self.assertEqual(job["status"], "done")
+        self.assertTrue(any("tco stub analyzing" in ln
+                            for ln in job["log"]))
+        self.assertEqual(job["result"]["schema"], "nr2grafana/tco/v1")
+        self.assertEqual(job["result"]["months"], 4)
+        call = STUBS["nr2grafana.tco"].analyze_calls[-1]
+        self.assertEqual(call["months"], 4)
+        self.assertEqual(call["group_by"], "USAGE_TYPE")
+        art = self.store.get_artifact(websrv._INSTANCE_SLUG, "tco")
+        self.assertIsNotNone(art)
+        self.assertEqual(art["schema"], "nr2grafana/tco/v1")
+        snap = self.store.get_artifact(websrv._INSTANCE_SLUG,
+                                       "tco-snapshot")
+        self.assertIsNotNone(snap)
+        self.assertTrue(STUBS["nr2grafana.tco"].snapshot_calls)
+
+    def test_tco_buckets_parsed_from_csv(self):
+        code, resp = self.api("POST", "/api/tco",
+                              {"buckets": "mimir-blocks, loki-chunks"})
+        self.assertEqual(code, 200)
+        poll_job(self.base, resp["job"])
+        call = STUBS["nr2grafana.tco"].analyze_calls[-1]
+        self.assertEqual(call["buckets"],
+                         ["mimir-blocks", "loki-chunks"])
+
+    def test_tco_unavailable_fast_400(self):
+        STUBS["nr2grafana.awscost"].available = False
+        code, body = self.api("POST", "/api/tco", {})
+        self.assertEqual(code, 400)
+        self.assertIn("AWS CLI", body["error"])
+
+    def test_get_tco_returns_stored(self):
+        code, resp = self.api("POST", "/api/tco", {})
+        poll_job(self.base, resp["job"])
+        code, body = self.api("GET", "/api/tco")
+        self.assertEqual(code, 200)
+        self.assertEqual(body["tco"]["schema"], "nr2grafana/tco/v1")
+        self.assertIn("snapshot_trend", body)
+
+    def test_get_tco_404_before_run(self):
+        code, body = self.api("GET", "/api/tco?slug=never-tco")
+        self.assertEqual(code, 404)
+        self.assertIn("error", body)
+
+    def test_download_tco_report(self):
+        code, resp = self.api("POST", "/api/tco", {})
+        poll_job(self.base, resp["job"])
+        code, headers, raw = http_bin(self.base,
+                                      "/download/tco-report.json")
+        self.assertEqual(code, 200)
+        self.assertIn("attachment",
+                      headers.get("Content-Disposition", ""))
+        self.assertIn("tco-report.json",
+                      headers.get("Content-Disposition", ""))
+        self.assertEqual(json.loads(raw.decode())["schema"],
+                         "nr2grafana/tco/v1")
+
+    def test_download_tco_report_404_before_run(self):
+        code, headers, raw = http_bin(
+            self.base, "/download/tco-report.json?slug=never-tco")
+        self.assertEqual(code, 404)
+        self.assertIn("error", json.loads(raw.decode("utf-8")))
+
+    def test_mcp_config_aws_cost_toggle(self):
+        code, body = self.api("GET", "/api/mcp/config?aws_cost=1")
+        self.assertEqual(code, 200)
+        self.assertTrue(body["include_aws_cost"])
+        servers = body["config"]["mcpServers"]
+        self.assertIn("aws-cost-explorer", servers)
+        env = servers["aws-cost-explorer"]["env"]
+        self.assertEqual(env["AWS_PROFILE"], "${AWS_PROFILE}")
+        # no secret embedded anywhere
+        self.assertNotIn("AKIA", json.dumps(body))
+
+    def test_mcp_config_post_persists_aws_cost_pref(self):
+        code, body = self.api("POST", "/api/mcp/config",
+                              {"kind": "claude", "aws_cost": True})
+        self.assertEqual(code, 200)
+        self.assertTrue(body["include_aws_cost"])
+        self.assertTrue(
+            self.store.get_setting("web.mcp_aws_cost"))
+
+    def test_state_features_include_tco_and_aws(self):
+        code, st = self.api("GET", "/api/state")
+        self.assertEqual(code, 200)
+        self.assertTrue(st["features"].get("tco"))
+        self.assertTrue(st["features"].get("aws"))
 
 
 class JobInternalsTests(unittest.TestCase):

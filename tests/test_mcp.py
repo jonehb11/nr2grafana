@@ -10,7 +10,10 @@ from unittest import mock
 
 from nr2grafana import mcp
 from nr2grafana.mcp import (MCPClient, MCPError, GRAFANA_TOKEN_ENV,
-                            GRAFANA_TOKEN_REF, generate_mcp_config, probe)
+                            GRAFANA_TOKEN_REF, AWS_PROFILE_ENV,
+                            AWS_REGION_ENV, AWS_PROFILE_REF, AWS_REGION_REF,
+                            AWS_COST_MCP_COMMAND, AWS_COST_MCP_PACKAGE,
+                            generate_mcp_config, cost_via_mcp, probe)
 
 
 # A tiny MCP server speaking newline-delimited JSON-RPC 2.0 over stdio.
@@ -76,6 +79,86 @@ _ERR_SERVER = textwrap.dedent('''
             sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": rid,
                 "error": {"code": -32000, "message": "boom"}}) + "\\n")
             sys.stdout.flush()
+''')
+
+
+# A fake AWS Cost Explorer MCP server: advertises a natural-language
+# "ask_cost" tool (with an inputSchema exposing a "question" arg) plus a
+# structured tool with no free-text arg, and echoes the question back.
+_FAKE_COST_SERVER = textwrap.dedent('''
+    import json, sys
+
+    def send(obj):
+        sys.stdout.write(json.dumps(obj) + "\\n")
+        sys.stdout.flush()
+
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        req = json.loads(line)
+        method = req.get("method")
+        rid = req.get("id")
+        if method == "notifications/initialized":
+            continue
+        if method == "initialize":
+            send({"jsonrpc": "2.0", "id": rid, "result": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "aws-cost-explorer",
+                               "version": "1.0"}}})
+        elif method == "tools/list":
+            send({"jsonrpc": "2.0", "id": rid, "result": {"tools": [
+                {"name": "get_cost_and_usage",
+                 "description": "structured cost query",
+                 "inputSchema": {"type": "object", "properties": {
+                     "start": {"type": "string"},
+                     "end": {"type": "string"}}}},
+                {"name": "ask_cost",
+                 "description": "natural language cost question",
+                 "inputSchema": {"type": "object", "properties": {
+                     "question": {"type": "string"}}}}]}})
+        elif method == "tools/call":
+            params = req.get("params") or {}
+            send({"jsonrpc": "2.0", "id": rid, "result": {
+                "content": [{"type": "text", "text": json.dumps(
+                    {"tool": params.get("name"),
+                     "arguments": params.get("arguments")})}],
+                "isError": False}})
+        else:
+            send({"jsonrpc": "2.0", "id": rid,
+                  "error": {"code": -32601, "message": "method not found"}})
+''')
+
+# A cost MCP server that advertises only structured tools (no free-text
+# argument) so cost_via_mcp cannot answer a natural-language question.
+_FAKE_COST_STRUCT_ONLY = textwrap.dedent('''
+    import json, sys
+
+    def send(obj):
+        sys.stdout.write(json.dumps(obj) + "\\n")
+        sys.stdout.flush()
+
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        req = json.loads(line)
+        method = req.get("method")
+        rid = req.get("id")
+        if method == "notifications/initialized":
+            continue
+        if method == "initialize":
+            send({"jsonrpc": "2.0", "id": rid, "result": {
+                "serverInfo": {"name": "cost-struct"}}})
+        elif method == "tools/list":
+            send({"jsonrpc": "2.0", "id": rid, "result": {"tools": [
+                {"name": "get_cost_and_usage",
+                 "inputSchema": {"type": "object", "properties": {
+                     "start": {"type": "string"}}}}]}})
+        else:
+            send({"jsonrpc": "2.0", "id": rid,
+                  "error": {"code": -32601, "message": "nope"}})
 ''')
 
 
@@ -293,6 +376,109 @@ class ConfigTests(unittest.TestCase):
     def test_config_note_mentions_env_var(self):
         note = mcp.config_note("claude")
         self.assertIn(GRAFANA_TOKEN_ENV, note)
+
+
+class AwsCostConfigTests(unittest.TestCase):
+    def test_aws_cost_off_by_default(self):
+        cfg = generate_mcp_config(grafana_url="https://g.example")
+        self.assertNotIn("aws-cost-explorer", cfg["mcpServers"])
+
+    def test_aws_cost_server_added(self):
+        cfg = generate_mcp_config(grafana_url="https://g.example",
+                                  include_aws_cost=True)
+        self.assertIn("aws-cost-explorer", cfg["mcpServers"])
+        entry = cfg["mcpServers"]["aws-cost-explorer"]
+        self.assertEqual(entry["command"], AWS_COST_MCP_COMMAND)
+        self.assertEqual(entry["command"], "uvx")
+        self.assertIn(AWS_COST_MCP_PACKAGE, entry["args"])
+        self.assertEqual(entry["env"][AWS_PROFILE_ENV], AWS_PROFILE_REF)
+        self.assertEqual(entry["env"][AWS_REGION_ENV], AWS_REGION_REF)
+
+    def test_aws_cost_kiro_extra_fields(self):
+        cfg = generate_mcp_config(kind="kiro", include_grafana=False,
+                                  include_aws_cost=True)
+        entry = cfg["mcpServers"]["aws-cost-explorer"]
+        self.assertEqual(entry["disabled"], False)
+        self.assertEqual(entry["autoApprove"], [])
+
+    def test_aws_cost_no_secret_embedded(self):
+        # A real-looking AWS key in the environment must never leak into
+        # the generated config -- only the ${AWS_PROFILE} reference.
+        akid = "AKIAIOSFODNN7EXAMPLE"
+        secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        with mock.patch.dict("os.environ",
+                             {"AWS_ACCESS_KEY_ID": akid,
+                              "AWS_SECRET_ACCESS_KEY": secret,
+                              AWS_PROFILE_ENV: "prod"}, clear=False):
+            cfg = generate_mcp_config(grafana_url="https://g.example",
+                                      include_aws_cost=True)
+        blob = json.dumps(cfg)
+        self.assertNotIn(akid, blob)
+        self.assertNotIn(secret, blob)
+        self.assertNotIn("prod", blob)
+        self.assertIn(AWS_PROFILE_REF, blob)
+        self.assertIn(AWS_REGION_REF, blob)
+
+    def test_grafana_still_present_alongside_aws(self):
+        cfg = generate_mcp_config(grafana_url="https://g.example",
+                                  include_aws_cost=True)
+        self.assertIn("grafana", cfg["mcpServers"])
+        self.assertIn("aws-cost-explorer", cfg["mcpServers"])
+
+
+class CostViaMcpTests(unittest.TestCase):
+    def test_lists_tools_without_question(self):
+        with MCPClient(command=server_cmd(_FAKE_COST_SERVER),
+                       timeout=10) as c:
+            out = cost_via_mcp(c)
+        self.assertTrue(out["ok"])
+        self.assertIn("ask_cost", out["tools"])
+        self.assertIn("get_cost_and_usage", out["tools"])
+        self.assertNotIn("result", out)
+
+    def test_answers_question_via_nl_tool(self):
+        with MCPClient(command=server_cmd(_FAKE_COST_SERVER),
+                       timeout=10) as c:
+            out = cost_via_mcp(c, question="what did S3 cost last month?")
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["tool"], "ask_cost")
+        text = out["result"]["content"][0]["text"]
+        echoed = json.loads(text)
+        self.assertEqual(echoed["tool"], "ask_cost")
+        self.assertEqual(echoed["arguments"],
+                         {"question": "what did S3 cost last month?"})
+
+    def test_no_nl_tool_returns_error_not_raise(self):
+        with MCPClient(command=server_cmd(_FAKE_COST_STRUCT_ONLY),
+                       timeout=10) as c:
+            out = cost_via_mcp(c, question="how much?")
+        self.assertFalse(out["ok"])
+        self.assertIn("error", out)
+        self.assertIn("get_cost_and_usage", out["tools"])
+
+    def test_none_client_never_raises(self):
+        out = cost_via_mcp(None, question="anything")
+        self.assertFalse(out["ok"])
+        self.assertIn("error", out)
+
+    def test_dead_server_never_raises(self):
+        # Server exits immediately without speaking MCP.
+        c = MCPClient(command=[sys.executable, "-c", "pass"], timeout=5)
+        out = cost_via_mcp(c, question="hi")
+        self.assertFalse(out["ok"])
+        self.assertIn("error", out)
+        c.close()
+
+    def test_tool_error_reported_not_raised(self):
+        # ask_cost exists but the call comes back as a JSON-RPC error.
+        c = MCPClient(command=server_cmd(_FAKE_COST_SERVER), timeout=10)
+        c.initialize()
+        with mock.patch.object(c, "call_tool",
+                               side_effect=MCPError("boom")):
+            out = cost_via_mcp(c, question="q")
+        self.assertFalse(out["ok"])
+        self.assertIn("boom", out["error"])
+        c.close()
 
 
 if __name__ == "__main__":

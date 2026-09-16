@@ -261,6 +261,7 @@ class Wizard:
                     "🔬  Deep-dive the LGTM stack",
                     "🤖  Export AI context",
                     "🔌  Set up Grafana MCP",
+                    "💵  Analyze AWS TCO trends",
                     "🌐  Launch web UI",
                     "⚙️   Choose / create a mapping config",
                     "👋  Quit",
@@ -301,8 +302,10 @@ class Wizard:
                 elif choice == 15:
                     self.flow_mcp()
                 elif choice == 16:
-                    self.flow_web()
+                    self.flow_tco()
                 elif choice == 17:
+                    self.flow_web()
+                elif choice == 18:
                     self.flow_config()
                 else:
                     print(dim("bye!"))
@@ -798,6 +801,49 @@ class Wizard:
             print(green("✓ MCP server reachable"))
         else:
             print(red("✗ MCP probe failed (see above)"))
+        return rc
+
+    # -- AWS TCO trends (1.7) -----------------------------------------------
+
+    def flow_tco(self) -> int:
+        header("Analyze AWS TCO trends")
+        print(dim("Discovers your AWS spend over time via Cost Explorer "
+                  "(strictly READ-ONLY, using your local aws CLI auth), "
+                  "attributes the observability share, ties cost "
+                  "movements to the optimizations this tool has made, and "
+                  "forecasts. nr2grafana only ever issues read-only "
+                  "(get-/list-/describe-) AWS calls. All figures are "
+                  "ESTIMATES from your own Cost Explorer data, not exact "
+                  "bills."))
+        profile = prompt("AWS profile (blank = default credential chain)",
+                         self.recall("aws_profile", ""))
+        if profile:
+            self.remember("aws_profile", profile)
+        region = prompt("AWS region",
+                        self.recall("aws_region", "us-east-1"))
+        self.remember("aws_region", region)
+        months = prompt("Months of history",
+                        self.recall("tco_months", "6"),
+                        validator=lambda v: "" if v.isdigit()
+                        and int(v) > 0 else "enter a positive number")
+        self.remember("tco_months", months)
+        group_by = ["SERVICE", "USAGE_TYPE"][menu(
+            "Group cost by?", ["AWS service", "Usage type"])]
+        buckets = prompt("Observability S3 buckets (comma-separated, "
+                         "blank to skip)", "")
+        out = prompt("Write tco-report.json to",
+                     self.recall("tco_out", "./tco-analysis"))
+        self.remember("tco_out", out)
+        from .cli import cmd_tco_analyze
+        rc = cmd_tco_analyze(argparse.Namespace(
+            months=int(months), group_by=group_by, profile=profile,
+            region=region, buckets=buckets, out=out))
+        if rc == 0:
+            print(green("✓ TCO analysis complete → %s" % out))
+        else:
+            print(yellow("TCO analysis unavailable or hit problems "
+                         "(see above) -- the aws CLI must be installed "
+                         "and configured (read-only)"))
         return rc
 
     # -- datasources --------------------------------------------------------

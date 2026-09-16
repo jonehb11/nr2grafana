@@ -47,6 +47,16 @@ GRAFANA_TOKEN_ENV = "GRAFANA_SERVICE_ACCOUNT_TOKEN"
 # interpolation), NOT a secret.
 GRAFANA_TOKEN_REF = "${GRAFANA_SERVICE_ACCOUNT_TOKEN}"
 
+# The AWS Cost Explorer MCP server (awslabs), run on demand via uvx. It
+# reads AWS_PROFILE / AWS_REGION from the local credential chain -- AWS
+# keys are NEVER embedded in the generated config, only env references.
+AWS_COST_MCP_COMMAND = "uvx"
+AWS_COST_MCP_PACKAGE = "awslabs.cost-explorer-mcp-server@latest"
+AWS_PROFILE_ENV = "AWS_PROFILE"
+AWS_REGION_ENV = "AWS_REGION"
+AWS_PROFILE_REF = "${AWS_PROFILE}"
+AWS_REGION_REF = "${AWS_REGION}"
+
 DEFAULT_TIMEOUT = 30
 _STDERR_TAIL = 500
 _MAX_MESSAGE = 8 * 1024 * 1024
@@ -447,6 +457,102 @@ def probe(command=None, url: str = "",
     return out
 
 
+# Free-text argument names the AWS Cost MCP tools may expose for a
+# natural-language question (checked against each tool's inputSchema).
+_QUESTION_ARG_NAMES = ("question", "query", "prompt", "input", "ask",
+                       "text", "q")
+# Substrings that hint a tool accepts a natural-language question.
+_QUESTION_TOOL_HINTS = ("ask", "query", "question", "natural", "nl",
+                        "chat", "answer")
+
+
+def cost_via_mcp(client, question: str = "") -> Dict[str, Any]:
+    """Query the AWS Cost Explorer MCP server through ``client``.
+
+    Initializes the client, lists its tools and -- when a ``question`` is
+    given and the server advertises a tool that takes a free-text
+    argument -- calls that tool with the question. This is an OPTIONAL
+    convenience for natural-language cost discovery and NEVER raises:
+    every failure is returned as ``{"ok": False, "error": "..."}``.
+
+    Returns ``{"ok": bool, "tools": [names], "result"?: {...},
+    "tool"?: name, "error"?: str}``. When no question is given (or no
+    suitable tool exists) it just reports the available tools so a caller
+    can pick one and use :meth:`MCPClient.call_tool` directly.
+    """
+    out: Dict[str, Any] = {"ok": False, "tools": []}
+    if client is None:
+        out["error"] = ("cost_via_mcp needs an MCPClient for the AWS Cost "
+                        "Explorer MCP server")
+        return out
+    try:
+        client.initialize()
+        tools = client.list_tools()
+    except MCPError as e:
+        out["error"] = str(e)
+        return out
+    except Exception as e:  # defensive: this helper must never raise
+        out["error"] = "unexpected AWS Cost MCP error: %s" % e
+        return out
+    names = [t.get("name", "") for t in tools if t.get("name")]
+    out["tools"] = names
+    out["ok"] = True
+    q = (question or "").strip()
+    if not q:
+        return out
+    picked = _pick_question_tool(tools)
+    if not picked:
+        out["ok"] = False
+        out["error"] = ("the AWS Cost MCP server exposes no natural-language "
+                        "tool; call a specific tool via call_tool instead")
+        return out
+    name, arg = picked
+    try:
+        out["result"] = client.call_tool(name, {arg: q})
+        out["tool"] = name
+    except MCPError as e:
+        out["ok"] = False
+        out["error"] = str(e)
+    except Exception as e:  # defensive
+        out["ok"] = False
+        out["error"] = "unexpected AWS Cost MCP error: %s" % e
+    return out
+
+
+def _pick_question_tool(tools):
+    """Find a (tool_name, arg_name) that accepts a free-text question.
+
+    Returns ``None`` when no advertised tool exposes a plausible
+    free-text argument.
+    """
+    candidates = []
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        name = tool.get("name") or ""
+        if not name:
+            continue
+        props = {}
+        schema = tool.get("inputSchema") or tool.get("input_schema")
+        if isinstance(schema, dict) and isinstance(
+                schema.get("properties"), dict):
+            props = schema["properties"]
+        arg = None
+        for cand in _QUESTION_ARG_NAMES:
+            if cand in props:
+                arg = cand
+                break
+        if arg is None:
+            continue
+        hinted = any(h in name.lower() for h in _QUESTION_TOOL_HINTS)
+        candidates.append((0 if hinted else 1, name, arg))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda c: c[0])
+    _, name, arg = candidates[0]
+    return name, arg
+
+
 # -- config generation --------------------------------------------------
 
 _VALID_KINDS = ("claude", "kiro", "generic")
@@ -488,9 +594,33 @@ def _context_server_entry(context_path: str, kind: str) -> Dict[str, Any]:
     return entry
 
 
+def _aws_cost_server_entry(kind: str) -> Dict[str, Any]:
+    """The AWS Cost Explorer MCP server entry (read-only discovery).
+
+    Runs the awslabs cost-explorer MCP server on demand via ``uvx``. AWS
+    auth comes from the local credential chain: ``AWS_PROFILE`` and
+    ``AWS_REGION`` are referenced through ``${...}`` env interpolation --
+    AWS access keys are NEVER embedded in the generated config.
+    """
+    entry: Dict[str, Any] = {
+        "command": AWS_COST_MCP_COMMAND,
+        "args": [AWS_COST_MCP_PACKAGE],
+        "env": {
+            # Reference the profile/region env vars -- never any secret.
+            AWS_PROFILE_ENV: AWS_PROFILE_REF,
+            AWS_REGION_ENV: AWS_REGION_REF,
+        },
+    }
+    if kind == "kiro":
+        entry["disabled"] = False
+        entry["autoApprove"] = []
+    return entry
+
+
 def generate_mcp_config(grafana_url: str = "", kind: str = "claude",
                         n2g_context_path: str = "",
-                        include_grafana: bool = True) -> Dict[str, Any]:
+                        include_grafana: bool = True,
+                        include_aws_cost: bool = False) -> Dict[str, Any]:
     """Build an MCP servers config for a local AI client.
 
     ``kind`` is ``claude`` | ``kiro`` | ``generic`` (all currently share
@@ -501,6 +631,10 @@ def generate_mcp_config(grafana_url: str = "", kind: str = "claude",
     NEVER written into the returned config, only the env reference
     ``${GRAFANA_SERVICE_ACCOUNT_TOKEN}``. When ``n2g_context_path`` is
     given a read-only filesystem server exposing that context is added.
+    When ``include_aws_cost`` is true an ``aws-cost-explorer`` server
+    (awslabs Cost Explorer MCP via ``uvx``) is added, reading
+    ``AWS_PROFILE`` / ``AWS_REGION`` from the local credential chain --
+    AWS keys are NEVER written into the returned config.
 
     Returns a plain dict ready to ``json.dumps`` into the client's MCP
     config file.
@@ -511,6 +645,8 @@ def generate_mcp_config(grafana_url: str = "", kind: str = "claude",
     servers: Dict[str, Any] = {}
     if include_grafana:
         servers["grafana"] = _grafana_server_entry(grafana_url, kind)
+    if include_aws_cost:
+        servers["aws-cost-explorer"] = _aws_cost_server_entry(kind)
     if n2g_context_path:
         servers["nr2grafana-context"] = _context_server_entry(
             n2g_context_path, kind)
