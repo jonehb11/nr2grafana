@@ -39,7 +39,8 @@ DEFAULT_DB = os.path.join(DEFAULT_DIR, "nr2grafana.db")
 ARTIFACT_KINDS = ("requirements", "widget-report", "datatest", "check",
                   "parity", "diagnosis", "heal", "samples", "review",
                   "comparison", "nr-source", "traffic", "cost",
-                  "optimize", "deepdive", "packing", "ai-context")
+                  "optimize", "deepdive", "packing", "ai-context",
+                  "tco", "tco-snapshot")
 
 CHANGE_SOURCES = ("user", "ai", "auto")
 

@@ -197,6 +197,97 @@ def _errmsg(e: Exception) -> str:
 # helpers shared by handlers
 # ---------------------------------------------------------------------------
 
+class _BoundAWS:
+    """Thin read-only wrapper over the awscost module that pre-binds a
+    profile and/or region into any function whose signature accepts them
+    (get_cost_and_usage, run_aws, caller_identity, ...). Exception
+    classes and non-function attributes pass straight through, so
+    ``aws.AWSError`` still works. This is the "client" half of tco's
+    ``aws_mod_or_client`` argument; the module itself is passed when no
+    profile/region override is set."""
+
+    def __init__(self, mod, profile="", region=""):
+        self._mod = mod
+        self._profile = profile
+        self._region = region
+
+    def __getattr__(self, name):
+        import inspect
+        attr = getattr(self._mod, name)
+        if not inspect.isroutine(attr):
+            return attr  # classes (AWSError), constants, etc.
+        try:
+            params = inspect.signature(attr).parameters
+        except (TypeError, ValueError):
+            return attr
+
+        def wrapper(*args, **kwargs):
+            if self._profile and "profile" in params \
+                    and "profile" not in kwargs:
+                kwargs["profile"] = self._profile
+            if self._region and "region" in params \
+                    and "region" not in kwargs:
+                kwargs["region"] = self._region
+            return attr(*args, **kwargs)
+
+        return wrapper
+
+
+def _aws_client(profile="", region=""):
+    """The awscost module, or a profile/region-bound wrapper over it."""
+    aws = _lazy("awscost")
+    if profile or region:
+        return _BoundAWS(aws, profile, region)
+    return aws
+
+
+def _awscost():
+    """The awscost module when the aws CLI is present and configured,
+    else an actionable ApiError. AWS access is OPTIONAL and strictly
+    read-only -- the tool degrades cleanly when it is absent."""
+    try:
+        aws = _lazy("awscost")
+    except Exception:
+        raise ApiError("AWS cost analysis is unavailable "
+                       "(nr2grafana.awscost not importable)", 400)
+    try:
+        ok = bool(aws.aws_available())
+    except Exception:
+        ok = False
+    if not ok:
+        raise ApiError("AWS CLI not found / not configured -- install "
+                       "the aws CLI and configure read-only credentials "
+                       "(aws configure / SSO) to analyze TCO", 400)
+    return aws
+
+
+def _call_tco_analyze(tco, aws, **kwargs):
+    """Call tco.analyze passing only the kwargs its signature accepts,
+    so the route stays robust against sibling API drift (e.g. group_by
+    is a route/CLI concept the engine may or may not take)."""
+    import inspect
+    try:
+        params = inspect.signature(tco.analyze).parameters
+    except (TypeError, ValueError):
+        params = {}
+    if any(p.kind == p.VAR_KEYWORD for p in params.values()):
+        return tco.analyze(aws, **kwargs)
+    filtered = {k: v for k, v in kwargs.items() if k in params}
+    return tco.analyze(aws, **filtered)
+
+
+def _parse_buckets(raw):
+    """S3 bucket list from a JSON array or a comma-separated string."""
+    if isinstance(raw, list):
+        names = [str(b).strip() for b in raw]
+    elif isinstance(raw, str):
+        names = [b.strip() for b in raw.split(",")]
+    else:
+        return None
+    names = [n for n in names if n]
+    return names or None
+
+
 def _grafana_live():
     """Build a GrafanaLive client from the session or fail actionably."""
     if not SESSION.grafana_url:
@@ -1187,6 +1278,73 @@ def _job_troubleshoot(job: _Job, body: Dict[str, Any], store,
     return result
 
 
+def _job_tco(job: _Job, body: Dict[str, Any], store) -> Dict[str, Any]:
+    """Discover AWS spend over time via Cost Explorer (read-only, local
+    auth), attribute the observability share, correlate it with the
+    optimizations this tool recorded, and forecast. Persists the "tco"
+    artifact and a dated "tco-snapshot". Everything is an ESTIMATE from
+    the user's own Cost Explorer data."""
+    aws_mod = _awscost()  # re-check inside the job; clean error if absent
+    tco = _lazy("tco")
+    profile = str(body.get("profile") or "")
+    region = str(body.get("region") or "")
+    try:
+        months = int(body.get("months") or 6)
+    except (TypeError, ValueError):
+        months = 6
+    months = max(1, min(months, 36))
+    group_by = body.get("group_by") or "SERVICE"
+    buckets = _parse_buckets(body.get("buckets"))
+    client = _aws_client(profile, region) if (profile or region) \
+        else aws_mod
+    # Resolve bucket NAMES to sizes so S3 observability cost can actually
+    # be attributed. The form only collects names; CloudWatch
+    # BucketSizeBytes (read-only) turns them into the {name: {bytes}}
+    # shape tco.attribute_observability prices. Best-effort: on any
+    # failure we fall back to the bare name list (tco degrades to a note).
+    if buckets and hasattr(aws_mod, "s3_bucket_sizes"):
+        try:
+            sizes = aws_mod.s3_bucket_sizes(
+                buckets, region=region or "us-east-1", profile=profile)
+            if isinstance(sizes, dict) and sizes:
+                priced = {n: i for n, i in sizes.items()
+                          if isinstance(i, dict) and i.get("bytes")}
+                job.add("Resolved %d/%d S3 bucket size(s) via CloudWatch "
+                        "for S3 attribution." % (len(priced), len(buckets)))
+                if priced:
+                    buckets = sizes
+        except Exception as e:  # best-effort; keep names on failure
+            job.add("note: could not resolve S3 bucket sizes (%s); "
+                    "S3 attribution will be unpriced." % _errmsg(e))
+    deepdive = _artifact(store, _INSTANCE_SLUG, "deepdive")
+    traffic = _artifact(store, _INSTANCE_SLUG, "traffic")
+    packing = _artifact(store, _INSTANCE_SLUG, "packing")
+    try:
+        change_log = store.list_changes()
+    except Exception:
+        change_log = None
+    job.add("Discovering AWS cost over %d month(s) via Cost Explorer "
+            "(read-only, local auth)..." % months)
+    report = _call_tco_analyze(
+        tco, client, store=store, deepdive=deepdive, traffic=traffic,
+        packing=packing, change_log=change_log, months=months,
+        group_by=group_by, buckets=buckets, profile=profile,
+        region=region, log=job.add)
+    store.save_artifact(_INSTANCE_SLUG, "tco", report)
+    try:
+        snap = getattr(tco, "snapshot", None)
+        if callable(snap):
+            snap(store, report)
+        else:
+            store.save_artifact(_INSTANCE_SLUG, "tco-snapshot", report)
+    except Exception as e:  # snapshot persistence is best-effort
+        job.add("note: could not persist TCO snapshot (%s)" % _errmsg(e))
+    trend = (report.get("total") or {}).get("trend") or {}
+    job.add("TCO analysis complete (direction: %s)"
+            % (trend.get("direction") or "n/a"))
+    return report
+
+
 # ---------------------------------------------------------------------------
 # request handler
 # ---------------------------------------------------------------------------
@@ -1338,6 +1496,10 @@ class Handler(BaseHTTPRequestHandler):
             self._get_ai_context(q)
         elif path == "/api/mcp/config":
             self._get_mcp_config(q)
+        elif path == "/api/tco":
+            self._get_tco(slug)
+        elif path == "/api/aws/identity":
+            self._get_aws_identity(q)
         elif path.startswith("/download/"):
             self._get_download(path)
         else:
@@ -1415,6 +1577,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/ai/troubleshoot": self._post_ai_troubleshoot,
             "/api/mcp/config": self._post_mcp_config,
             "/api/mcp/probe": self._post_mcp_probe,
+            "/api/tco": self._post_tco,
         }
         fn = routes.get(path)
         if not fn:
@@ -1482,6 +1645,17 @@ class Handler(BaseHTTPRequestHandler):
                                       "generate_mcp_config")
         except Exception:
             features["mcp"] = False
+        # 1.7 TCO / AWS discovery. "tco" is on when the engine is
+        # importable; "aws" is on when the aws CLI is present so a run
+        # can actually reach Cost Explorer (read-only).
+        try:
+            features["tco"] = hasattr(_lazy("tco"), "analyze")
+        except Exception:
+            features["tco"] = False
+        try:
+            features["aws"] = bool(_lazy("awscost").aws_available())
+        except Exception:
+            features["aws"] = False
         self._json({"app": "nr2grafana",
                     "version": ver,
                     "session": SESSION.public(),
@@ -1701,6 +1875,44 @@ class Handler(BaseHTTPRequestHandler):
                     "packing": _artifact(self.store, store_slug,
                                          "packing")})
 
+    # -- TCO / AWS discovery (1.7) ---------------------------------------
+
+    def _get_tco(self, slug: str) -> None:
+        """Return the stored TCO report (instance-wide by default) plus,
+        when snapshots exist, the trend across them."""
+        store_slug = _cost_slug(slug)
+        report = _artifact(self.store, store_slug, "tco")
+        if not report:
+            raise ApiError("no TCO analysis yet -- run one from the TCO "
+                           "view first", 404)
+        out: Dict[str, Any] = {"slug": slug, "tco": report}
+        try:
+            tco = _lazy("tco")
+            fn = getattr(tco, "trend_over_snapshots", None)
+            if callable(fn):
+                out["snapshot_trend"] = fn(self.store)
+        except Exception:
+            pass  # snapshot trend is a bonus; never fail the read
+        self._json(out)
+
+    def _get_aws_identity(self, q: Dict[str, List[str]]) -> None:
+        """Who the local aws CLI authenticates as (sts get-caller-
+        identity) -- shows which account/role the read-only analysis
+        would run against. Never mutates anything."""
+        aws = _awscost()  # actionable 400 when the aws CLI is absent
+        profile = (q.get("profile") or [""])[0]
+        region = (q.get("region") or [""])[0]
+        client = _aws_client(profile, region) if (profile or region) \
+            else aws
+        try:
+            identity = client.caller_identity()
+        except Exception as e:
+            raise ApiError("could not read AWS identity: %s -- check "
+                           "your aws credentials (read-only)"
+                           % _errmsg(e), 502)
+        self._json({"identity": identity, "read_only": True,
+                    "profile": profile, "region": region})
+
     def _ai_context(self, slug: str) -> Dict[str, Any]:
         """Build the AI context bundle for ``slug`` (empty = the whole
         workspace), threading in a live Grafana client and the stored
@@ -1726,19 +1938,31 @@ class Handler(BaseHTTPRequestHandler):
             self._json(context)
 
     def _mcp_config(self, kind: str, grafana_url: str,
-                    include_grafana: bool, n2g_context_path: str) \
-            -> Dict[str, Any]:
-        cfg = _lazy("mcp").generate_mcp_config(
-            grafana_url, kind=kind, n2g_context_path=n2g_context_path,
-            include_grafana=include_grafana)
+                    include_grafana: bool, n2g_context_path: str,
+                    include_aws_cost: bool = False) -> Dict[str, Any]:
+        gen = _lazy("mcp").generate_mcp_config
+        kwargs: Dict[str, Any] = {"kind": kind,
+                                  "n2g_context_path": n2g_context_path,
+                                  "include_grafana": include_grafana}
+        import inspect
+        try:
+            params = inspect.signature(gen).parameters
+        except (TypeError, ValueError):
+            params = {}
+        if "include_aws_cost" in params or any(
+                p.kind == p.VAR_KEYWORD for p in params.values()):
+            kwargs["include_aws_cost"] = include_aws_cost
+        cfg = gen(grafana_url, **kwargs)
         return {"kind": kind, "grafana_url": grafana_url,
                 "include_grafana": include_grafana,
+                "include_aws_cost": include_aws_cost,
                 "n2g_context_path": n2g_context_path, "config": cfg}
 
     def _get_mcp_config(self, q: Dict[str, List[str]]) -> None:
         """Generate an MCP config from persisted prefs + query
         overrides. The Grafana token is NEVER embedded -- the config
-        references the GRAFANA_SERVICE_ACCOUNT_TOKEN env var."""
+        references the GRAFANA_SERVICE_ACCOUNT_TOKEN env var. The AWS
+        Cost MCP entry references AWS_PROFILE/AWS_REGION, never keys."""
         kind = (q.get("kind") or [""])[0] \
             or self.store.get_setting("web.mcp_kind", "claude")
         grafana_url = (q.get("grafana_url") or [""])[0] \
@@ -1748,8 +1972,12 @@ class Handler(BaseHTTPRequestHandler):
         inc_raw = (q.get("include_grafana") or [""])[0]
         include = inc_raw.lower() not in ("0", "false", "no") \
             if inc_raw else True
+        aws_raw = (q.get("aws_cost") or [""])[0]
+        aws_cost = aws_raw.lower() in ("1", "true", "yes") \
+            if aws_raw else bool(
+                self.store.get_setting("web.mcp_aws_cost", False))
         self._json(self._mcp_config(kind, grafana_url, include,
-                                    ctx_path))
+                                    ctx_path, aws_cost))
 
     # -- downloads -------------------------------------------------------
 
@@ -1766,6 +1994,16 @@ class Handler(BaseHTTPRequestHandler):
             self._bytes(raw, "application/json; charset=utf-8",
                         "ai-context.json")
 
+    def _download_tco_report(self, slug: str) -> None:
+        store_slug = _cost_slug(slug)
+        report = _artifact(self.store, store_slug, "tco")
+        if not report:
+            raise ApiError("no TCO analysis yet -- run one first", 404)
+        raw = (json.dumps(report, indent=2, ensure_ascii=False)
+               + "\n").encode("utf-8")
+        self._bytes(raw, "application/json; charset=utf-8",
+                    "tco-report.json")
+
     def _get_download(self, path: str) -> None:
         if path == "/download/all.zip":
             return self._download_all()
@@ -1777,6 +2015,9 @@ class Handler(BaseHTTPRequestHandler):
             q = parse_qs(urlsplit(self.path).query)
             return self._download_ai_context(
                 path, (q.get("slug") or [""])[0])
+        if path == "/download/tco-report.json":
+            q = parse_qs(urlsplit(self.path).query)
+            return self._download_tco_report((q.get("slug") or [""])[0])
         m = re.match(r"^/download/dashboard/([^/]+)\.json$", path)
         if m:
             return self._download_dashboard(m.group(1))
@@ -2491,10 +2732,17 @@ class Handler(BaseHTTPRequestHandler):
         if include is None:
             include = True
         include = bool(include)
-        resp = self._mcp_config(kind, grafana_url, include, ctx_path)
+        aws_cost = body.get("aws_cost")
+        if aws_cost is None:
+            aws_cost = bool(
+                self.store.get_setting("web.mcp_aws_cost", False))
+        aws_cost = bool(aws_cost)
+        resp = self._mcp_config(kind, grafana_url, include, ctx_path,
+                                aws_cost)
         for key, val in (("web.mcp_kind", kind),
                          ("web.mcp_context_path", ctx_path or ""),
-                         ("web.mcp_include_grafana", include)):
+                         ("web.mcp_include_grafana", include),
+                         ("web.mcp_aws_cost", aws_cost)):
             try:
                 self.store.set_setting(key, val)
             except Exception:
@@ -2519,6 +2767,18 @@ class Handler(BaseHTTPRequestHandler):
                            "(stdio) to probe", 400)
         self._json(_lazy("mcp").probe(command=command,
                                       url=url or None))
+
+    # -- TCO / AWS discovery (1.7) ---------------------------------------
+
+    def _post_tco(self) -> None:
+        """Run tco.analyze as a job against AWS Cost Explorer (read-only,
+        local aws CLI auth). Fails fast with a clear 400 when the aws CLI
+        is absent so the UI never sees a crash."""
+        body = self._body()
+        _awscost()  # fail fast (400) before starting the job
+        store = self.store
+        self._json({"job": _start_job(
+            "tco", lambda job: _job_tco(job, body, store))})
 
 
 # ---------------------------------------------------------------------------

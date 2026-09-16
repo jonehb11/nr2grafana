@@ -101,6 +101,14 @@ What it does:
   dashboards and the whole stack. Plus **Grafana MCP** config generation
   (`mcp config`) wiring the Grafana MCP server + nr2grafana context into
   Claude/Kiro. See [docs/deep-dive-and-ai.md](docs/deep-dive-and-ai.md).
+- **TCO trend analysis** (`tco analyze` / web UI **TCO**): pulls real spend
+  from **AWS Cost Explorer using your local AWS CLI auth, strictly
+  read-only** (an allow-list makes a mutating command impossible), computes
+  trends/forecast/anomalies, estimates the observability share of the bill,
+  and **correlates cost movements with the optimization changes the tool
+  recorded** — did our changes move the bill? Optional **AWS Cost Explorer
+  MCP** wiring for natural-language cost discovery. Credentials are never
+  read, logged, or embedded. See [docs/tco.md](docs/tco.md).
 - **Change tracking**: every fix is logged locally and can be codified
   back into the mapping config.
 - **Optional AI assistance**: Claude diagnoses and fixes failing panels

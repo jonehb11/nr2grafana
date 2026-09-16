@@ -1128,6 +1128,65 @@ details.jd pre { margin: 0; border: 0;
 .pack-tbl tr.pack-floor td { font-weight: 650; }
 .finding-group { margin-top: var(--s3); }
 .stack-yaml pre { max-height: 460px; overflow: auto; }
+
+/* =============================================== TCO trends (1.7) */
+.aws-banner { display: flex; align-items: center; gap: var(--s3);
+  flex-wrap: wrap; border: 1px solid var(--border-soft);
+  border-left: 3px solid var(--accent); border-radius: var(--r-md);
+  background: var(--accent-soft); padding: var(--s2) var(--s4);
+  margin-bottom: var(--s4); font-size: var(--fs-md); }
+.aws-banner.warn { border-left-color: var(--amber);
+  background: var(--amber-bg); }
+.aws-banner .awb-ico { color: var(--accent); display: flex; }
+.aws-banner.warn .awb-ico { color: var(--amber); }
+.aws-banner .awb-main { min-width: 0; }
+.aws-banner .awb-acct { font-weight: 650; color: var(--text);
+  font-variant-numeric: tabular-nums; }
+.aws-banner .awb-arn { color: var(--muted); font-size: var(--fs-sm);
+  font-family: var(--mono); word-break: break-all; }
+.aws-banner .grow { flex: 1; }
+.tco-head { display: flex; flex-wrap: wrap; align-items: baseline;
+  gap: 4px var(--s5); border: 1px solid var(--border-soft);
+  border-left: 3px solid var(--accent); border-radius: var(--r-md);
+  background: var(--accent-soft); padding: var(--s3) var(--s4);
+  margin: var(--s3) 0; }
+.tco-head .th-num { font-size: 28px; font-weight: 750;
+  letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.tco-head .th-k { color: var(--muted); font-size: var(--fs-sm);
+  display: block; }
+.tco-head .th-up { color: var(--red); }
+.tco-head .th-down { color: var(--green); }
+.tco-head .th-flat { color: var(--muted); }
+.tco-head .th-cap { flex-basis: 100%; color: var(--muted);
+  font-size: var(--fs-sm); margin-top: 2px; }
+.tco-legend { display: flex; flex-wrap: wrap; gap: var(--s3);
+  font-size: var(--fs-sm); color: var(--muted); margin-top: var(--s2); }
+.tco-legend .lg { display: inline-flex; align-items: center; gap: 6px; }
+.tco-legend .sw { width: 22px; height: 0; border-top: 2px solid; }
+.tco-legend .sw.dash { border-top-style: dashed; }
+.tl-list { list-style: none; margin: var(--s3) 0 0; padding: 0; }
+.tl-item { position: relative; padding: 0 0 var(--s3) var(--s5);
+  border-left: 2px solid var(--border); }
+.tl-item:last-child { border-left-color: transparent; }
+.tl-item .tl-dot { position: absolute; left: -6px; top: 3px;
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--accent); border: 2px solid var(--bg2); }
+.tl-item.up .tl-dot { background: var(--red); }
+.tl-item.down .tl-dot { background: var(--green); }
+.tl-item .tl-date { font-size: var(--fs-xs); color: var(--faint);
+  font-variant-numeric: tabular-nums; }
+.tl-item .tl-act { font-weight: 600; color: var(--text); }
+.tl-item .tl-note { font-size: var(--fs-sm); color: var(--muted); }
+.tl-item .tl-delta { font-variant-numeric: tabular-nums;
+  font-weight: 650; margin-left: 6px; }
+.tl-item .tl-delta.up { color: var(--red); }
+.tl-item .tl-delta.down { color: var(--green); }
+.tco-assume { margin: var(--s2) 0 0; padding-left: var(--s4);
+  font-size: var(--fs-sm); color: var(--muted); }
+.tco-assume li { margin: 2px 0; }
+.attr-bar { display: flex; height: 14px; border-radius: 999px;
+  overflow: hidden; background: var(--bg3); margin: var(--s2) 0; }
+.attr-bar span { display: block; height: 100%; }
 </style>
 </head>
 <body>
@@ -1223,6 +1282,13 @@ details.jd pre { margin: 0; border: 0;
           12 2"></polygon><polyline points="2 17 12 22 22 17">
           </polyline><polyline points="2 12 12 17 22 12"></polyline>
           </svg></span> Stack deep-dive</a>
+      <a href="#/tco" data-r="tco">
+        <span class="ico"><svg class="i" viewBox="0 0 24 24"
+          fill="none" stroke="currentColor" stroke-width="1.7"
+          stroke-linecap="round" stroke-linejoin="round"
+          aria-hidden="true"><path d="M3 3v18h18"></path>
+          <path d="M7 15l4-5 3 3 5-7"></path></svg></span>
+        TCO trends</a>
     </nav>
     <div class="sidebar-foot">
       Local only &mdash; API keys stay in server memory,
@@ -1278,7 +1344,8 @@ var App = {
   cmp: null,             /* compare view state {slug,from,to,...} */
   cmpIO: null,           /* IntersectionObserver for lazy panels */
   templates: null,       /* /api/grafana/ds-templates cache */
-  cost: null             /* cost view state (traffic/cost/optimize) */
+  cost: null,            /* cost view state (traffic/cost/optimize) */
+  tco: null              /* TCO trend view state (1.7) */
 };
 
 var Jobs = { items: [], open: false };
@@ -2691,7 +2758,7 @@ function renderPills() {
 var VIEWS = { overview: vOverview, connect: vConnect,
               convert: vConvert, datasources: vDatasources,
               import: vImport, changes: vChanges, ai: vAI,
-              cost: vCost, stack: vStack };
+              cost: vCost, stack: vStack, tco: vTco };
 var ALIASES = { setup: 'connect', dashboards: 'overview',
                 test: 'overview' };
 
@@ -6047,7 +6114,8 @@ function welcomeHtml() {
 /* ============================================== help / shortcuts */
 var GKEYS = { o: '#/overview', c: '#/connect', f: '#/convert',
   d: '#/datasources', m: '#/compare', i: '#/import',
-  h: '#/changes', a: '#/ai', e: '#/cost', s: '#/stack' };
+  h: '#/changes', a: '#/ai', e: '#/cost', s: '#/stack',
+  v: '#/tco' };
 var HELP_KEYS = [
   ['g then o', 'Overview'], ['g then c', 'Connect'],
   ['g then f', 'Fetch & Convert'], ['g then d', 'Datasources'],
@@ -6055,6 +6123,7 @@ var HELP_KEYS = [
   ['g then h', 'Changes (history)'], ['g then a', 'AI Assistant'],
   ['g then e', 'Cost & efficiency'],
   ['g then s', 'Stack deep-dive'],
+  ['g then v', 'TCO trends'],
   ['?', 'Show this help'], ['j', 'Toggle background jobs'],
   ['t', 'Cycle theme'], ['Esc', 'Close dialogs / drawers']];
 
@@ -7476,6 +7545,977 @@ function recCardHtml(rec) {
       '<span class="kv">estimated savings</span>' : '') +
     saveBits + confChipHtml + '</div>' + cfgHtml(rec.config || []) +
     '</div>';
+}
+
+/* ================================================ TCO trends (1.7) */
+/* Deep total-cost-of-ownership trend analysis over the user's own AWS
+   Cost Explorer data. AWS access is STRICTLY READ-ONLY and uses the
+   local aws CLI credential chain -- no keys are ever read, logged or
+   written. Every figure is an ESTIMATE from the user's own Cost
+   Explorer data with labelled assumptions; a cost move after one of
+   our changes is presented as correlation, never proof of cause. */
+
+var TCO_TERMS = {
+  'run-rate': 'run-rate projects the latest month forward as a ' +
+    '12-month figure (latest month x12) -- roughly what a year would ' +
+    'cost if spend held flat at today\'s level.',
+  CAGR: 'compound annual growth rate: the smoothed month-over-month ' +
+    'growth of your bill, annualised. It answers "how fast is spend ' +
+    'growing?" independent of any single spiky month.',
+  attribution: 'the observability share of spend is an ESTIMATE -- ' +
+    'part of EC2, S3 and data-transfer cost is attributed to the ' +
+    'LGTM stack using the deep-dive\'s pool/bucket/wire evidence. It ' +
+    'is a labelled estimate, never a line-item from your invoice.',
+  forecast: 'the forecast overlays AWS Cost Explorer\'s own forecast ' +
+    'and our simple linear projection; both are estimates and the ' +
+    'range widens the further out you look.',
+  anomaly: 'a spend anomaly is a period AWS Cost Explorer flagged as ' +
+    'unusually high or low versus its learned baseline.',
+  correlation: 'change correlation lines the optimizations this tool ' +
+    'recorded up against the cost curve. A move after a change is ' +
+    'correlation, not proof of cause.'
+};
+function tcoTerm(term) {
+  var t = TCO_TERMS[term];
+  if (!t) return '';
+  return stackTermRaw(term + ': ' + t);
+}
+
+var TCO_MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug',
+  'Sep', 'Oct', 'Nov', 'Dec'];
+var TCO_ATTR_LBL = { ec2: 'EC2 compute', ec2_usd: 'EC2 compute',
+  compute: 'EC2 compute', s3: 'S3 storage', s3_usd: 'S3 storage',
+  storage: 'S3 storage', data_transfer: 'Data transfer',
+  transfer_usd: 'Data transfer', transfer: 'Data transfer',
+  network: 'Network', nat: 'NAT gateway', tgw: 'Transit gateway',
+  ebs: 'EBS volumes' };
+
+function ensureTco() {
+  if (!App.tco) {
+    App.tco = { months: 6, groupBy: 'SERVICE', profile: '',
+      buckets: '', identity: null, identityErr: null,
+      identityLoaded: false, report: null, loading: false,
+      err: null, ran: false, byServiceViz: 'bar',
+      mcpConfig: null, mcpErr: null, mcpKind: 'claude' };
+  }
+  return App.tco;
+}
+
+/* GET /api/tco (and job results) may hand us the report directly, or
+   wrapped as {tco: report} / {report: report}. Normalise both. */
+function tcoReportOf(payload) {
+  if (!payload) return null;
+  if (payload.schema === 'nr2grafana/tco/v1') return payload;
+  if (payload.tco && typeof payload.tco === 'object') return payload.tco;
+  if (payload.report && payload.report.schema) return payload.report;
+  if (payload.total || payload.by_service) return payload;
+  return null;
+}
+
+async function vTco(view) {
+  crumb('TCO trends');
+  var s = App.state || await api('/api/state');
+  App.state = s;
+  var t = ensureTco();
+  if (!t.identityLoaded) loadAwsIdentity();
+  if (!t.report && !t.ran && !t.loading) {
+    try {
+      var prev = await api('/api/tco');
+      var rep = tcoReportOf(prev);
+      if (rep) { t.report = rep; t.ran = true; }
+    } catch (e) { /* no prior run: the form is shown */ }
+  }
+  view.innerHTML =
+    '<h1>TCO trends</h1>' +
+    '<p class="lead">Analyse your <b>total cost of ownership over ' +
+    'time</b> straight from your own AWS Cost Explorer data, tie the ' +
+    'movements to the optimizations this tool has made, and forecast ' +
+    'what comes next. AWS access is <b>strictly read-only</b> and ' +
+    'uses your local <span class="mono">aws</span> CLI credentials ' +
+    '&mdash; no keys are ever read, logged or written. Every figure ' +
+    'is an <b>estimate from your own Cost Explorer data</b> with ' +
+    'labelled assumptions.</p>' +
+    '<div id="tco-identity"></div>' +
+    '<div class="card">' + tcoFormHtml() + '</div>' +
+    consoleHtml('tco-console', 'TCO analysis log') +
+    '<section id="tco-total"></section>' +
+    '<section id="tco-service"></section>' +
+    '<section id="tco-attr"></section>' +
+    '<section id="tco-corr"></section>' +
+    '<section id="tco-anom"></section>' +
+    '<section id="tco-recs"></section>' +
+    '<section id="tco-mcp"></section>';
+  wireTcoForm();
+  renderTcoIdentity();
+  renderTcoResults();
+  renderTcoMcp();
+}
+
+/* ---- AWS identity banner ---- */
+async function loadAwsIdentity() {
+  var t = ensureTco();
+  t.identityLoaded = true;
+  try {
+    t.identity = await api('/api/aws/identity');
+    t.identityErr = null;
+  } catch (e) { t.identityErr = e.message; t.identity = null; }
+  renderTcoIdentity();
+}
+
+/* Normalise sts get-caller-identity across native (Account/Arn) and
+   server-normalised (account/arn/available) shapes. */
+function tcoIdentity(id) {
+  id = id || {};
+  var inner = id.identity || id;
+  var avail = id.available;
+  if (avail == null) {
+    avail = !!(inner.Account || inner.account || inner.Arn ||
+      inner.arn);
+  }
+  return { available: avail,
+    account: inner.Account || inner.account || id.account || '',
+    arn: inner.Arn || inner.arn || id.arn || '',
+    alias: inner.alias || id.alias || inner.account_alias || '',
+    detail: id.error || id.detail || inner.error || '' };
+}
+
+function tcoRoBadge() {
+  return chip('read-only', 'ok', 'Enforced in code: nr2grafana can ' +
+    'only run allow-listed get-/list-/describe- commands against a ' +
+    'small set of services. A mutating aws command is refused before ' +
+    'it runs.');
+}
+
+function renderTcoIdentity() {
+  var el = $('#tco-identity'); if (!el) return;
+  var t = App.tco;
+  if (t.identityErr) {
+    el.innerHTML = '<div class="aws-banner warn"><span ' +
+      'class="awb-ico">' + ico('alert', 18) + '</span>' +
+      '<div class="awb-main"><div class="awb-acct">AWS CLI not ' +
+      'available</div><div class="awb-arn">' + esc(t.identityErr) +
+      '</div></div><span class="grow"></span>' + tcoRoBadge() +
+      '</div>';
+    return;
+  }
+  var id = t.identity;
+  if (!id) {
+    el.innerHTML = '<div class="aws-banner"><span class="awb-ico">' +
+      ico('info', 18) + '</span><div class="awb-main"><div ' +
+      'class="awb-acct">Checking AWS identity&hellip;</div></div>' +
+      '<span class="grow"></span>' + tcoRoBadge() + '</div>';
+    return;
+  }
+  var n = tcoIdentity(id);
+  if (!n.available) {
+    el.innerHTML = '<div class="aws-banner warn"><span ' +
+      'class="awb-ico">' + ico('alert', 18) + '</span>' +
+      '<div class="awb-main"><div class="awb-acct">AWS not ' +
+      'configured</div><div class="awb-arn">' +
+      esc(n.detail || 'Run `aws configure` or set AWS_PROFILE, then ' +
+        'reload. Everything else in nr2grafana still works without ' +
+        'AWS.') + '</div></div><span class="grow"></span>' +
+      tcoRoBadge() + '</div>';
+    return;
+  }
+  el.innerHTML = '<div class="aws-banner"><span class="awb-ico">' +
+    ico('checkcircle', 18) + '</span><div class="awb-main">' +
+    '<div class="awb-acct">AWS account ' + esc(n.account || '?') +
+    (n.alias ? ' &middot; ' + esc(n.alias) : '') + '</div>' +
+    (n.arn ? '<div class="awb-arn">' + esc(n.arn) + '</div>' : '') +
+    '</div><span class="grow"></span>' + tcoRoBadge() + '</div>';
+}
+
+/* ---- run form ---- */
+function tcoFormHtml() {
+  var t = App.tco;
+  var monthsOpts = [3, 6, 12, 24].map(function (m) {
+    return '<option value="' + m + '"' +
+      (m === t.months ? ' selected' : '') + '>' + m +
+      ' months</option>';
+  }).join('');
+  var grpOpts = [['SERVICE', 'By AWS service'],
+    ['USAGE_TYPE', 'By usage type']].map(function (g) {
+    return '<option value="' + g[0] + '"' +
+      (g[0] === t.groupBy ? ' selected' : '') + '>' + esc(g[1]) +
+      '</option>';
+  }).join('');
+  return '<div class="cost-actions">' +
+    '<div class="fld"><label>Look back</label>' +
+    '<select id="tco-months">' + monthsOpts + '</select></div>' +
+    '<div class="fld"><label>Group by</label>' +
+    '<select id="tco-group">' + grpOpts + '</select></div>' +
+    '<div class="fld"><label>AWS profile <span class="field-help" ' +
+    'style="display:inline">(optional)</span></label>' +
+    '<input id="tco-profile" value="' + esc(t.profile) +
+    '" placeholder="default" autocomplete="off" spellcheck="false">' +
+    '</div>' +
+    '<div class="fld"><label>Obs S3 buckets <span class="field-help" ' +
+    'style="display:inline">(optional)</span></label>' +
+    '<input id="tco-buckets" value="' + esc(t.buckets) +
+    '" placeholder="mimir-blocks,loki-chunks" autocomplete="off" ' +
+    'spellcheck="false"></div>' +
+    '<div class="grow"></div>' +
+    '<a class="btn" href="/download/tco-report.json" ' +
+    (t.report ? '' : 'hidden ') + 'id="tco-dl" download>' +
+    ico('download', 14) + ' report.json</a>' +
+    '<button class="btn primary" id="tco-run" type="button">' +
+    ico('zap', 14) + ' Run TCO analysis</button></div>' +
+    '<p class="kv" style="margin-top:var(--s2)">Reads AWS Cost ' +
+    'Explorer with your local credentials. Read-only &mdash; no ' +
+    'changes are ever made to your AWS account.</p>';
+}
+
+function wireTcoForm() {
+  var t = App.tco;
+  var mo = $('#tco-months'), gr = $('#tco-group'),
+      pr = $('#tco-profile'), bk = $('#tco-buckets');
+  if (mo) mo.onchange = function () {
+    t.months = parseInt(mo.value, 10) || 6; };
+  if (gr) gr.onchange = function () { t.groupBy = gr.value; };
+  if (pr) pr.onchange = function () { t.profile = pr.value.trim(); };
+  if (bk) bk.onchange = function () { t.buckets = bk.value.trim(); };
+  var run = $('#tco-run');
+  if (run) run.onclick = function () { onRunTco(run); };
+}
+
+async function onRunTco(btn) {
+  var t = App.tco;
+  var mo = $('#tco-months'), gr = $('#tco-group'),
+      pr = $('#tco-profile'), bk = $('#tco-buckets');
+  if (mo) t.months = parseInt(mo.value, 10) || 6;
+  if (gr) t.groupBy = gr.value;
+  if (pr) t.profile = pr.value.trim();
+  if (bk) t.buckets = bk.value.trim();
+  t.loading = true; t.err = null;
+  busy(btn, true); renderTcoResults();
+  var body = { months: t.months, group_by: t.groupBy };
+  if (t.profile) body.profile = t.profile;
+  if (t.buckets) {
+    body.buckets = t.buckets.split(',').map(function (b) {
+      return b.trim(); }).filter(Boolean);
+  }
+  try {
+    var job = await startJob('tco', '/api/tco', body,
+      logInto($('#tco-console')));
+    var rep = tcoReportOf((job && job.result) || {});
+    if (!rep) throw new Error('The analysis returned no report.');
+    t.report = rep; t.ran = true;
+    toast('TCO analysis complete', 'ok');
+  } catch (e) { t.err = e.message; toast(e.message, 'err'); }
+  t.loading = false; busy(btn, false);
+  renderTcoResults();
+  refreshState();
+}
+
+function renderTcoResults() {
+  var dl = $('#tco-dl');
+  if (dl) {
+    if (App.tco.report) dl.removeAttribute('hidden');
+    else dl.setAttribute('hidden', '');
+  }
+  renderTcoTotal();
+  renderTcoService();
+  renderTcoAttr();
+  renderTcoCorr();
+  renderTcoAnom();
+  renderTcoRecs();
+}
+
+/* ---- schema-tolerant readers (the tco engine owns exact shapes) --- */
+function tcoMonth(m) {
+  if (m == null) return '';
+  var s = String(m);
+  var mm = /^(\d{4})-(\d{2})/.exec(s);
+  if (mm) {
+    var mi = parseInt(mm[2], 10) - 1;
+    return (TCO_MON[mi] || mm[2]) + " '" + mm[1].slice(2);
+  }
+  if (typeof m === 'number' && isFinite(m)) {
+    var d = new Date(m > 1e11 ? m : m * 1000);
+    if (!isNaN(d.getTime())) {
+      return TCO_MON[d.getMonth()] + " '" +
+        String(d.getFullYear()).slice(2);
+    }
+  }
+  return s;
+}
+
+function tcoSeries(raw) {
+  return (raw || []).map(function (p) {
+    if (Array.isArray(p)) {
+      return { label: tcoMonth(p[0]), value: num(p[1]) };
+    }
+    p = p || {};
+    var m = p.month || p.date || p.period || p.start || p.label;
+    var v = p.usd != null ? p.usd : (p.cost != null ? p.cost :
+      (p.amount != null ? p.amount : p.value));
+    return { label: tcoMonth(m), value: num(v) };
+  });
+}
+
+function tcoForecastSeries(fc) {
+  if (!fc) return [];
+  var raw = fc.series || fc.points ||
+    (fc.linear && fc.linear.series) || (fc.ce && fc.ce.series) ||
+    fc.forecast || [];
+  return (raw || []).map(function (p) {
+    if (Array.isArray(p)) {
+      return { label: tcoMonth(p[0]), value: num(p[1]),
+        lo: p[2] != null ? num(p[2]) : null,
+        hi: p[3] != null ? num(p[3]) : null };
+    }
+    p = p || {};
+    var m = p.month || p.date || p.period || p.start;
+    var v = p.usd != null ? p.usd : (p.mean != null ? p.mean :
+      (p.value != null ? p.value : p.amount));
+    return { label: tcoMonth(m), value: num(v),
+      lo: p.lo != null ? num(p.lo) :
+        (p.lower != null ? num(p.lower) : null),
+      hi: p.hi != null ? num(p.hi) :
+        (p.upper != null ? num(p.upper) : null) };
+  });
+}
+
+function tcoRunRate(trend, series) {
+  var rr = trend.run_rate_annual != null ? trend.run_rate_annual :
+    (trend.annual_run_rate != null ? trend.annual_run_rate : null);
+  if (rr != null) return num(rr);
+  var latest = trend.latest != null ? num(trend.latest) :
+    (series.length ? series[series.length - 1].value : 0);
+  return latest * 12;
+}
+
+function tcoGrowth(trend) {
+  var g = trend.avg_mom_pct != null ? trend.avg_mom_pct :
+    (trend.growth_pct != null ? trend.growth_pct :
+    (trend.mom_pct != null ? trend.mom_pct :
+    (trend.pct_change != null ? trend.pct_change :
+    (trend.mom != null ? trend.mom : null))));
+  if (g == null) {
+    var pg = trend.pct_growth;
+    if (Array.isArray(pg)) {
+      for (var i = pg.length - 1; i >= 0; i--) {
+        if (pg[i] != null) { g = pg[i]; break; }
+      }
+    }
+  }
+  return g == null ? null : num(g);
+}
+
+function tcoCagr(trend) {
+  var c = trend.cagr_monthly_pct != null ? trend.cagr_monthly_pct :
+    (trend.cagr_pct != null ? trend.cagr_pct :
+    (trend.cagr != null ? trend.cagr : null));
+  return c == null ? null : num(c);
+}
+
+function tcoDir(trend, growth) {
+  var d = trend.direction || (growth == null ? '' :
+    growth > 1 ? 'up' : growth < -1 ? 'down' : 'flat');
+  if (d === 'up' || d === 'rising' || d === 'increasing') {
+    return { cls: 'up', arrow: '&#9650;' };
+  }
+  if (d === 'down' || d === 'falling' || d === 'decreasing') {
+    return { cls: 'down', arrow: '&#9660;' };
+  }
+  return { cls: 'flat', arrow: '&#8226;' };
+}
+
+function tcoSignPct(v) {
+  if (v == null || !isFinite(v)) return '–';
+  var r = Math.round(v * 10) / 10;
+  return (r > 0 ? '+' : '') + r + '%';
+}
+
+function tcoWhen(ts) {
+  if (!ts) return '';
+  var d = new Date(ts);
+  if (isNaN(d.getTime())) return String(ts).slice(0, 16);
+  return d.toISOString().slice(0, 10);
+}
+
+/* Month-labelled trend chart with a dashed forecast overlay. Reuses
+   the shared chart CSS (.chart/.ch-line/.ch-grid/.ch-tick/.ch-axis)
+   so it reads as one system with chart(); a bespoke renderer is used
+   only because chart()'s time axis would print clock times, not
+   months, for a monthly series. */
+function tcoTrendSvg(actual, fc) {
+  actual = actual || [];
+  if (!actual.length) return chartEmpty('No monthly cost data');
+  var pts = actual.map(function (p, i) {
+    return { i: i, label: p.label, v: num(p.value) };
+  });
+  var base = pts.length;
+  var fpts = (fc || []).map(function (p, k) {
+    return { i: base + k, label: p.label, v: num(p.value),
+      lo: p.lo, hi: p.hi };
+  });
+  var all = pts.concat(fpts);
+  var n = all.length;
+  var W = 640, H = 210, pl = 54, pr = 14, ptop = 12, pb = 34;
+  var pw = W - pl - pr, ph = H - ptop - pb;
+  var ys = [];
+  all.forEach(function (p) {
+    ys.push(p.v);
+    if (p.lo != null) ys.push(p.lo);
+    if (p.hi != null) ys.push(p.hi);
+  });
+  var y0 = Math.min.apply(null, ys.concat([0]));
+  var y1 = Math.max.apply(null, ys);
+  if (y1 === y0) y1 = y0 + 1;
+  y1 += (y1 - y0) * 0.08;
+  function X(i) {
+    return pl + (n <= 1 ? pw / 2 : i / (n - 1) * pw);
+  }
+  function Y(v) { return ptop + ph - (v - y0) / (y1 - y0) * ph; }
+  var grid = '', i, gy, gv;
+  for (i = 0; i <= 4; i++) {
+    gv = y0 + (i / 4) * (y1 - y0); gy = Y(gv);
+    grid += '<line class="ch-grid" x1="' + pl + '" y1="' +
+      gy.toFixed(1) + '" x2="' + (W - pr) + '" y2="' + gy.toFixed(1) +
+      '"></line><text class="ch-tick" x="' + (pl - 6) + '" y="' +
+      (gy + 3).toFixed(1) + '" text-anchor="end">' +
+      esc('$' + fmtNumP(gv)) + '</text>';
+  }
+  var everyX = n > 12 ? Math.ceil(n / 12) : 1;
+  var xlab = '';
+  all.forEach(function (p, k) {
+    if (k % everyX !== 0 && k !== n - 1) return;
+    xlab += '<text class="ch-tick" x="' + X(p.i).toFixed(1) + '" y="' +
+      (H - 12) + '" text-anchor="middle">' + esc(p.label) + '</text>';
+  });
+  var band = '';
+  var haveBand = fpts.some(function (p) {
+    return p.lo != null && p.hi != null; });
+  if (haveBand && pts.length) {
+    var anchor = pts[pts.length - 1];
+    var top = [X(anchor.i).toFixed(1) + ',' + Y(anchor.v).toFixed(1)];
+    var bot = [X(anchor.i).toFixed(1) + ',' + Y(anchor.v).toFixed(1)];
+    fpts.forEach(function (p) {
+      var hi = p.hi != null ? p.hi : p.v;
+      var lo = p.lo != null ? p.lo : p.v;
+      top.push(X(p.i).toFixed(1) + ',' + Y(hi).toFixed(1));
+      bot.unshift(X(p.i).toFixed(1) + ',' + Y(lo).toFixed(1));
+    });
+    band = '<polygon points="' + top.concat(bot).join(' ') +
+      '" fill="var(--amber)" fill-opacity="0.12" stroke="none">' +
+      '</polygon>';
+  }
+  var col = 'var(--accent)';
+  var actLine = '<polyline class="ch-line" stroke="' + col +
+    '" points="' + pts.map(function (p) {
+      return X(p.i).toFixed(1) + ',' + Y(p.v).toFixed(1);
+    }).join(' ') + '"></polyline>';
+  var actDots = pts.map(function (p) {
+    return '<circle cx="' + X(p.i).toFixed(1) + '" cy="' +
+      Y(p.v).toFixed(1) + '" r="2.6" fill="' + col + '"><title>' +
+      esc(p.label + ': ' + fmtMoney(p.v)) + '</title></circle>';
+  }).join('');
+  var fcLine = '';
+  if (fpts.length && pts.length) {
+    var fseq = [pts[pts.length - 1]].concat(fpts);
+    fcLine = '<polyline class="ch-line" stroke="var(--amber)" ' +
+      'stroke-dasharray="5 4" fill="none" points="' +
+      fseq.map(function (p) {
+        return X(p.i).toFixed(1) + ',' + Y(p.v).toFixed(1);
+      }).join(' ') + '"></polyline>' + fpts.map(function (p) {
+        return '<circle cx="' + X(p.i).toFixed(1) + '" cy="' +
+          Y(p.v).toFixed(1) + '" r="2.6" fill="var(--amber)">' +
+          '<title>' + esc(p.label + ' (forecast): ' + fmtMoney(p.v)) +
+          '</title></circle>';
+      }).join('');
+  }
+  var axis = '<line class="ch-axis" x1="' + pl + '" y1="' + ptop +
+    '" x2="' + pl + '" y2="' + (ptop + ph) + '"></line>' +
+    '<line class="ch-axis" x1="' + pl + '" y1="' + (ptop + ph) +
+    '" x2="' + (W - pr) + '" y2="' + (ptop + ph) + '"></line>';
+  return '<div class="chart"><svg viewBox="0 0 ' + W + ' ' + H +
+    '" role="img" aria-label="monthly total cost trend">' + grid +
+    band + axis + actLine + fcLine + actDots + xlab + '</svg></div>' +
+    '<div class="tco-legend"><span class="lg"><span class="sw" ' +
+    'style="border-color:var(--accent)"></span>actual monthly cost' +
+    '</span>' + (fpts.length ? '<span class="lg"><span class="sw ' +
+    'dash" style="border-color:var(--amber)"></span>forecast</span>'
+    : '') + '</div>';
+}
+
+/* ---- total-cost trend section ---- */
+function renderTcoTotal() {
+  var el = $('#tco-total'); if (!el) return;
+  var t = App.tco;
+  var head = '<h2>' + ico('zap', 15) + ' Total cost trend</h2>';
+  if (t.loading && !t.report) {
+    el.innerHTML = head +
+      '<div class="card"><div class="skel skel-chart"></div></div>';
+    return;
+  }
+  if (!t.report) {
+    var msg = t.err ? errorCard('TCO analysis failed.', t.err) : '';
+    el.innerHTML = head + msg +
+      '<div class="empty"><span class="eico">' + ico('zap', 26) +
+      '</span><b>No TCO analysis yet.</b><br>Run an analysis to ' +
+      'chart your monthly AWS spend, its growth rate and a forecast.' +
+      '<div class="btnbar" style="justify-content:center">' +
+      '<button class="btn primary" id="tco-empty-run" type="button">' +
+      ico('zap', 14) + ' Run TCO analysis</button></div></div>';
+    var b = $('#tco-empty-run');
+    if (b) b.onclick = function () { onRunTco(b); };
+    return;
+  }
+  var rep = t.report;
+  var total = rep.total || {};
+  var series = tcoSeries(total.series);
+  var trend = total.trend || {};
+  var fc = tcoForecastSeries(total.forecast);
+  var runRate = tcoRunRate(trend, series);
+  var growth = tcoGrowth(trend);
+  var cagr = tcoCagr(trend);
+  var dr = tcoDir(trend, growth);
+  var latest = series.length ? series[series.length - 1].value : null;
+  var cur = rep.currency || 'USD';
+  var headline = '<div class="tco-head">' +
+    '<div><span class="th-num">' + esc(fmtMoney(num(latest))) +
+    '</span><span class="th-k">latest month</span></div>' +
+    '<div><span class="th-num">' + esc(fmtMoney(num(runRate))) +
+    '</span><span class="th-k">run-rate / yr ' + tcoTerm('run-rate') +
+    '</span></div>' +
+    '<div><span class="th-num th-' + dr.cls + '">' + dr.arrow + ' ' +
+    (growth == null ? '&ndash;' : esc(tcoSignPct(growth))) +
+    '</span><span class="th-k">month-over-month</span></div>' +
+    (cagr != null ? '<div><span class="th-num th-' + dr.cls + '">' +
+      esc(tcoSignPct(cagr)) + '</span><span class="th-k">CAGR ' +
+      tcoTerm('CAGR') + '</span></div>' : '') +
+    '<div class="th-cap">' + esc(cur) + ' &middot; ' +
+    esc(String(rep.months || series.length)) + ' months' +
+    (rep.generated_at ? ' &middot; generated ' +
+      esc(tcoWhen(rep.generated_at)) : '') +
+    ' &middot; estimate from your Cost Explorer data</div></div>';
+  el.innerHTML = head + '<div class="card">' + headline +
+    tcoTrendSvg(series, fc) +
+    (fc.length ? '<p class="kv" style="margin-top:var(--s2)">' +
+      'Forecast ' + tcoTerm('forecast') + ' overlays Cost Explorer' +
+      '\'s forecast and our linear projection; both are estimates.' +
+      '</p>' : '') +
+    jsonDetails('Raw total / trend / forecast', total, false) +
+    '</div>';
+  mountCharts(el);
+}
+
+/* ---- by-service breakdown (bar / donut) ---- */
+function tcoServices(raw) {
+  var rows = (raw || []).map(function (s) {
+    s = s || {};
+    var nm = s.service || s.name || s.key || s.group ||
+      s.usage_type || 'other';
+    var v = s.monthly_usd != null ? s.monthly_usd :
+      (s.latest != null ? s.latest : (s.cost != null ? s.cost :
+      (s.value != null ? s.value : (s.total != null ? s.total : 0))));
+    var tr = s.trend || {};
+    var g = s.growth_pct != null ? s.growth_pct :
+      (tr.avg_mom_pct != null ? tr.avg_mom_pct :
+      (tr.growth_pct != null ? tr.growth_pct :
+      (s.growth != null ? s.growth :
+      (tr.mom_pct != null ? tr.mom_pct :
+      (tr.cagr_monthly_pct != null ? tr.cagr_monthly_pct : null)))));
+    return { name: String(nm), value: num(v),
+      growth: g == null ? null : num(g) };
+  }).filter(function (r) { return isFinite(r.value); });
+  rows.sort(function (a, b) { return b.value - a.value; });
+  if (rows.length > 12) {
+    var top = rows.slice(0, 11);
+    var rest = rows.slice(11).reduce(function (a, r) {
+      return a + r.value; }, 0);
+    top.push({ name: 'other (' + (rows.length - 11) + ')',
+      value: rest, growth: null });
+    rows = top;
+  }
+  return rows;
+}
+
+function renderTcoService() {
+  var el = $('#tco-service'); if (!el) return;
+  var t = App.tco;
+  if (!t.report) { el.innerHTML = ''; return; }
+  var rows = tcoServices(t.report.by_service);
+  var byUsage = t.groupBy === 'USAGE_TYPE';
+  var head = '<div class="recs-head"><h2 style="margin:0">' +
+    ico('database', 15) + ' By ' + (byUsage ? 'usage type' :
+      'service') + '</h2><span class="grow"></span>' +
+    '<div class="seg" role="group">' +
+    ['bar', 'donut'].map(function (k) {
+      return '<button type="button" data-tcoviz="' + k + '"' +
+        (t.byServiceViz === k ? ' class="on"' : '') + '>' +
+        (k === 'bar' ? 'Bar' : 'Donut') + '</button>';
+    }).join('') + '</div></div>';
+  if (!rows.length) {
+    el.innerHTML = head + '<div class="card">' +
+      chartEmpty('No per-service breakdown in this report') +
+      '</div>';
+    wireTcoServiceToggle();
+    return;
+  }
+  var series = rows.map(function (r) {
+    return { name: r.name, points: [[0, r.value]] };
+  });
+  var viz = (t.byServiceViz === 'donut' || rows.length === 1) ?
+    chart('pie', { series: series }, { unit: 'usd' }) :
+    chart('bar', { series: series }, { unit: 'usd' });
+  var totalv = rows.reduce(function (a, r) { return a + r.value; }, 0);
+  var tbl = '<div class="tablewrap tall"><table class="zebra">' +
+    '<thead><tr><th>' + (byUsage ? 'Usage type' : 'Service') +
+    '</th><th class="num">Monthly</th><th class="num">Share</th>' +
+    '<th class="num">Trend</th></tr></thead><tbody>' +
+    rows.map(function (r) {
+      var share = totalv > 0 ? (r.value / totalv * 100) : 0;
+      var g = r.growth;
+      var gcls = g == null ? '' : g > 1 ? 'th-up' :
+        g < -1 ? 'th-down' : 'th-flat';
+      return '<tr><td>' + esc(r.name) + '</td><td class="num">' +
+        esc(fmtMoney(r.value)) + '</td><td class="num">' +
+        esc((Math.round(share * 10) / 10) + '%') +
+        '</td><td class="num ' + gcls + '">' +
+        (g == null ? '&ndash;' : esc(tcoSignPct(g))) + '</td></tr>';
+    }).join('') + '</tbody></table></div>';
+  el.innerHTML = head + '<div class="grid2">' +
+    '<div class="card"><div id="tco-service-viz">' + viz +
+    '</div></div><div class="card">' + tbl + '</div></div>';
+  wireTcoServiceToggle();
+  mountCharts(el);
+}
+
+function wireTcoServiceToggle() {
+  $all('[data-tcoviz]').forEach(function (b) {
+    b.onclick = function () {
+      App.tco.byServiceViz = b.getAttribute('data-tcoviz');
+      renderTcoService();
+    };
+  });
+}
+
+/* ---- observability attribution ---- */
+/* Pull the per-family observability dollars. The engine's schema nests
+   ec2/s3/data_transfer as objects (obs_monthly_usd, or point_usd for
+   data transfer); older/flat shapes carry the dollars as top-level
+   numbers. Both are handled; the summary scalars (total / share) are
+   never mistaken for a cost family. */
+function tcoAttrFamily(v) {
+  if (v == null) return null;
+  if (typeof v === 'number') return isFinite(v) && v > 0 ? v : null;
+  if (typeof v === 'object') {
+    var d = v.obs_monthly_usd != null ? v.obs_monthly_usd :
+      (v.point_usd != null ? v.point_usd :
+      (v.monthly_usd != null ? v.monthly_usd :
+      (v.usd != null ? v.usd : (v.cost != null ? v.cost : null))));
+    d = num(d);
+    return isFinite(d) && d > 0 ? d : null;
+  }
+  return null;
+}
+
+function tcoAttrParts(a) {
+  a = a || {};
+  var out = [];
+  // Preferred: the engine's named families, in a stable order.
+  var fam = [['ec2', 'EC2 compute'], ['s3', 'S3 storage'],
+    ['data_transfer', 'Data transfer']];
+  var sawFamily = false;
+  fam.forEach(function (f) {
+    if (!(f[0] in a)) return;
+    sawFamily = true;
+    var v = tcoAttrFamily(a[f[0]]);
+    if (v != null) out.push({ label: f[1], value: v });
+  });
+  if (!sawFamily) {
+    // Fallback flat schema: top-level numeric cost lines only. Summary
+    // roll-ups and percentages are excluded so they never masquerade as
+    // a cost family.
+    var skip = { total: 1, total_usd: 1, share_pct: 1, of_total_pct: 1,
+      pct: 1, note: 1, assumption: 1, method: 1, schema: 1,
+      currency: 1, share: 1, total_obs_monthly_usd: 1,
+      total_spend_latest_usd: 1, obs_share_pct: 1, disclaimer: 1 };
+    Object.keys(a).forEach(function (k) {
+      if (skip[k]) return;
+      var v = a[k];
+      if (typeof v !== 'number' || !isFinite(v) || v <= 0) return;
+      out.push({ label: TCO_ATTR_LBL[k] || humanize(k), value: v });
+    });
+  }
+  out.sort(function (x, y) { return y.value - x.value; });
+  return out;
+}
+
+function renderTcoAttr() {
+  var el = $('#tco-attr'); if (!el) return;
+  var t = App.tco;
+  if (!t.report) { el.innerHTML = ''; return; }
+  var a = t.report.observability_attribution;
+  var head = '<h2>' + ico('search', 15) +
+    ' Observability attribution ' + chip('estimate', 'warn') + ' ' +
+    tcoTerm('attribution') + '</h2>';
+  if (!a || !Object.keys(a).length) {
+    el.innerHTML = head + '<div class="card">' +
+      chartEmpty('No attribution in this report -- run the Stack ' +
+        'deep-dive first for the best estimate') + '</div>';
+    return;
+  }
+  var parts = tcoAttrParts(a);
+  var totalObs = a.total_obs_monthly_usd != null ?
+      num(a.total_obs_monthly_usd) :
+    (a.total_usd != null ? num(a.total_usd) :
+    (a.total != null ? num(a.total) :
+      parts.reduce(function (s, p) { return s + p.value; }, 0)));
+  var sharePct = a.obs_share_pct != null ? num(a.obs_share_pct) :
+    (a.share_pct != null ? num(a.share_pct) :
+    (a.of_total_pct != null ? num(a.of_total_pct) : null));
+  var bar = parts.length ? '<div class="attr-bar">' +
+    parts.map(function (p, i) {
+      var w = totalObs > 0 ? (p.value / totalObs * 100) : 0;
+      return '<span style="width:' + w.toFixed(1) + '%;background:' +
+        seriesColor(i) + '" title="' + esc(p.label + ': ' +
+        fmtMoney(p.value)) + '"></span>';
+    }).join('') + '</div>' : '';
+  var chips = parts.map(function (p, i) {
+    return '<span class="chip dim" title="' + esc(fmtMoney(p.value)) +
+      ' / mo"><span style="display:inline-block;width:9px;height:9px;' +
+      'border-radius:2px;margin-right:5px;background:' +
+      seriesColor(i) + '"></span>' + esc(p.label) + ' &middot; ' +
+      esc(fmtMoney(p.value)) + '</span>';
+  }).join('');
+  var note = a.note || a.assumption || a.method || '';
+  el.innerHTML = head + '<div class="card">' +
+    '<div class="cost-total"><span class="ct-num">' +
+    esc(fmtMoney(totalObs)) + '</span><span class="ct-lbl">' +
+    'estimated observability spend / month' +
+    (sharePct != null ? ' &middot; ~' +
+      esc(String(Math.round(sharePct * 10) / 10)) + '% of total' :
+      '') + '</span></div>' + bar +
+    (chips ? '<div style="margin-top:var(--s2)">' + chips + '</div>' :
+      '') + (note ? '<p class="helper" style="margin-top:var(--s2)">' +
+      esc(note) + '</p>' : '') +
+    '<p class="helper">This is a labelled <b>estimate</b>: part of ' +
+    'your EC2, S3 and data-transfer cost is attributed to the LGTM ' +
+    'stack using the deep-dive\'s evidence. It is never a line-item ' +
+    'from your invoice.</p>' +
+    jsonDetails('Raw attribution', a, false) + '</div>';
+}
+
+/* ---- change-correlation timeline ---- */
+function renderTcoCorr() {
+  var el = $('#tco-corr'); if (!el) return;
+  var t = App.tco;
+  if (!t.report) { el.innerHTML = ''; return; }
+  var cc = t.report.change_correlation || {};
+  var events = cc.events || cc.changes || cc.correlations ||
+    (Array.isArray(cc) ? cc : []);
+  var head = '<h2>' + ico('refresh', 15) + ' Change correlation ' +
+    tcoTerm('correlation') + '</h2>';
+  if (!events.length) {
+    el.innerHTML = head + '<div class="card">' +
+      chartEmpty('No recorded optimizations line up with this ' +
+        'window yet') + '</div>';
+    return;
+  }
+  var items = events.map(function (e) {
+    e = e || {};
+    var delta = e.delta_usd != null ? e.delta_usd :
+      (e.impact_usd != null ? e.impact_usd :
+      (e.cost_delta != null ? e.cost_delta : null));
+    var dir = delta == null ? (e.direction || '') :
+      delta < 0 ? 'down' : delta > 0 ? 'up' : '';
+    var cls = dir === 'down' ? 'down' : dir === 'up' ? 'up' : '';
+    var dstr = delta == null ? '' : '<span class="tl-delta ' + cls +
+      '">' + (delta > 0 ? '+' : '') + esc(fmtMoney(num(delta))) +
+      ' / mo</span>';
+    var desc = e.why || e.description || e.effect || '';
+    var extra = e.note || '';
+    if (!extra && e.observed && e.observed !== 'unknown') {
+      extra = 'following month: ' + e.observed +
+        (e.aligned === true ? ' (as expected)' :
+          e.aligned === false ? ' (against expectation)' : '');
+    }
+    if (desc && extra) desc = desc + ' — ' + extra;
+    else if (!desc) desc = extra;
+    var when = e.ts || e.date || e.at || e.when || e.month || '';
+    return '<li class="tl-item ' + cls + '"><span class="tl-dot">' +
+      '</span><div class="tl-date">' +
+      esc(tcoWhen(when)) + '</div>' +
+      '<div class="tl-act">' +
+      esc(e.action || e.title || e.change || 'change') +
+      (e.target ? ' · ' + esc(e.target) : '') + dstr +
+      '</div>' + (desc ? '<div class="tl-note">' + esc(desc) +
+        '</div>' : '') + '</li>';
+  }).join('');
+  el.innerHTML = head + '<div class="card"><p class="kv">' +
+    'Optimizations this tool recorded, lined up against the cost ' +
+    'curve. A move after a change is <b>correlation, not proof of ' +
+    'cause</b>.</p><ul class="tl-list">' + items + '</ul>' +
+    (cc.note ? '<p class="helper">' + esc(cc.note) + '</p>' : '') +
+    '</div>';
+}
+
+/* ---- anomalies ---- */
+function renderTcoAnom() {
+  var el = $('#tco-anom'); if (!el) return;
+  var t = App.tco;
+  if (!t.report) { el.innerHTML = ''; return; }
+  var list = t.report.anomalies || [];
+  var head = '<h2>' + ico('alert', 15) + ' Spend anomalies ' +
+    tcoTerm('anomaly') + (list.length ? ' ' +
+      chip(String(list.length), 'warn') : '') + '</h2>';
+  if (!list.length) {
+    el.innerHTML = head + '<div class="empty"><span class="eico">' +
+      ico('checkcircle', 26) + '</span><b>No anomalies flagged.</b>' +
+      '<br>AWS Cost Explorer did not report unusual spend in this ' +
+      'window.</div>';
+    return;
+  }
+  var rows = list.map(function (a) {
+    a = a || {};
+    var amt = a.total_impact_usd != null ? a.total_impact_usd :
+      (a.impact_usd != null ? a.impact_usd :
+      (a.total_impact != null ? a.total_impact :
+      (a.amount != null ? a.amount : (a.cost != null ? a.cost :
+        null))));
+    var when = a.date || a.start || a.start_date ||
+      (a.time_period || {}).start || '';
+    var detail = a.reason || a.description || a.detail || '';
+    if (!detail) {
+      var rc = (a.root_causes || [])[0];
+      if (rc) {
+        detail = [rc.service, rc.usage_type, rc.region]
+          .filter(Boolean).join(' · ');
+      }
+      if (!detail && a.actual_spend_usd != null &&
+          a.expected_spend_usd != null) {
+        detail = 'actual ' + fmtMoney(num(a.actual_spend_usd)) +
+          ' vs expected ' + fmtMoney(num(a.expected_spend_usd));
+      }
+    }
+    return '<tr><td>' + esc(tcoWhen(when)) + '</td><td>' +
+      esc(a.service || a.dimension || a.monitor || a.root_cause ||
+        '—') + '</td><td class="num">' +
+      (amt == null ? '&ndash;' : esc(fmtMoney(num(amt)))) +
+      '</td><td>' + esc(detail) +
+      '</td></tr>';
+  }).join('');
+  el.innerHTML = head + '<div class="card"><div class="tablewrap">' +
+    '<table class="zebra"><thead><tr><th>Date</th><th>Service</th>' +
+    '<th class="num">Impact</th><th>Detail</th></tr></thead><tbody>' +
+    rows + '</tbody></table></div>' +
+    jsonDetails('Raw anomalies', list, false) + '</div>';
+}
+
+/* ---- recommendations + assumptions ---- */
+function renderTcoRecs() {
+  var el = $('#tco-recs'); if (!el) return;
+  var t = App.tco;
+  if (!t.report) { el.innerHTML = ''; return; }
+  var recs = t.report.recommendations || [];
+  var assume = t.report.assumptions || [];
+  var head = '<h2>' + ico('wrench', 15) + ' Recommendations</h2>';
+  var body = '';
+  if (recs.length) {
+    body += recs.map(function (r) {
+      r = r || {};
+      var sev = r.severity || 'low';
+      var scol = STACK_SEV_CLS[sev] === 'err' ? 'red' :
+        STACK_SEV_CLS[sev] === 'warn' ? 'amber' : 'accent';
+      var es = r.est_savings || {};
+      var money = es.monthly_usd != null ? es.monthly_usd :
+        (r.monthly_usd != null ? r.monthly_usd : null);
+      var why = r.rationale || r.detail || r.description || '';
+      return '<div class="card" style="border-left:3px solid var(--' +
+        scol + ')"><div class="rec-head"><span class="rec-title">' +
+        esc(r.title || r.action || 'Recommendation') + '</span>' +
+        chip(sev, STACK_SEV_CLS[sev] || 'dim') +
+        (money != null ? '<span class="save-money" ' +
+          'style="margin-left:auto">~' + esc(fmtMoney(num(money))) +
+          ' / mo</span>' : '') + '</div>' +
+        (why ? '<p class="kv" style="margin-top:6px">' + esc(why) +
+          '</p>' : '') + '</div>';
+    }).join('');
+  }
+  if (assume.length) {
+    body += '<div class="card"><h3>Assumptions</h3>' +
+      '<ul class="tco-assume">' + assume.map(function (x) {
+        return '<li>' + esc(typeof x === 'string' ? x :
+          (x.text || x.note || JSON.stringify(x))) + '</li>';
+      }).join('') + '</ul><p class="helper">Everything above is an ' +
+      '<b>estimate from your own Cost Explorer data</b> under these ' +
+      'assumptions &mdash; never an exact invoice.</p></div>';
+  }
+  el.innerHTML = body ? head + body : '';
+}
+
+/* ---- AWS Cost Explorer MCP panel ---- */
+function renderTcoMcp() {
+  var el = $('#tco-mcp'); if (!el) return;
+  var t = App.tco;
+  el.innerHTML = '<h2>' + ico('database', 15) +
+    ' AWS Cost Explorer ' + stackTermRaw('MCP (Model Context ' +
+      'Protocol): a standard way to give an AI agent live tools. ' +
+      'The AWS Cost Explorer MCP server lets your agent query your ' +
+      'spend directly.') + ' MCP</h2><div class="card">' +
+    '<p class="kv">Generate a ready MCP config that wires the AWS ' +
+    'Cost Explorer MCP server into your local AI (Claude, Kiro). It ' +
+    'references your AWS <b>profile / region environment ' +
+    'variables</b> &mdash; no AWS keys are ever written into the ' +
+    'file; the server uses your local credential chain, read-only.' +
+    '</p><div class="ai-actions">' +
+    '<label style="margin:0">Target agent</label>' +
+    '<div class="seg" role="group">' +
+    ['claude', 'kiro', 'generic'].map(function (k) {
+      return '<button type="button" data-tcomcp="' + k + '"' +
+        (t.mcpKind === k ? ' class="on"' : '') + '>' +
+        esc(k === 'claude' ? 'Claude' : k === 'kiro' ? 'Kiro' :
+          'Generic') + '</button>';
+    }).join('') + '</div><span class="grow"></span>' +
+    '<button class="btn primary" id="tco-mcp-gen" type="button">' +
+    ico('wrench', 13) + ' Generate config</button></div>' +
+    '<div id="tco-mcp-out"></div></div>';
+  $all('[data-tcomcp]', el).forEach(function (b) {
+    b.onclick = function () {
+      t.mcpKind = b.getAttribute('data-tcomcp');
+      t.mcpConfig = null; renderTcoMcp();
+    };
+  });
+  $('#tco-mcp-gen').onclick = function () { loadTcoMcp(this); };
+  renderTcoMcpOut();
+}
+
+async function loadTcoMcp(btn) {
+  var t = App.tco;
+  busy(btn, true);
+  try {
+    var r = await api('/api/mcp/config?aws_cost=1&kind=' +
+      encodeURIComponent(t.mcpKind) +
+      (t.profile ? '&profile=' + encodeURIComponent(t.profile) : ''));
+    t.mcpConfig = (r && r.config) || r || null;
+    t.mcpErr = null;
+  } catch (e) { t.mcpErr = e.message; toast(e.message, 'err'); }
+  busy(btn, false); renderTcoMcpOut();
+}
+
+function renderTcoMcpOut() {
+  var el = $('#tco-mcp-out'); if (!el) return;
+  var t = App.tco;
+  if (t.mcpErr) {
+    el.innerHTML = errorCard('Could not generate the MCP config.',
+      t.mcpErr); return;
+  }
+  if (!t.mcpConfig) { el.innerHTML = ''; return; }
+  var txt = typeof t.mcpConfig === 'string' ? t.mcpConfig :
+    JSON.stringify(t.mcpConfig, null, 2);
+  var id = 'tcomcp-' + uid();
+  el.innerHTML = '<div class="rec-cfg"><div class="cfg-bar">' +
+    '<label style="margin:0">AWS Cost MCP config (' + esc(t.mcpKind) +
+    ')</label><span style="margin-left:auto"></span>' +
+    copyBtn(id, 'AWS Cost MCP config') + '</div><pre id="' + id +
+    '">' + esc(txt) + '</pre><div class="cfg-note">Set ' +
+    '<span class="mono">AWS_PROFILE</span> and ' +
+    '<span class="mono">AWS_REGION</span> in your environment; no ' +
+    'AWS keys are written into this file.</div></div>';
 }
 
 /* ====================================================== theme */
