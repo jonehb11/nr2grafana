@@ -1788,7 +1788,7 @@ var VERDICT_CLS = { match: 'ok', close: 'info',
                     'shape-mismatch': 'warn', 'nr-empty': 'dim',
                     'gf-empty': 'warn', 'both-empty': 'dim',
                     'nr-error': 'err', 'gf-error': 'err',
-                    'unverifiable': 'warn', 'unverifiable-logs': 'warn' };
+                    'unverifiable': 'dim', 'unverifiable-logs': 'dim' };
 /* Plain-language tooltip for every verdict -- used as the default
    badge title so hovering any verdict explains what it means. */
 var VERDICT_HELP = {
@@ -1814,7 +1814,8 @@ var VERDICT_LBL = {
   'shape-mismatch': 'shape differs', 'nr-empty': 'NR: no data',
   'gf-empty': 'Grafana: no data', 'both-empty': 'no data',
   'nr-error': 'NR error', 'gf-error': 'Grafana error',
-  'unverifiable': 'manual check', 'unverifiable-logs': 'manual check' };
+  'unverifiable': 'needs manual check',
+  'unverifiable-logs': 'needs manual check' };
 /* Verdicts that count as agreement (hidden by "only disagreements"). */
 var AGREE_OK = { match: 1, close: 1 };
 var SEV_CLS = { blocker: 'err', warn: 'warn', info: 'info' };
@@ -1850,8 +1851,10 @@ function testChip(s) {
 
 function verdictChip(v, ratio, detail) {
   if (!v) return chip('no parity', 'dim');
-  var label = v;
-  if (ratio != null && isFinite(ratio) && v !== 'match') {
+  var label = (v === 'unverifiable' || v === 'unverifiable-logs') ?
+    VERDICT_LBL[v] : v;
+  if (ratio != null && isFinite(ratio) && v !== 'match' &&
+      v !== 'unverifiable' && v !== 'unverifiable-logs') {
     label += ' (x' + fmtRatio(ratio) + ')';
   }
   return chip(label, VERDICT_CLS[v] || 'dim',
@@ -3313,25 +3316,29 @@ async function vConvert(view) {
   var ses = (App.state || {}).session || {};
   view.innerHTML =
   '<h1>Fetch &amp; Convert</h1>' +
-  '<p class="lead">Fetch dashboards from New Relic, then convert ' +
-  'them into Grafana dashboards with requirements analysis and ' +
-  'per-dashboard packages.</p>' +
+  '<p class="lead">Fetch dashboards from New Relic (or paste a ' +
+  'dashboard JSON), then convert them into Grafana dashboards with ' +
+  'requirements analysis and per-dashboard packages.</p>' +
+  stepper('', null, 'convert') +
+  '<div class="card"><label>Working directory (NR JSON exports ' +
+  'land here and are read from here)</label>' +
+  '<input id="cv-workdir" value="' + esc(ses.input_dir || '') +
+  '"><div class="field-help">One shared folder for fetched exports ' +
+  'and the convert input &mdash; no more mismatched paths.</div>' +
+  '</div>' +
   '<div class="grid2">' +
   '<div class="card"><h2>1 &middot; Fetch from New Relic</h2>' +
-  '<label>Write NR JSON exports to</label>' +
-  '<input id="cv-fetchdir" value="' + esc(ses.input_dir || '') +
-  '">' +
   '<label>Dashboard GUIDs (optional, comma separated &mdash; ' +
   'empty = all)</label>' +
   '<input id="cv-guids" placeholder="all dashboards">' +
   '<div class="btnbar"><button class="btn primary" id="cv-fetch">' +
   ico('download', 14) + 'Fetch</button>' +
   '<button class="btn" id="cv-browse">Browse &amp; pick&hellip;' +
-  '</button></div>' +
+  '</button>' +
+  '<button class="btn" id="cv-fetchconv">' + ico('arrow', 14) +
+  'Fetch &amp; convert selected</button></div>' +
   '<div id="cv-pick"></div></div>' +
   '<div class="card"><h2>2 &middot; Convert &amp; package</h2>' +
-  '<label>Input directory (NR JSON)</label>' +
-  '<input id="cv-indir" value="' + esc(ses.input_dir || '') + '">' +
   '<label>Output directory</label>' +
   '<input id="cv-outdir" value="' + esc(ses.out_dir || '') + '">' +
   '<label>Mapping config (optional)</label>' +
@@ -3344,8 +3351,33 @@ async function vConvert(view) {
   '<div class="btnbar"><button class="btn primary" id="cv-run">' +
   ico('play', 14) + 'Run convert</button></div></div>' +
   '</div>' +
+  '<div class="card"><h2>' + ico('inbox', 14) +
+  'Paste a New Relic dashboard JSON</h2>' +
+  '<p class="lead" style="margin-bottom:8px">No filesystem needed ' +
+  '&mdash; paste one dashboard object or an array of them and ' +
+  'convert directly.</p>' +
+  '<label for="cv-paste">Paste New Relic dashboard JSON</label>' +
+  '<textarea id="cv-paste" spellcheck="false" ' +
+  'placeholder=\'{"name": "My dashboard", "pages": [ ... ]}\' ' +
+  'style="min-height:150px"></textarea>' +
+  '<div class="btnbar"><button class="btn primary" id="cv-paste-run">' +
+  ico('play', 14) + 'Convert pasted JSON</button>' +
+  '<span class="kv" id="cv-paste-hint">Accepts one object or a JSON ' +
+  'array of dashboards.</span></div></div>' +
   consoleHtml('cv-log', 'Fetch / convert log') +
   '<div id="cv-result"></div>';
+
+  function runConvert(kind, body) {
+    $('#cv-result').innerHTML = '';
+    return startJob(kind, '/api/convert', body, logInto($('#cv-log')))
+      .then(function (job) {
+        renderConvertResult(job.result);
+        toast('Converted ' + (job.result.dashboards || []).length +
+              ' dashboard(s)', 'ok');
+        refreshState();
+        return job;
+      });
+  }
 
   $('#cv-browse').onclick = async function () {
     var btn = this; busy(btn, true);
@@ -3364,14 +3396,17 @@ async function vConvert(view) {
     busy(btn, false);
   };
 
+  function guidList() {
+    return $('#cv-guids').value.split(',').map(function (s) {
+      return s.trim(); }).filter(Boolean);
+  }
+
   $('#cv-fetch').onclick = async function () {
     var btn = this; busy(btn, true);
-    var guids = $('#cv-guids').value.split(',').map(function (s) {
-      return s.trim(); }).filter(Boolean);
     try {
       var job = await startJob('fetch from New Relic',
         '/api/nr/fetch',
-        { out: $('#cv-fetchdir').value.trim(), guids: guids },
+        { out: $('#cv-workdir').value.trim(), guids: guidList() },
         logInto($('#cv-log')));
       toast('Fetched ' + (job.result.written || []).length +
             ' dashboards', 'ok');
@@ -3379,21 +3414,69 @@ async function vConvert(view) {
     busy(btn, false); refreshState();
   };
 
-  $('#cv-run').onclick = async function () {
+  $('#cv-fetchconv').onclick = async function () {
     var btn = this; busy(btn, true);
-    $('#cv-result').innerHTML = '';
+    var dir = $('#cv-workdir').value.trim();
     try {
-      var job = await startJob('convert & package', '/api/convert', {
-        input_dir: $('#cv-indir').value.trim(),
+      var fj = await startJob('fetch from New Relic',
+        '/api/nr/fetch', { out: dir, guids: guidList() },
+        logInto($('#cv-log')));
+      toast('Fetched ' + (fj.result.written || []).length +
+            ' dashboards - converting', 'ok');
+      await runConvert('convert & package', {
+        input_dir: dir,
         out_dir: $('#cv-outdir').value.trim(),
         config_path: $('#cv-cfg').value.trim(),
         package: $('#cv-pkg').checked
-      }, logInto($('#cv-log')));
-      renderConvertResult(job.result);
-      toast('Converted ' + (job.result.dashboards || []).length +
-            ' dashboard(s)', 'ok');
+      });
     } catch (e) { toast(e.message, 'err'); }
-    busy(btn, false); refreshState();
+    busy(btn, false);
+  };
+
+  $('#cv-run').onclick = async function () {
+    var btn = this; busy(btn, true);
+    try {
+      await runConvert('convert & package', {
+        input_dir: $('#cv-workdir').value.trim(),
+        out_dir: $('#cv-outdir').value.trim(),
+        config_path: $('#cv-cfg').value.trim(),
+        package: $('#cv-pkg').checked
+      });
+    } catch (e) { toast(e.message, 'err'); }
+    busy(btn, false);
+  };
+
+  $('#cv-paste-run').onclick = async function () {
+    var btn = this; busy(btn, true);
+    var raw = $('#cv-paste').value.trim();
+    if (!raw) {
+      toast('Paste a dashboard JSON first', 'err');
+      busy(btn, false); return;
+    }
+    var parsed;
+    try { parsed = JSON.parse(raw); }
+    catch (e) {
+      $('#cv-result').innerHTML = errorCard(
+        'That is not valid JSON.', e.message,
+        { label: 'Fix the pasted text and try again' });
+      toast('Invalid JSON', 'err');
+      busy(btn, false); return;
+    }
+    try {
+      await runConvert('convert pasted JSON', {
+        nr_json: parsed,
+        out_dir: $('#cv-outdir').value.trim(),
+        config_path: $('#cv-cfg').value.trim(),
+        package: $('#cv-pkg').checked
+      });
+    } catch (e) {
+      if (!$('#cv-result').innerHTML) {
+        $('#cv-result').innerHTML = errorCard(
+          'The pasted dashboard could not be converted.', e.message);
+      }
+      toast(e.message, 'err');
+    }
+    busy(btn, false);
   };
 }
 
@@ -4211,6 +4294,9 @@ function renderPanels(el, slug, d) {
     return row;
   }).join('');
 
+  var flagged = (d.widget_report || []).filter(function (w) {
+    return w.confidence === 'needs-review' ||
+           w.confidence === 'untranslatable'; }).length;
   el.innerHTML =
     '<div class="btnbar" style="margin:0 0 12px">' +
     '<button class="btn" id="ws-check">Check requirements' +
@@ -4218,8 +4304,13 @@ function renderPanels(el, slug, d) {
     '<button class="btn primary" id="ws-test">' +
     ico('play', 14) + 'Run data tests' +
     '</button>' +
+    (flagged ? '<button class="btn" id="ws-ai">' +
+      ico('sparkle', 14) + 'Convert flagged panels with AI' +
+      '<span class="chip dim" style="margin-left:2px">' + flagged +
+      '</span></button>' : '') +
     '<a class="btn" href="#/dash/' + encodeURIComponent(slug) +
     '/diagnostics">Diagnose &rarr;</a></div>' +
+    '<div id="ws-ai-out"></div>' +
     consoleHtml('ws-log', 'Data test log') +
     requirementsCard(d) +
     '<div class="card"><h2>Panels</h2><div class="tablewrap">' +
@@ -4250,6 +4341,25 @@ function renderPanels(el, slug, d) {
     } catch (e) { toast(e.message, 'err'); busy(btn, false); }
     refreshState();
   };
+  var wsAi = $('#ws-ai');
+  if (wsAi) wsAi.onclick = async function () {
+    var btn = this; busy(btn, true);
+    var out = $('#ws-ai-out');
+    out.innerHTML = '<div class="card"><div class="ai-box">' +
+      ico('sparkle', 13) + ' Asking the AI to convert the flagged ' +
+      'panels&hellip; this can take a moment.</div></div>';
+    try {
+      var job = await startJob('AI convert flagged panels: ' + slug,
+        '/api/ai/convert-panels', { slug: slug },
+        logInto($('#ws-log')));
+      renderAiBatch(out, slug, d, job.result || {});
+    } catch (e) {
+      out.innerHTML = errorCard(
+        'The AI batch conversion could not be run.', e.message);
+      toast(e.message, 'err');
+    }
+    busy(btn, false);
+  };
 
   $all('tr[data-exp]', el).forEach(function (tr) {
     var toggle = function (ev) {
@@ -4269,6 +4379,7 @@ function renderPanels(el, slug, d) {
   });
   bindEditors(el, slug, d);
   bindPanelFixes(el, slug, d);
+  bindAiCopilot(el, slug, d);
 }
 
 function panelDetailHtml(slug, d, w) {
@@ -4284,11 +4395,14 @@ function panelDetailHtml(slug, d, w) {
     html += '<div class="kv">note: ' + esc(n) + '</div>';
   });
   var targets = (panel && panel.targets) || [];
+  var hard = w.confidence === 'needs-review' ||
+             w.confidence === 'untranslatable';
   if (!targets.length) {
     html += '<div class="kv" style="margin-top:8px">This panel ' +
       'has no query targets (text/placeholder panel)';
     if (w.fallback) html += ' &mdash; fallback: ' + esc(w.fallback);
     html += '.</div>';
+    if (hard) html += aiTranslateHtml(w);
   }
   targets.forEach(function (t) {
     var ref = t.refId || 'A';
@@ -4354,6 +4468,12 @@ function panelDetailHtml(slug, d, w) {
       '<div class="btnbar">' +
       btnA('test', w.panel_id, ref, 'Test') +
       btnA('ai', w.panel_id, ref, 'Ask AI') +
+      (w.confidence === 'approximate' || w.confidence === 'needs-review'
+        ? '<button class="btn small" data-act="ai" data-pid="' +
+          esc(w.panel_id) + '" data-ref="' + esc(ref) +
+          '" data-mode="convert">' + ico('sparkle', 13) +
+          'Ask AI to improve</button>'
+        : '') +
       btnA('save', w.panel_id, ref, 'Save') +
       btnA('push', w.panel_id, ref, 'Save &amp; Push', 'primary') +
       '</div>' +
@@ -4376,6 +4496,274 @@ function btnA(act, pid, ref, label, extra) {
   return '<button class="btn small ' + (extra || '') +
     '" data-act="' + act + '" data-pid="' + esc(pid) +
     '" data-ref="' + esc(ref) + '">' + label + '</button>';
+}
+
+/* AI copilot for a target-LESS hard panel: the converter could not
+   produce a query, so offer to have the AI translate it and, on a
+   proposal, apply it by creating a real target (POST /api/panel/
+   convert). ref is fixed to 'A' -- the first target we create. */
+function aiTranslateHtml(w) {
+  var pid = w.panel_id;
+  return '<div class="ai-copilot" style="margin-top:12px">' +
+    '<div class="row" style="gap:8px">' +
+    '<label style="margin:0">Target datasource</label>' +
+    '<select id="dsfam-' + pid + '-A" style="width:auto">' +
+    '<option value="prometheus">Prometheus / Mimir (metrics)' +
+    '</option>' +
+    '<option value="loki">Loki (logs)</option>' +
+    '<option value="tempo">Tempo (traces)</option></select>' +
+    '<button class="btn small primary" data-cp="translate" ' +
+    'data-pid="' + esc(pid) + '" data-ref="A">' + ico('sparkle', 13) +
+    'Ask AI to translate this</button></div>' +
+    '<div class="field-help">The converter could not translate this ' +
+    'panel. The AI proposes a query; nothing changes until you ' +
+    'Apply.</div>' +
+    '<div id="aitr-' + pid + '-A"></div></div>';
+}
+
+/* Bind the target-less copilot buttons (kept off the generic
+   data-act dispatch so they never collide with the editor). */
+function bindAiCopilot(el, slug, d) {
+  $all('button[data-cp="translate"]', el).forEach(function (btn) {
+    btn.onclick = function (ev) {
+      ev.stopPropagation();
+      aiTranslate(slug, btn);
+    };
+  });
+}
+
+async function aiTranslate(slug, btn) {
+  var pid = btn.getAttribute('data-pid');
+  var ref = btn.getAttribute('data-ref') || 'A';
+  var pidVal = /^\d+$/.test(pid) ? parseInt(pid, 10) : pid;
+  var famEl = document.getElementById('dsfam-' + pid + '-' + ref);
+  var fam = famEl ? famEl.value : 'prometheus';
+  var box = document.getElementById('aitr-' + pid + '-' + ref);
+  busy(btn, true);
+  box.innerHTML = '<div class="ai-box">' + ico('sparkle', 13) +
+    ' Asking the AI to translate this panel&hellip;</div>';
+  try {
+    var a = await api('/api/ai/suggest',
+      { slug: slug, panel_id: pidVal, refId: ref, mode: 'convert',
+        context: { ds_family: fam } });
+    var fixed = a.fixed_expr || '';
+    box.innerHTML = '<div class="ai-box">' +
+      '<span class="chip ' + (a.confidence === 'high' ? 'ok' :
+        a.confidence === 'low' ? 'warn' : 'info') + ' conf">' +
+      esc(a.confidence || 'suggestion') + '</span>' +
+      '<div>' + esc(a.explanation || '') + '</div>' +
+      (fixed ? '<label>Proposed query</label><pre>' + esc(fixed) +
+        '</pre>' : '') +
+      ((a.actions || []).length ? '<ul class="kv">' +
+        a.actions.map(function (x) {
+          return '<li>' + esc(x) + '</li>'; }).join('') + '</ul>' :
+        '') +
+      (fixed ? '<div class="btnbar">' +
+        '<button class="btn small primary" id="apcv-' + pid + '-' +
+        ref + '">Apply</button>' +
+        '<button class="btn small" id="apcvt-' + pid + '-' + ref +
+        '">Apply &amp; Test</button></div>' +
+        '<div id="apres-' + pid + '-' + ref + '"></div>' : '') +
+      '</div>';
+    if (fixed) {
+      document.getElementById('apcv-' + pid + '-' + ref).onclick =
+        function (ev) {
+          ev.stopPropagation();
+          applyConvert(slug, pidVal, ref, fixed, fam, this, false);
+        };
+      document.getElementById('apcvt-' + pid + '-' + ref).onclick =
+        function (ev) {
+          ev.stopPropagation();
+          applyConvert(slug, pidVal, ref, fixed, fam, this, true);
+        };
+    }
+  } catch (e) {
+    box.innerHTML = errorCard(
+      'The AI could not translate this panel.', e.message);
+    toast(e.message, 'err');
+  }
+  busy(btn, false);
+}
+
+/* Create a real target on a target-less panel from an AI proposal,
+   then (optionally) test it. Nothing here runs until the user
+   clicks Apply -- proposals are never auto-applied. */
+async function applyConvert(slug, pid, ref, expr, fam, btn, test) {
+  busy(btn, true);
+  var out = document.getElementById('apres-' + pid + '-' + ref);
+  try {
+    await api('/api/panel/convert',
+      { slug: slug, panel_id: pid, expr: expr, ds_family: fam });
+    toast(test ? 'Applied - testing the new panel' :
+          'Applied - a live query panel was created', 'ok');
+    if (test) {
+      var r = await api('/api/panel/test',
+        { slug: slug, panel_id: pid, refId: ref, expr: expr });
+      var res = (r.results || [])[0] || {};
+      if (out) {
+        out.innerHTML = '<div style="margin-top:6px">' +
+          testChip(res.status) +
+          (res.frames != null ? ' <span class="kv">' + res.frames +
+            ' frames / ' + (res.points || 0) + ' points</span>' : '') +
+          (res.error ? errorCard(
+            'The new query ran but returned an error.', res.error,
+            { label: 'Open Datasources', href: '#/datasources' }) :
+           '') + '</div>';
+      }
+      toast('Tested the new panel: ' + (res.status || 'done'),
+            res.status === 'error' ? 'err' : 'ok');
+    }
+    rerenderWs();
+  } catch (e) {
+    if (out) {
+      out.innerHTML = errorCard(
+        'Could not apply the AI translation to this panel.',
+        e.message);
+    }
+    toast(e.message, 'err');
+    busy(btn, false);
+  }
+}
+
+/* Map a Grafana datasource type to the ds_family the convert route
+   expects. */
+function dsFamilyOf(type) {
+  var t = String(type || '').toLowerCase();
+  if (t.indexOf('loki') >= 0) return 'loki';
+  if (t.indexOf('tempo') >= 0) return 'tempo';
+  return 'prometheus';
+}
+
+/* Render the batch AI conversion review: one card per proposed
+   panel with Apply / Apply & Test / Skip. Proposals are never
+   applied until the user clicks a row action. */
+function renderAiBatch(host, slug, d, res) {
+  var props = res.proposals || res.panels || res.results || [];
+  if (!props.length) {
+    host.innerHTML = '<div class="card"><div class="empty">' +
+      '<span class="eico">' + ico('checkcircle', 26) + '</span>' +
+      '<b>No proposals.</b><br>The AI did not return a conversion ' +
+      'for any flagged panel.</div></div>';
+    return;
+  }
+  var rows = props.map(function (p, i) {
+    var pid = p.panel_id;
+    var ref = p.refId || 'A';
+    var w = (d._panelMap || {})[pid] || {};
+    var title = (d.widget_report || []).filter(function (x) {
+      return x.panel_id === pid; })[0] || {};
+    var expr = p.proposed_expr || p.fixed_expr || p.expr || '';
+    var nrql = p.original_nrql || '';
+    var notes = p.notes || [];
+    return '<div class="card ai-prop" id="aip-' + i + '">' +
+      '<div class="row" style="gap:8px">' +
+      '<b>panel ' + esc(pid) + '</b>' +
+      '<span class="kv">' + esc(title.widget ||
+        title.widget_title || '') + '</span>' +
+      chip(ref, 'dim') +
+      '<span class="chip ' + (p.confidence === 'high' ? 'ok' :
+        p.confidence === 'low' ? 'warn' : 'info') + '">' +
+      esc(p.confidence || 'suggestion') + '</span></div>' +
+      (nrql ? '<div class="kv" style="margin-top:6px"><b>Original ' +
+        'NRQL</b></div><pre>' + esc(nrql) + '</pre>' : '') +
+      (notes.length ? '<div class="kv">' + notes.map(function (n) {
+        return 'note: ' + esc(n); }).join('<br>') + '</div>' : '') +
+      (p.explanation ? '<div style="margin:4px 0">' +
+        esc(p.explanation) + '</div>' : '') +
+      (expr ? '<label>Proposed query</label><pre>' + esc(expr) +
+        '</pre>' : '<div class="kv">The AI returned no query for ' +
+        'this panel.</div>') +
+      '<div class="btnbar">' +
+      (expr ? '<button class="btn small primary" data-prop="apply" ' +
+        'data-i="' + i + '">Apply</button>' +
+        '<button class="btn small" data-prop="apply-test" data-i="' +
+        i + '">Apply &amp; Test</button>' : '') +
+      '<button class="btn small ghost" data-prop="skip" data-i="' +
+      i + '">Skip</button></div>' +
+      '<div id="aipres-' + i + '"></div></div>';
+  }).join('');
+  host.innerHTML = '<div class="card"><h2>' + ico('sparkle', 14) +
+    'AI conversion proposals</h2><p class="lead" ' +
+    'style="margin-bottom:0">Review each proposal, then Apply to ' +
+    'create or update the panel. Nothing is written until you ' +
+    'apply.</p></div>' + rows;
+  $all('button[data-prop]', host).forEach(function (btn) {
+    btn.onclick = function (ev) {
+      ev.stopPropagation();
+      var i = +btn.getAttribute('data-i');
+      var kind = btn.getAttribute('data-prop');
+      var rowEl = document.getElementById('aip-' + i);
+      if (kind === 'skip') {
+        if (rowEl) {
+          rowEl.style.opacity = '.5';
+          $all('button[data-prop]', rowEl).forEach(function (b) {
+            b.disabled = true; });
+          rowEl.insertAdjacentHTML('beforeend',
+            '<div class="kv">Skipped.</div>');
+        }
+        return;
+      }
+      applyProposal(slug, d, props[i], kind === 'apply-test', btn, i);
+    };
+  });
+}
+
+async function applyProposal(slug, d, p, test, btn, i) {
+  var pid = p.panel_id;
+  var ref = p.refId || 'A';
+  var expr = p.proposed_expr || p.fixed_expr || p.expr || '';
+  var out = document.getElementById('aipres-' + i);
+  var panel = (d._panelMap || {})[pid] || {};
+  var targets = panel.targets || [];
+  var existing = targets.filter(function (t) {
+    return (t.refId || 'A') === ref; })[0];
+  var fam = p.ds_family ||
+    (existing && existing.datasource ?
+      dsFamilyOf(existing.datasource.type) : 'prometheus');
+  busy(btn, true);
+  try {
+    if (existing) {
+      await api('/api/panel/update',
+        { slug: slug, panel_id: pid, refId: ref, expr: expr,
+          why: 'AI batch conversion', retest: false, push: false });
+    } else {
+      await api('/api/panel/convert',
+        { slug: slug, panel_id: pid, expr: expr, ds_family: fam });
+    }
+    var msg = existing ? 'Applied to the existing query' :
+      'Applied - created a live query panel';
+    if (test) {
+      var r = await api('/api/panel/test',
+        { slug: slug, panel_id: pid, refId: ref, expr: expr });
+      var res = (r.results || [])[0] || {};
+      if (out) {
+        out.innerHTML = '<div style="margin-top:6px">' +
+          chip('applied', 'ok') + ' ' + testChip(res.status) +
+          (res.frames != null ? ' <span class="kv">' + res.frames +
+            ' frames / ' + (res.points || 0) + ' points</span>' : '') +
+          (res.error ? errorCard('The query ran but errored.',
+            res.error, { label: 'Open Datasources',
+            href: '#/datasources' }) : '') + '</div>';
+      }
+      toast(msg + ' - tested: ' + (res.status || 'done'),
+            res.status === 'error' ? 'err' : 'ok');
+    } else {
+      if (out) out.innerHTML = '<div style="margin-top:6px">' +
+        chip('applied', 'ok') + '</div>';
+      toast(msg, 'ok');
+    }
+    var rowEl = document.getElementById('aip-' + i);
+    if (rowEl) {
+      $all('button[data-prop]', rowEl).forEach(function (b) {
+        if (b.getAttribute('data-prop') !== 'skip') b.disabled = true;
+      });
+    }
+  } catch (e) {
+    if (out) out.innerHTML = errorCard(
+      'Could not apply this proposal.', e.message);
+    toast(e.message, 'err');
+    busy(btn, false);
+  }
 }
 
 function bindEditors(el, slug, d) {
@@ -4504,11 +4892,14 @@ async function editorAction(el, slug, d, btn) {
             verdict === 'rejected' ? 'err' : 'ok');
       rerenderWs();
     } else if (act === 'ai') {
+      var mode = btn.getAttribute('data-mode') || 'fix';
       var box = document.getElementById('ai-' + pidRaw + '-' + ref);
       box.innerHTML = '<div class="ai-box">' + ico('sparkle', 13) +
-        ' Asking the AI backend&hellip;</div>';
+        (mode === 'convert' ?
+          ' Asking the AI for a higher-fidelity translation&hellip;' :
+          ' Asking the AI backend&hellip;') + '</div>';
       var aiBody = { slug: slug, panel_id: pid, refId: ref,
-                     expr: expr };
+                     expr: expr, mode: mode };
       var rvRow = ((d._reviews || {})[pid] || {})[ref];
       if (rvRow && rvRow.verdict === 'rejected') {
         aiBody.context = { human_review:

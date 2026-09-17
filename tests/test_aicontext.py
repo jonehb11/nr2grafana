@@ -161,6 +161,22 @@ _PACKING = {
 }
 
 
+_WIDGET_REPORT = {
+    "widgets": [
+        {"panel_id": 1, "widget": "RPS", "confidence": "exact",
+         "nrql": ["SELECT rate(count(*), 1 minute) FROM Transaction"],
+         "notes": []},
+        {"panel_id": 2, "widget": "Apdex", "confidence": "untranslatable",
+         "nrql": ["SELECT apdex(duration, t: 0.5) FROM Transaction"],
+         "notes": ["apdex() has no LGTM equivalent",
+                   "needs a from-scratch histogram query"]},
+        {"panel_id": 3, "widget": "P95", "confidence": "needs-review",
+         "nrql": ["SELECT percentile(duration, 95) FROM Transaction"],
+         "notes": ["percentile mapped to histogram_quantile approx"]},
+    ]
+}
+
+
 def _seed_store(path):
     store = Store(path)
     store.upsert_dashboard("svc-1", "Service Overview", "nr-acct",
@@ -324,6 +340,46 @@ class AiContextTest(unittest.TestCase):
                                       deepdive={"packing": weird,
                                                 "findings": []})
         self.assertIn("keys", ctx["artifacts"]["packing"])
+
+    # -- per-panel translations (SEAM-1 fields) ------------------------
+
+    def test_translations_carry_nrql_and_notes(self):
+        self.store.save_artifact("svc-1", "widget-report", _WIDGET_REPORT)
+        ctx = aicontext.build_context(self.store, "svc-1")
+        self.assertIn("translations", ctx)
+        rows = ctx["translations"]
+        # The exact panel is omitted; only the flagged panels remain.
+        self.assertEqual(sorted(r["panel_id"] for r in rows), [2, 3])
+        # Worst confidence first (untranslatable before needs-review).
+        self.assertEqual(rows[0]["panel_id"], 2)
+        self.assertEqual(rows[0]["confidence"], "untranslatable")
+        self.assertIn("apdex(duration", rows[0]["original_nrql"][0])
+        self.assertTrue(any("no LGTM equivalent" in n
+                            for n in rows[0]["translation_notes"]))
+        self.assertEqual(rows[1]["confidence"], "needs-review")
+
+    def test_translations_absent_without_widget_report(self):
+        ctx = aicontext.build_context(self.store, "svc-1")
+        self.assertNotIn("translations", ctx)
+
+    def test_translations_deterministic(self):
+        self.store.save_artifact("svc-1", "widget-report", _WIDGET_REPORT)
+        a = aicontext.build_context(self.store, "svc-1")
+        b = aicontext.build_context(self.store, "svc-1")
+        self.assertEqual(json.dumps(a, sort_keys=True),
+                         json.dumps(b, sort_keys=True))
+
+    def test_translations_rendered_in_markdown(self):
+        self.store.save_artifact("svc-1", "widget-report", _WIDGET_REPORT)
+        ctx = aicontext.build_context(self.store, "svc-1")
+        md = aicontext.to_markdown(ctx)
+        self.assertIn("Panel translations to review", md)
+        self.assertIn("apdex(duration", md)
+        self.assertIn("no LGTM equivalent", md)
+
+    def test_translations_legend_entry(self):
+        ctx = aicontext.build_context(self.store, "svc-1")
+        self.assertIn("translations", ctx["legend"])
 
     # -- redaction -----------------------------------------------------
 

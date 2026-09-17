@@ -83,3 +83,22 @@ the config file.
 python3 -m nr2grafana mcp config --kind claude -o mcp.json
 python3 -m nr2grafana mcp probe --command "mcp-grafana"   # list its tools
 ```
+
+## AI conversion copilot & paste-to-convert (1.8)
+
+Two ways the core migration got easier:
+
+- **Paste-to-convert** — in the web UI **Convert** view, paste a New Relic
+  dashboard's JSON (from New Relic's "Copy JSON" / export) straight into the
+  "Paste New Relic dashboard JSON" box and convert it in place — no need to
+  save it to a file first. Accepts one dashboard or an array.
+- **AI translates the hard panels** — when the automatic converter can't
+  translate a panel's NRQL (marked needs-review or untranslatable), its
+  panel detail now has an **Ask AI to translate this** button. The AI is
+  told the converter's own reasons (the translation notes) and given the
+  original NRQL and the target datasource family, so it produces a real
+  PromQL/LogQL/TraceQL query. You review it and **Apply** (which creates a
+  live query target on the panel) or **Apply & Test**. A **Convert flagged
+  panels with AI** button proposes fixes for every flagged panel at once,
+  to accept or skip per panel. Nothing is applied to a dashboard until you
+  click Apply.

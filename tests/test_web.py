@@ -160,8 +160,26 @@ def _stub_artifacts():
             f.write("# index\n%d dashboards\n" % len(entries))
         return path
 
+    def build_datatest(dash, widget_report):
+        targets = []
+        for p in dash.get("panels") or []:
+            for t in p.get("targets") or []:
+                expr = t.get("expr") or t.get("query") or ""
+                if not expr:
+                    continue
+                ds = t.get("datasource") or {}
+                targets.append({"panel_id": p.get("id"),
+                                "panel_title": p.get("title", ""),
+                                "refId": t.get("refId", "A"),
+                                "datasource_family": ds.get("type", ""),
+                                "expr": expr})
+        return {"schema": "nr2grafana/datatest/v1",
+                "dashboard": dash.get("title", ""),
+                "uid": dash.get("uid", ""), "targets": targets}
+
     m.package_dashboard = package_dashboard
     m.write_index = write_index
+    m.build_datatest = build_datatest
     return m
 
 
@@ -189,6 +207,7 @@ def _stub_changelog():
 
 def _stub_ai():
     m = types.ModuleType("nr2grafana.ai")
+    m.suggest_contexts = []  # every context passed to suggest_fix
 
     class AIError(Exception):
         pass
@@ -203,6 +222,11 @@ def _stub_ai():
             return bool(self.api_key)
 
         def suggest_fix(self, context):
+            m.suggest_contexts.append(dict(context))
+            if str(context.get("mode")) == "convert":
+                return {"explanation": "converted from NRQL",
+                        "fixed_expr": "sum(rate(http_total[5m]))",
+                        "confidence": "medium", "actions": []}
             return {"explanation": "stub explanation",
                     "fixed_expr": "up", "confidence": "high",
                     "actions": []}
@@ -2888,6 +2912,297 @@ class JobInternalsTests(unittest.TestCase):
             time.sleep(0.05)
         self.assertEqual(job.status, "done")
         self.assertEqual(job.result, {"n": 7})
+
+
+class PasteConvertTests(WebServerTestCase):
+    """SEAM-2: POST /api/convert with an in-memory nr_json object or
+    list converts, persists and packages without reading the fs."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.out_dir = os.path.join(cls.tmp.name, "paste-out")
+        with open(SAMPLE, encoding="utf-8") as f:
+            cls.sample_obj = json.load(f)
+
+    def test_paste_object_persists_and_packages(self):
+        code, resp = self.api("POST", "/api/convert",
+                              {"nr_json": self.sample_obj,
+                               "out_dir": self.out_dir,
+                               "package": True})
+        self.assertEqual(code, 200)
+        job = poll_job(self.base, resp["job"])
+        self.assertEqual(job["status"], "done", job)
+        self.assertGreaterEqual(len(job["result"]["dashboards"]), 1)
+        slug = job["result"]["dashboards"][0]["slug"]
+        row = self.store.get_dashboard(slug)
+        self.assertIsNotNone(row)
+        self.assertIn("panels", row["data"])
+        self.assertIsNotNone(
+            self.store.get_artifact(slug, "widget-report"))
+        self.assertIsNotNone(
+            self.store.get_artifact(slug, "requirements"))
+        self.assertTrue(os.path.isfile(
+            os.path.join(self.out_dir, slug, "dashboard.json")))
+        # the pasted object is preserved as the nr-source artifact
+        self.assertIsInstance(
+            self.store.get_artifact(slug, "nr-source"), dict)
+
+    def test_paste_list_of_dashboards(self):
+        code, resp = self.api("POST", "/api/convert",
+                              {"nr_json": [self.sample_obj],
+                               "out_dir": self.out_dir})
+        self.assertEqual(code, 200)
+        job = poll_job(self.base, resp["job"])
+        self.assertEqual(job["status"], "done", job)
+        self.assertGreaterEqual(len(job["result"]["dashboards"]), 1)
+
+    def test_paste_non_dashboard_is_400(self):
+        code, body = self.api("POST", "/api/convert",
+                              {"nr_json": {"not": "a dashboard"}})
+        self.assertEqual(code, 400)
+        self.assertIn("error", body)
+
+    def test_paste_empty_list_is_400(self):
+        code, body = self.api("POST", "/api/convert", {"nr_json": []})
+        self.assertEqual(code, 400)
+        self.assertIn("error", body)
+
+    def test_paste_wrong_type_is_400(self):
+        code, body = self.api("POST", "/api/convert",
+                              {"nr_json": "just a string"})
+        self.assertEqual(code, 400)
+        self.assertIn("error", body)
+
+
+def _seed_placeholder(store, slug, panel_id=5, viz="viz.funnel",
+                      pkg=None):
+    """Store a text-placeholder (untranslatable) panel + its widget
+    report row; optionally register a package dir with dashboard.json."""
+    dash = {"title": "CP " + slug, "uid": slug,
+            "templating": {"list": []},
+            "panels": [{"id": panel_id, "title": "Funnel [MANUAL]",
+                        "type": "text",
+                        "options": {"mode": "markdown",
+                                    "content": "not translatable"},
+                        "fieldConfig": {"defaults": {},
+                                        "overrides": []}}]}
+    store.upsert_dashboard(slug, dash["title"], "seed", "", dash)
+    store.save_artifact(slug, "widget-report", {"widgets": [
+        {"panel_id": panel_id, "widget": "Funnel", "visualization": viz,
+         "confidence": "untranslatable",
+         "nrql": ["SELECT funnel(x) FROM Transaction"],
+         "notes": ["funnel has no LGTM equivalent"], "queries": []}]})
+    if pkg:
+        os.makedirs(pkg, exist_ok=True)
+        with open(os.path.join(pkg, "dashboard.json"), "w",
+                  encoding="utf-8") as f:
+            json.dump(dash, f)
+        store.set_setting("package_dir." + slug, pkg)
+    return dash
+
+
+class PanelConvertTests(WebServerTestCase):
+    """SEAM-3: POST /api/panel/convert turns a target-less
+    untranslatable panel into a live query panel."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.slug = "convert-panel-dash"
+        cls.pkg = os.path.join(cls.tmp.name, "cpkg", cls.slug)
+        _seed_placeholder(cls.store, cls.slug, panel_id=5, pkg=cls.pkg)
+
+    def test_convert_attaches_target_flips_viz_and_rewrites_package(self):
+        code, body = self.api(
+            "POST", "/api/panel/convert",
+            {"slug": self.slug, "panel_id": 5,
+             "expr": "sum(rate(http_total[5m]))",
+             "ds_family": "prometheus"})
+        self.assertEqual(code, 200)
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["was_type"], "text")
+        # viz.funnel is unmapped -> falls back to the family default
+        self.assertEqual(body["type"], "timeseries")
+        panel = body["panel"]
+        self.assertEqual(panel["targets"][0]["expr"],
+                         "sum(rate(http_total[5m]))")
+        self.assertEqual(panel["targets"][0]["datasource"]["type"],
+                         "prometheus")
+        self.assertEqual(panel["datasource"]["type"], "prometheus")
+        self.assertNotIn("[MANUAL]", panel["title"])
+        # stored dashboard updated
+        row = self.store.get_dashboard(self.slug)
+        self.assertEqual(
+            row["data"]["panels"][0]["targets"][0]["expr"],
+            "sum(rate(http_total[5m]))")
+        # package dashboard.json + datatest.json rewritten
+        with open(os.path.join(self.pkg, "dashboard.json"),
+                  encoding="utf-8") as f:
+            self.assertIn("http_total", f.read())
+        dt_path = os.path.join(self.pkg, "datatest.json")
+        self.assertTrue(os.path.isfile(dt_path))
+        with open(dt_path, encoding="utf-8") as f:
+            self.assertIn("http_total", f.read())
+        # change recorded
+        self.assertTrue(any(c["action"] == "query-edit"
+                            for c in self.store.list_changes(self.slug)))
+
+    def test_convert_tempo_uses_query_key(self):
+        slug = "convert-tempo-dash"
+        _seed_placeholder(self.store, slug, panel_id=3, viz="viz.funnel")
+        code, body = self.api(
+            "POST", "/api/panel/convert",
+            {"slug": slug, "panel_id": 3,
+             "expr": "{ status = error }", "ds_family": "tempo"})
+        self.assertEqual(code, 200)
+        tgt = body["panel"]["targets"][0]
+        self.assertEqual(tgt["query"], "{ status = error }")
+        self.assertNotIn("expr", tgt)
+        self.assertEqual(tgt["datasource"]["type"], "tempo")
+        self.assertEqual(body["type"], "table")  # tempo family default
+
+    def test_convert_loki_uses_expr_key(self):
+        slug = "convert-loki-dash"
+        _seed_placeholder(self.store, slug, panel_id=4)
+        code, body = self.api(
+            "POST", "/api/panel/convert",
+            {"slug": slug, "panel_id": 4,
+             "expr": '{service_name="api"} |= "error"',
+             "ds_family": "loki"})
+        self.assertEqual(code, 200)
+        tgt = body["panel"]["targets"][0]
+        self.assertIn("error", tgt["expr"])
+        self.assertEqual(tgt["datasource"]["type"], "loki")
+        self.assertEqual(body["type"], "logs")  # loki family default
+
+    def test_convert_bad_family_400(self):
+        code, body = self.api(
+            "POST", "/api/panel/convert",
+            {"slug": self.slug, "panel_id": 5, "expr": "x",
+             "ds_family": "mysql"})
+        self.assertEqual(code, 400)
+        self.assertIn("error", body)
+
+    def test_convert_missing_fields_400(self):
+        code, body = self.api(
+            "POST", "/api/panel/convert",
+            {"slug": self.slug, "panel_id": 5, "expr": "x"})
+        self.assertEqual(code, 400)
+        self.assertIn("error", body)
+
+    def test_convert_missing_panel_404(self):
+        code, body = self.api(
+            "POST", "/api/panel/convert",
+            {"slug": self.slug, "panel_id": 999, "expr": "x",
+             "ds_family": "prometheus"})
+        self.assertEqual(code, 404)
+        self.assertIn("error", body)
+
+
+class AiConvertModeTests(WebServerTestCase):
+    """SEAM-1 enrich + POST /api/ai/convert-panels batch proposals."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        websrv.SESSION.anthropic_api_key = "sk-ant-test"
+        websrv.SESSION.grafana_url = ""
+
+    def setUp(self):
+        STUBS["nr2grafana.ai"].suggest_contexts.clear()
+
+    def test_suggest_convert_mode_enriches_from_widget_report(self):
+        slug = "enrich-dash"
+        _seed_placeholder(self.store, slug, panel_id=9)
+        code, body = self.api(
+            "POST", "/api/ai/suggest",
+            {"slug": slug, "panel_id": 9, "mode": "convert",
+             "ds_family": "prometheus"})
+        self.assertEqual(code, 200)
+        self.assertEqual(body["fixed_expr"],
+                         "sum(rate(http_total[5m]))")
+        ctx = STUBS["nr2grafana.ai"].suggest_contexts[-1]
+        self.assertEqual(ctx["mode"], "convert")
+        self.assertEqual(ctx["ds_family"], "prometheus")
+        self.assertIn("funnel(x)", ctx["original_nrql"])
+        self.assertIn("funnel has no LGTM equivalent",
+                      ctx["translation_notes"])
+        self.assertEqual(ctx["confidence"], "untranslatable")
+
+    def test_suggest_defaults_to_fix_mode(self):
+        code, body = self.api(
+            "POST", "/api/ai/suggest",
+            {"expr": "uup", "error": "unknown metric",
+             "datasource": "prometheus"})
+        self.assertEqual(code, 200)
+        self.assertEqual(body["fixed_expr"], "up")
+        ctx = STUBS["nr2grafana.ai"].suggest_contexts[-1]
+        self.assertNotEqual(str(ctx.get("mode")), "convert")
+
+    def test_convert_panels_returns_proposals_without_applying(self):
+        slug = "batch-dash"
+        dash = {"title": "B", "uid": slug, "templating": {"list": []},
+                "panels": [
+                    {"id": 1, "title": "OK", "type": "timeseries",
+                     "targets": [{"refId": "A", "expr": "up",
+                                  "datasource": {"type": "prometheus",
+                                                 "uid": "mimir"}}]},
+                    {"id": 2, "title": "Funnel [MANUAL]",
+                     "type": "text",
+                     "options": {"mode": "markdown", "content": "x"},
+                     "fieldConfig": {"defaults": {}, "overrides": []}},
+                    {"id": 3, "title": "Latency [REVIEW]",
+                     "type": "timeseries",
+                     "targets": [{"refId": "B",
+                                  "expr": "histogram_quantile(0.9,x)",
+                                  "datasource": {"type": "prometheus",
+                                                 "uid": "mimir"}}]}]}
+        self.store.upsert_dashboard(slug, "B", "seed", "", dash)
+        self.store.save_artifact(slug, "widget-report", {"widgets": [
+            {"panel_id": 1, "widget": "OK", "confidence": "exact",
+             "nrql": ["a"], "queries": [{"datasource": "prometheus"}]},
+            {"panel_id": 2, "widget": "Funnel",
+             "visualization": "viz.funnel",
+             "confidence": "untranslatable",
+             "nrql": ["SELECT funnel(x)"], "notes": ["no equivalent"],
+             "queries": []},
+            {"panel_id": 3, "widget": "Latency",
+             "confidence": "needs-review",
+             "nrql": ["SELECT percentile(x, 95)"],
+             "notes": ["approximate percentile"],
+             "queries": [{"datasource": "prometheus"}]}]})
+        code, resp = self.api("POST", "/api/ai/convert-panels",
+                              {"slug": slug})
+        self.assertEqual(code, 200)
+        job = poll_job(self.base, resp["job"])
+        self.assertEqual(job["status"], "done", job)
+        props = job["result"]["proposals"]
+        self.assertEqual(sorted(p["panel_id"] for p in props), [2, 3])
+        for p in props:
+            self.assertEqual(p["proposed_expr"],
+                             "sum(rate(http_total[5m]))")
+            self.assertEqual(p["confidence"], "medium")
+            self.assertIn("original_nrql", p)
+            self.assertIn("ds_family", p)
+        # refId for the needs-review panel comes from its target
+        p3 = next(p for p in props if p["panel_id"] == 3)
+        self.assertEqual(p3["refId"], "B")
+        # NOTHING was applied: the placeholder still has no targets
+        row = self.store.get_dashboard(slug)
+        p2 = next(p for p in row["data"]["panels"] if p["id"] == 2)
+        self.assertEqual(p2["type"], "text")
+        self.assertNotIn("targets", p2)
+
+    def test_convert_panels_requires_ai_backend(self):
+        websrv.SESSION.anthropic_api_key = ""
+        try:
+            code, body = self.api("POST", "/api/ai/convert-panels",
+                                  {"slug": "x"})
+            self.assertEqual(code, 400)
+            self.assertIn("error", body)
+        finally:
+            websrv.SESSION.anthropic_api_key = "sk-ant-test"
 
 
 if __name__ == "__main__":

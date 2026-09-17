@@ -47,6 +47,13 @@ TOP = 8
 _MAX_STR = 400
 _MAX_LIST = 24
 
+# Converter confidence ordering: worst (most in need of AI conversion)
+# first, so the per-panel translations list surfaces the hard panels.
+_CONF_RANK = {
+    "untranslatable": 0, "needs-review": 1,
+    "approximate": 2, "exact": 3,
+}
+
 # Severity ranking shared across artifact vocabularies (diagnosis uses
 # blocker/warn/info; optimize/deepdive use high/medium/low and
 # FAIL/WARN/INFO). Lower sorts first (most severe).
@@ -129,6 +136,12 @@ LEGEND = {
     "keeps_flags": "keeps_performance/durability/availability = the "
                    "recommendation does NOT sacrifice that property; "
                    "false means it trades it and must be caveated.",
+    "translations": "Per-panel migration hints for the panels the "
+                    "converter could not translate cleanly: the "
+                    "original_nrql, the converter confidence "
+                    "(exact/approximate/needs-review/untranslatable) and "
+                    "the translation_notes explaining what needs review "
+                    "or a from-scratch conversion.",
 }
 
 
@@ -542,6 +555,43 @@ def _dashboard_summary(row: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _conf_rank(conf: Any) -> int:
+    return _CONF_RANK.get(str(conf or "").strip().lower(), 2)
+
+
+def _panel_translations(widgets: Any) -> List[Dict[str, Any]]:
+    """Compact per-panel migration hints from the widget-report.
+
+    Surfaces only the panels that need attention -- a non-exact
+    converter confidence or any translation notes -- carrying their
+    original_nrql and translation_notes so the AI copilot can translate
+    or improve them. Deterministic: worst confidence first, then
+    panel_id, then title; capped and truncated for compactness.
+    """
+    rows: List[Dict[str, Any]] = []
+    for w in _as_list(widgets):
+        if not isinstance(w, dict):
+            continue
+        conf = str(w.get("confidence") or "").strip()
+        notes = [_trunc(str(n), 200)
+                 for n in _as_list(w.get("notes")) if n]
+        nrql = [_trunc(str(q), _MAX_STR)
+                for q in _as_list(w.get("nrql")) if q]
+        if conf.lower() in ("exact", "") and not notes:
+            continue
+        rows.append({
+            "panel_id": w.get("panel_id"),
+            "panel": _trunc(w.get("widget") or w.get("panel_title")
+                            or "", 120),
+            "confidence": conf,
+            "original_nrql": nrql,
+            "translation_notes": notes,
+        })
+    rows.sort(key=lambda r: (_conf_rank(r.get("confidence")),
+                             str(r.get("panel_id")), str(r.get("panel"))))
+    return rows[:_MAX_LIST]
+
+
 def _grafana_note(grafana: Any) -> Optional[Dict[str, Any]]:
     """Non-secret note about the live Grafana target, if provided."""
     if grafana is None:
@@ -631,6 +681,17 @@ def build_context(store, slug: str = "", include: Optional[List[str]] = None,
     available = [k for k in ARTIFACT_ORDER if k in artifacts]
     missing = [k for k in ARTIFACT_ORDER if k not in artifacts]
 
+    # Per-panel migration hints (original_nrql + translation_notes) for
+    # the panels the converter flagged, read from the widget-report.
+    translations: List[Dict[str, Any]] = []
+    if store is not None and slug:
+        try:
+            wr = store.get_artifact(slug, "widget-report")
+        except Exception:  # noqa: BLE001 - store errors never crash us
+            wr = None
+        if isinstance(wr, dict):
+            translations = _panel_translations(wr.get("widgets"))
+
     context: Dict[str, Any] = {
         "schema": SCHEMA,
         "preamble": PREAMBLE,
@@ -640,6 +701,8 @@ def build_context(store, slug: str = "", include: Optional[List[str]] = None,
         "missing_artifacts": missing,
         "artifacts": artifacts,
     }
+    if translations:
+        context["translations"] = translations
     gnote = _grafana_note(grafana)
     if gnote:
         context["grafana"] = gnote
@@ -808,6 +871,22 @@ def to_markdown(context: Dict[str, Any]) -> str:
     if gnote:
         out.append("- grafana_target: %s" % gnote.get("base_url"))
     out.append("")
+
+    translations = _as_list(context.get("translations"))
+    if translations:
+        out.append("## Panel translations to review")
+        for t in translations:
+            if not isinstance(t, dict):
+                continue
+            head = "- panel %s %s [%s]" % (
+                t.get("panel_id"), t.get("panel") or "",
+                t.get("confidence") or "")
+            out.append(head.rstrip())
+            for q in _as_list(t.get("original_nrql")):
+                out.append("  - original_nrql: %s" % q)
+            for n in _as_list(t.get("translation_notes")):
+                out.append("  - note: %s" % n)
+        out.append("")
 
     avail = _as_list(context.get("available_artifacts"))
     out.append("## Artifacts available")
