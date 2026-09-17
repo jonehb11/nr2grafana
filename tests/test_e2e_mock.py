@@ -613,7 +613,7 @@ class CompareViewTest(MockStackBase):
             self.assertIn(p["verdict"], (
                 "match", "close", "value-mismatch", "shape-mismatch",
                 "nr-empty", "gf-empty", "both-empty", "nr-error",
-                "gf-error"))
+                "gf-error", "unverifiable", "unverifiable-logs"))
 
         # At least one timeseries panel draws a real multi-point series
         # on BOTH sides (this is what the flagship chart renders).

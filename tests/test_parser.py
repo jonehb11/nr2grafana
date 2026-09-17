@@ -169,6 +169,26 @@ class SelectTests(unittest.TestCase):
         q = parse_nrql("SELECT 100 * sum(x) / 60 FROM Metric")
         self.assertEqual(q.select[0].multiplier, 100.0 / 60.0)
 
+    def test_ratio_of_two_aggregations_builds_ratio_node(self):
+        q = parse_nrql("SELECT count(errors)/count(requests) FROM Metric")
+        expr = q.select[0].expr
+        self.assertIsInstance(expr, Func)
+        self.assertEqual(expr.name, "_ratio")
+        self.assertEqual(len(expr.args), 2)
+        self.assertEqual(expr.args[0].name, "count")
+        self.assertEqual(expr.args[0].args, [Attr("errors")])
+        self.assertEqual(expr.args[1].name, "count")
+        self.assertEqual(expr.args[1].args, [Attr("requests")])
+
+    def test_chained_ratio_nests_left(self):
+        q = parse_nrql("SELECT sum(a)/sum(b)/sum(c) FROM Metric")
+        expr = q.select[0].expr
+        self.assertEqual(expr.name, "_ratio")
+        # ((a/b)/c): the left operand is itself a ratio.
+        self.assertEqual(expr.args[0].name, "_ratio")
+        self.assertEqual(expr.args[1].name, "sum")
+        self.assertEqual(expr.args[1].args, [Attr("c")])
+
     def test_if_embedded_condition_and_then_value(self):
         q = parse_nrql("SELECT count(if(error IS TRUE, 1)) FROM T")
         outer = q.select[0].expr

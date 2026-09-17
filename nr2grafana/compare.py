@@ -216,10 +216,66 @@ def _assemble_side(mode: str, norm: List[Dict[str, Any]],
 
 
 def _line_count_series(lines: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Single scalar series of the log-line count (for verdict compare)."""
+    """Truthy marker series when log lines were returned.
+
+    Used only to route the verdict (distinguish "returned lines" from an
+    errored side, which yields ``None``). The line COUNT is never fed to
+    :func:`parity.compare`: equal sampled counts are not data parity.
+    """
     if not lines:
         return []
     return [{"labels": {}, "points": [[0.0, float(len(lines))]]}]
+
+
+def _log_verdict(nr_side: Dict[str, Any], gf_side: Dict[str, Any]) \
+        -> Tuple[str, str]:
+    """Honest ``(verdict, detail)`` for a log/Loki panel.
+
+    Log lines are sampled and their contents do not reduce to numbers,
+    so equal sampled line counts are NEVER treated as data parity. When
+    both sides return lines the verdict is ``unverifiable-logs`` (a
+    person must eyeball the samples); one-sided emptiness is still
+    surfaced as ``nr-empty`` / ``gf-empty`` / ``both-empty``.
+    """
+    nr_n = len(nr_side.get("lines") or [])
+    gf_n = len(gf_side.get("lines") or [])
+    if not nr_n and not gf_n:
+        return "both-empty", "no log lines on either side for this range"
+    if not nr_n:
+        return "nr-empty", ("New Relic returned no log lines; Grafana "
+                            "has %d (cannot verify contents)" % gf_n)
+    if not gf_n:
+        return "gf-empty", ("New Relic has %d log line(s) but the "
+                            "Grafana query returned none" % nr_n)
+    return "unverifiable-logs", (
+        "both sides return log lines but their contents are sampled and "
+        "not numerically comparable; verify manually (New Relic %d, "
+        "Grafana %d sampled line(s))" % (nr_n, gf_n))
+
+
+def _table_verdict(nr_cmp: List[Dict[str, Any]],
+                   gf_cmp: List[Dict[str, Any]]) -> Tuple[str, str]:
+    """Honest ``(verdict, detail)`` for a table panel.
+
+    Table rows carry heterogeneous, often reformatted per-cell values
+    with no shared time axis, so a numeric row-by-row match would be
+    misleading: when both sides have rows the verdict is
+    ``unverifiable``. One-sided emptiness is still surfaced.
+    """
+    nr_n = len(nr_cmp or [])
+    gf_n = len(gf_cmp or [])
+    if not nr_n and not gf_n:
+        return "both-empty", "no table rows on either side for this range"
+    if not nr_n:
+        return "nr-empty", ("New Relic returned no rows; Grafana has %d "
+                            "(cannot verify)" % gf_n)
+    if not gf_n:
+        return "gf-empty", ("New Relic has %d row(s) but the Grafana "
+                            "query returned none" % nr_n)
+    return "unverifiable", (
+        "both sides return table rows but per-cell values are not "
+        "reliably comparable across the translation; verify manually "
+        "(New Relic %d, Grafana %d row(s))" % (nr_n, gf_n))
 
 
 # ---------------------------------------------------------------------------
@@ -552,6 +608,7 @@ def build_comparison(nr, account_ids, grafana, nr_dashboard_raw, dash,
 
         is_data_panel = mode != "text" and bool(targets)
         ratio = None
+        fam = _family(ds_type)
         if not is_data_panel:
             verdict = "both-empty"
             detail = ("informational text panel (no query)"
@@ -565,6 +622,17 @@ def build_comparison(nr, account_ids, grafana, nr_dashboard_raw, dash,
         elif nr_cmp is None:
             verdict = "nr-error"
             detail = nr_side["error"]
+        elif fam == "tempo":
+            # Trace/span data is not numerically comparable; a matching
+            # count would be a coincidence, not proof of parity.
+            verdict = "unverifiable"
+            detail = ("trace/Tempo panel: span data is not numerically "
+                      "comparable between New Relic and Tempo; verify "
+                      "this panel manually")
+        elif mode == "lines":
+            verdict, detail = _log_verdict(nr_side, gf_side)
+        elif mode == "rows":
+            verdict, detail = _table_verdict(nr_cmp, gf_cmp)
         else:
             result = compare(nr_cmp, gf_cmp)
             verdict = result["verdict"]

@@ -81,7 +81,28 @@ def resolve_metric(name: str, agg: str, cfg: Dict[str, Any],
         return MetricSource(base[:-len("_bucket")], "histogram",
                             confidence=APPROXIMATE,
                             note="assumed histogram from _bucket suffix")
-    if agg in ("percentile", "median", "histogram", "apdex"):
+    if agg in ("percentile", "median"):
+        # percentile()/median() need per-event data. A real histogram gives
+        # it (a *_bucket family); a plain gauge does not. Only assume a
+        # histogram when the NAME looks like one (a _bucket suffix was
+        # already handled above; here we accept duration/latency hints).
+        # Otherwise assuming a histogram would emit histogram_quantile over
+        # a nonexistent %s_bucket family and return NO DATA — so resolve as
+        # a gauge and let _agg_expr take quantile_over_time of the raw
+        # samples, a sound approximation.
+        if any(h in base for h in _HISTO_HINTS):
+            return MetricSource(
+                base, "histogram", confidence=NEEDS_REVIEW,
+                note="name suggests a duration histogram (required by "
+                     "%s()); verify %r is a histogram in Mimir or add it to "
+                     "metric_map with type: histogram" % (agg, base))
+        return MetricSource(
+            base, "gauge", confidence=NEEDS_REVIEW,
+            note="%s() of %r: no *_bucket histogram is known, so the "
+                 "quantile is taken over the raw gauge samples via "
+                 "quantile_over_time; if %r is actually a histogram add it "
+                 "to metric_map with type: histogram" % (agg, base, base))
+    if agg in ("histogram", "apdex"):
         mtype = "histogram"
         note = ("assumed %r is a histogram (required by %s()); add it to "
                 "metric_map with the exact Prometheus name/type" % (name, agg))
@@ -479,10 +500,17 @@ def _agg_expr(ctx: _Ctx, fn: Func, src: MetricSource,
             for p in pcts:
                 inner = "quantile_over_time(%s, %s)" % (_fmt_q(p), hsel(""))
                 exprs.append("avg%s(%s)" % (by, inner) if ctx.by else inner)
+        elif src.mtype != "histogram":
+            # Neither a histogram (no _bucket series) nor a gauge (no raw
+            # samples to rank): emitting histogram_quantile over a
+            # nonexistent %s_bucket family would silently return no data.
+            raise Untranslatable(
+                "%s() of a %s-backed metric %r has no sound PromQL "
+                "equivalent (histogram_quantile needs a *_bucket series and "
+                "quantile_over_time needs raw gauge samples); map %r to a "
+                "histogram in metric_map"
+                % (name, src.mtype, src.base, src.base))
         else:
-            if src.mtype != "histogram":
-                t.note("percentile() requires a histogram; %r resolved as %s"
-                       % (src.base, src.mtype), NEEDS_REVIEW)
             t.note("histogram_quantile interpolates within buckets; NR "
                    "percentiles are computed from event data", APPROXIMATE)
             le_by = "le" + "".join(", " + l for l in ctx.by)
@@ -1033,6 +1061,33 @@ def _translate_item(ctx: _Ctx, fn: Func,
             "funnel() is event-sequence analysis (per-user step "
             "conversion) with no metric equivalent; keep this widget in "
             "New Relic or rebuild it from Faro/frontend events")
+    if fn.name == "_ratio":
+        # agg(x) / agg(y) — a ratio of two aggregations (error-rate shape).
+        # Translate each operand against the SAME context (so they share
+        # the FACET grouping and outer WHERE) and divide; PromQL matches
+        # the two vectors on the shared group labels.
+        if len(fn.args) != 2 or not (isinstance(fn.args[0], Func)
+                                     and isinstance(fn.args[1], Func)):
+            raise Untranslatable(
+                "a '/' ratio must divide two aggregations (agg(x) / agg(y))")
+        left, right = fn.args[0], fn.args[1]
+        notes_before = len(t.notes)
+        left_expr = _translate_item(ctx, left, extra)
+        right_expr = _translate_item(ctx, right, extra)
+        # A ratio is dimensionless; the operands' own unit hints do not
+        # carry over to the quotient.
+        new = t.notes[notes_before:]
+        t.notes[notes_before:] = [n for n in new if not n.startswith("unit:")]
+        t.note("agg(x) / agg(y) ratio: PromQL divides the two results "
+               "matching on the shared FACET grouping (a series present in "
+               "only one operand drops out; the denominator must be "
+               "non-zero)", APPROXIMATE)
+        count_like = {"count", "uniquecount", "cardinality", "rate"}
+        if left.name in count_like and right.name in count_like:
+            # count/count (etc.) is a proportion in [0, 1].
+            t.notes.append("unit:percentunit")
+        return "(%s) / (%s)" % (left_expr, right_expr)
+
     if fn.name == "filter":
         inner = fn.args[0] if fn.args else None
         if not isinstance(inner, Func):

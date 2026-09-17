@@ -91,6 +91,21 @@ def prom_panel(pid, expr, refid="A", title=""):
                                         "uid": "${datasource}"}}]}
 
 
+def typed_panel(pid, ptype, expr, ds_type, refid="A"):
+    return {"id": pid, "type": ptype, "title": "P%d" % pid,
+            "targets": [{"refId": refid, "expr": expr,
+                         "datasource": {"type": ds_type,
+                                        "uid": "${datasource}"}}]}
+
+
+def gf_log_frame(times_s, lines):
+    return {"schema": {"fields": [
+                {"name": "Time", "type": "time"},
+                {"name": "Line", "type": "string"}]},
+            "data": {"values": [[t * 1000 for t in times_s],
+                                list(lines)]}}
+
+
 # ---------------------------------------------------------------------------
 # normalize_nr
 # ---------------------------------------------------------------------------
@@ -252,11 +267,20 @@ class CompareTests(unittest.TestCase):
         self.assertEqual(r["verdict"], "close")
         self.assertIn("s vs ms", r["detail"])
 
-    def test_close_generic_constant_ratio(self):
+    def test_generic_constant_ratio_is_value_mismatch(self):
+        # A consistent factor that is NOT a recognized unit conversion
+        # must be surfaced as a mismatch, not masked as "close".
         r = compare([self.ts([1, 2, 3])], [self.ts([7, 14, 21])])
-        self.assertEqual(r["verdict"], "close")
+        self.assertEqual(r["verdict"], "value-mismatch")
         self.assertAlmostEqual(r["ratio"], 7.0, places=3)
-        self.assertIn("constant ratio", r["detail"])
+        self.assertIn("consistent factor", r["detail"])
+        self.assertIn("not a recognized unit conversion", r["detail"])
+
+    def test_consistent_offset_ratio_not_masked(self):
+        # ~3.7x on every point is consistent but unrecognized -> mismatch.
+        r = compare([self.ts([10, 20, 30])], [self.ts([37, 74, 111])])
+        self.assertEqual(r["verdict"], "value-mismatch")
+        self.assertAlmostEqual(r["ratio"], 3.7, delta=0.1)
 
     def test_value_mismatch_scattered(self):
         r = compare([self.ts([1, 2, 3])], [self.ts([10, 1, 5])])
@@ -400,6 +424,80 @@ class RunParityTests(unittest.TestCase):
         self.assertIn("boom", out["panels"][0]["detail"])
 
 
+class UnverifiablePanelTests(unittest.TestCase):
+    """Honest verdicts for panels whose data cannot be compared by
+    number: logs, traces and tables get 'unverifiable(-logs)' rather
+    than a misleading match/both-empty, and score weight 0.0."""
+
+    def _dash(self, panel):
+        return {"uid": "d", "title": "D", "templating": {"list": []},
+                "panels": [panel]}
+
+    def test_logs_panel_is_unverifiable_not_both_empty(self):
+        # NR side has a countable series, Grafana returns log frames that
+        # normalize to no numbers. The old code called this gf-empty/
+        # both-empty; now it is honestly unverifiable-logs.
+        dash = self._dash(typed_panel(1, "logs", '{job="app"}', "loki"))
+        report = [{"panel_id": 1,
+                   "nrql": ["SELECT count(*) FROM Log Q1"],
+                   "queries": [{"expr": '{job="app"}'}]}]
+        nr = FakeNR({"Q1": [{"count": 5}]})
+        grafana = FakeGrafana(
+            {'{job="app"}': gf_response([gf_log_frame([100], ["boom"])])})
+        out = run_parity(nr, [123], grafana, dash, report)
+        row = out["panels"][0]
+        self.assertEqual(row["verdict"], "unverifiable-logs")
+        self.assertIn("manual", row["detail"])
+        self.assertEqual(out["score"], 0)
+
+    def test_traces_panel_unverifiable_even_when_numbers_match(self):
+        dash = self._dash(
+            typed_panel(1, "timeseries", "traces_expr", "tempo"))
+        report = [{"panel_id": 1,
+                   "nrql": ["SELECT count(*) FROM Span Q1"],
+                   "queries": [{"expr": "traces_expr"}]}]
+        nr = FakeNR({"Q1": nr_timeseries([1, 2, 3])})
+        grafana = FakeGrafana(
+            {"traces_expr": gf_response([gf_frame([100, 160, 220],
+                                                  [1, 2, 3])])})
+        out = run_parity(nr, [123], grafana, dash, report)
+        self.assertEqual(out["panels"][0]["verdict"], "unverifiable")
+        self.assertEqual(out["score"], 0)
+
+    def test_table_panel_with_rows_is_unverifiable(self):
+        dash = self._dash(
+            typed_panel(1, "table", "tbl_expr", "prometheus"))
+        report = [{"panel_id": 1,
+                   "nrql": ["SELECT count(*) FROM T Q1 FACET appName"],
+                   "queries": [{"expr": "tbl_expr"}]}]
+        nr = FakeNR({"Q1": [{"facet": "web", "appName": "web",
+                             "count": 5},
+                            {"facet": "api", "appName": "api",
+                             "count": 7}]})
+        tbl = {"schema": {"fields": [
+                    {"name": "appName", "type": "string"},
+                    {"name": "Value", "type": "number"}]},
+               "data": {"values": [["web", "api"], [5, 7]]}}
+        grafana = FakeGrafana({"tbl_expr": gf_response([tbl])})
+        out = run_parity(nr, [123], grafana, dash, report)
+        self.assertEqual(out["panels"][0]["verdict"], "unverifiable")
+        self.assertEqual(out["score"], 0)
+
+    def test_table_one_sided_empty_stays_honest(self):
+        # A table with rows only on the NR side is gf-empty, not
+        # unverifiable -- one-sided emptiness is still a real signal.
+        dash = self._dash(
+            typed_panel(1, "table", "tbl_expr", "prometheus"))
+        report = [{"panel_id": 1,
+                   "nrql": ["SELECT count(*) FROM T Q1 FACET appName"],
+                   "queries": [{"expr": "tbl_expr"}]}]
+        nr = FakeNR({"Q1": [{"facet": "web", "appName": "web",
+                             "count": 5}]})
+        grafana = FakeGrafana({})
+        out = run_parity(nr, [123], grafana, dash, report)
+        self.assertEqual(out["panels"][0]["verdict"], "gf-empty")
+
+
 class NrqlRangeTests(unittest.TestCase):
     def test_existing_since_kept(self):
         q = "SELECT count(*) FROM T SINCE 3 days ago"
@@ -457,6 +555,21 @@ class ReadinessTests(unittest.TestCase):
                   "summary": {"value-mismatch": 2}}
         r = readiness(parity)
         self.assertEqual(r["grade"], "blocked")
+
+    def test_unverifiable_panels_never_ready(self):
+        # A dashboard made only of unverifiable panels scores 0 and is
+        # never graded ready; the reason names the manual check.
+        parity = {"panels": [{}, {}], "score": 0,
+                  "summary": {"unverifiable-logs": 1, "unverifiable": 1}}
+        r = readiness(parity)
+        self.assertNotEqual(r["grade"], "ready")
+        self.assertTrue(any("manual check" in s for s in r["reasons"]))
+
+    def test_unverifiable_reason_surfaced_when_mixed(self):
+        parity = {"panels": [{}], "score": 88,
+                  "summary": {"match": 7, "unverifiable-logs": 1}}
+        r = readiness(parity)
+        self.assertTrue(any("manual check" in s for s in r["reasons"]))
 
     def test_no_parity_uses_test_rows(self):
         rows = [{"status": "data"}, {"status": "data"},

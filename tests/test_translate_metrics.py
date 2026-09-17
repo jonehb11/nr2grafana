@@ -539,5 +539,73 @@ class QueryShapeTests(unittest.TestCase):
                             for n in t.notes), t.notes)
 
 
+class RatioTests(unittest.TestCase):
+    def test_count_over_count_becomes_division_with_percentunit(self):
+        t = tr("SELECT count(errors)/count(requests) FROM Metric TIMESERIES")
+        self.assertEqual(
+            t.expr,
+            "(sum(increase(errors_total[$__rate_interval]))) / "
+            "(sum(increase(requests_total[$__rate_interval])))")
+        # count/count is a proportion in [0, 1].
+        self.assertIn("unit:percentunit", t.notes)
+
+    def test_ratio_shares_facet_grouping_on_both_operands(self):
+        t = tr("SELECT sum(bytes_in)/sum(bytes_out) FROM Metric "
+               "FACET host TIMESERIES")
+        self.assertEqual(
+            t.expr,
+            "(sum by (instance)(avg_over_time(bytes_in[$__rate_interval]))) "
+            "/ (sum by (instance)(avg_over_time(bytes_out"
+            "[$__rate_interval])))")
+        # A sum/sum ratio is not necessarily a percentage: no unit forced.
+        self.assertNotIn("unit:percentunit", t.notes)
+        self.assertNotIn("unit:percent", t.notes)
+
+    def test_ratio_confidence_and_note(self):
+        t = tr("SELECT count(errors)/count(requests) FROM Metric")
+        self.assertIn(t.confidence, (APPROXIMATE, NEEDS_REVIEW))
+        self.assertTrue(any("ratio" in n and "FACET grouping" in n
+                            for n in t.notes), t.notes)
+
+    def test_chained_ratio_nests_left(self):
+        t = tr("SELECT count(a)/count(b)/count(c) FROM Metric")
+        self.assertEqual(
+            t.expr,
+            "((sum(increase(a_total[$__range]))) / "
+            "(sum(increase(b_total[$__range])))) / "
+            "(sum(increase(c_total[$__range])))")
+
+
+class GaugePercentileTests(unittest.TestCase):
+    def test_unmapped_gauge_percentile_uses_quantile_over_time(self):
+        # Not a histogram-shaped name and not in metric_map: must NOT emit
+        # histogram_quantile over a nonexistent my_gauge_bucket family.
+        t = tr("SELECT percentile(my_gauge, 95) FROM Metric TIMESERIES")
+        self.assertEqual(
+            t.expr, "quantile_over_time(0.95, my_gauge[$__rate_interval])")
+        self.assertNotIn("_bucket", t.expr)
+        self.assertEqual(t.confidence, NEEDS_REVIEW)
+
+    def test_median_unmapped_gauge_uses_quantile_over_time(self):
+        t = tr("SELECT median(cpu_temp) FROM Metric")
+        self.assertEqual(t.expr,
+                         "quantile_over_time(0.5, cpu_temp[$__range])")
+
+    def test_duration_name_still_resolves_to_histogram(self):
+        t = tr("SELECT percentile(request.latency, 99) FROM Metric")
+        self.assertEqual(
+            t.expr,
+            "histogram_quantile(0.99, sum by (le)(rate("
+            "request_latency_bucket[$__range])))")
+
+    def test_counter_percentile_is_untranslatable_not_phantom_bucket(self):
+        cfg = load_config()
+        cfg["metric_map"]["reqs"] = {"name": "reqs_total", "type": "counter"}
+        t = tr("SELECT percentile(reqs, 95) FROM Metric", cfg)
+        self.assertEqual(t.confidence, UNTRANSLATABLE)
+        self.assertTrue(any("no sound PromQL equivalent" in n
+                            for n in t.notes), t.notes)
+
+
 if __name__ == "__main__":
     unittest.main()

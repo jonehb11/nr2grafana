@@ -914,7 +914,7 @@ def http(base, method, path, body=None, raw=None):
         data = json.dumps(body).encode()
     req = urllib.request.Request(
         base + path, data=data, method=method,
-        headers={"Content-Type": "application/json"})
+        headers={"Content-Type": "application/json", "Origin": base})
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             text = resp.read().decode()
@@ -1314,8 +1314,8 @@ class GrafanaRouteTests(WebServerTestCase):
             first.read()
             self.assertEqual(first.status, 200)
             conn.request("POST", "/api/grafana/health", body=b"{}",
-                         headers={"Content-Type":
-                                  "application/json"})
+                         headers={"Content-Type": "application/json",
+                                  "Origin": self.base})
             resp = conn.getresponse()
             resp.read()
             self.assertEqual(resp.status, 200)
@@ -2687,6 +2687,179 @@ class TcoRouteTests(WebServerTestCase):
         self.assertEqual(code, 200)
         self.assertTrue(st["features"].get("tco"))
         self.assertTrue(st["features"].get("aws"))
+
+
+def _raw_request(base, method, path, headers, body=None):
+    """Drive one request with arbitrary headers (Host/Origin), returning
+    (status, text). Used to exercise the security guard directly."""
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(base + path, data=data, method=method,
+                                 headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return resp.status, resp.read().decode()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode()
+
+
+class ImportUrlTests(WebServerTestCase):
+    """A2: relative Grafana import urls are absolutized so the UI's
+    'Open in Grafana' link works from the localhost origin."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        websrv.SESSION.grafana_url = "http://gf.local:3000"
+        websrv.SESSION.grafana_token = "tok"
+        cls.slug = "import-url-dash"
+        _seed_dash(cls.store, cls.slug, expr="up")
+
+    def test_import_url_is_absolute(self):
+        code, resp = self.api("POST", "/api/grafana/import",
+                              {"slug": self.slug})
+        self.assertEqual(code, 200)
+        job = poll_job(self.base, resp["job"])
+        self.assertEqual(job["status"], "done")
+        url = job["result"]["results"][0]["url"]
+        self.assertEqual(url, "http://gf.local:3000/d/" + self.slug)
+        self.assertTrue(url.startswith("http://"))
+
+
+class SecurityGuardTests(WebServerTestCase):
+    """A8: DNS-rebinding (Host) and cross-site (Origin/Referer) guards."""
+
+    def test_get_index_passes(self):
+        code, text = self.api("GET", "/")
+        self.assertEqual(code, 200)
+        self.assertIn("<!DOCTYPE html>", text)
+
+    def test_same_origin_post_passes(self):
+        code, body = self.api("POST", "/api/settings",
+                              {"nr_region": "US"})
+        self.assertEqual(code, 200)
+        self.assertTrue(body["ok"])
+
+    def test_cross_origin_post_is_403(self):
+        code, text = _raw_request(
+            self.base, "POST", "/api/settings",
+            {"Content-Type": "application/json",
+             "Origin": "http://evil.example.com"},
+            body={"nr_region": "US"})
+        self.assertEqual(code, 403)
+        self.assertIn("cross-origin", text)
+
+    def test_post_without_origin_or_referer_is_403(self):
+        code, text = _raw_request(
+            self.base, "POST", "/api/settings",
+            {"Content-Type": "application/json"},
+            body={"nr_region": "US"})
+        self.assertEqual(code, 403)
+
+    def test_bad_host_header_is_rejected(self):
+        code, text = _raw_request(
+            self.base, "GET", "/api/state",
+            {"Host": "attacker.example.com"})
+        self.assertEqual(code, 403)
+        self.assertIn("Host", text)
+
+    def test_cross_origin_referer_post_is_403(self):
+        code, text = _raw_request(
+            self.base, "POST", "/api/settings",
+            {"Content-Type": "application/json",
+             "Referer": "http://evil.example.com/x"},
+            body={"nr_region": "US"})
+        self.assertEqual(code, 403)
+
+
+class DownloadGateTests(WebServerTestCase):
+    """A4: downloads are gated on migration readiness / human review,
+    with ?force=1 as the deliberate override."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        websrv.SESSION.grafana_url = "http://gf.local:3000"
+        # A ready dashboard: a parity artifact present -> readiness ready.
+        cls.ready = "ready-dash"
+        rdash = _seed_dash(cls.store, cls.ready, expr="up")
+        cls.store.save_artifact(cls.ready, "parity",
+                                {"panels": [{"panel_id": 1}],
+                                 "score": 100, "summary": {"match": 1}})
+        cls.ready_pkg = os.path.join(cls.tmp.name, "gate", cls.ready)
+        os.makedirs(cls.ready_pkg)
+        with open(os.path.join(cls.ready_pkg, "dashboard.json"), "w",
+                  encoding="utf-8") as f:
+            json.dump(rdash, f)
+        cls.store.set_setting("package_dir." + cls.ready, cls.ready_pkg)
+        # A blocked dashboard: a panel rejected in human review.
+        cls.blocked = "blocked-dash"
+        _seed_dash(cls.store, cls.blocked, expr="up")
+        cls.store.save_artifact(
+            cls.blocked, "review",
+            {"reviews": {"1:A": {"panel_id": 1, "refId": "A",
+                                 "verdict": "rejected"}}})
+
+    def test_ready_dashboard_downloads(self):
+        code, headers, raw = http_bin(
+            self.base, "/download/dashboard/%s.json" % self.ready)
+        self.assertEqual(code, 200)
+        self.assertEqual(json.loads(raw.decode())["uid"], self.ready)
+
+    def test_blocked_dashboard_is_409(self):
+        code, headers, raw = http_bin(
+            self.base, "/download/dashboard/%s.json" % self.blocked)
+        self.assertEqual(code, 409)
+        self.assertIn("error", json.loads(raw.decode()))
+
+    def test_blocked_dashboard_forced_downloads(self):
+        code, headers, raw = http_bin(
+            self.base,
+            "/download/dashboard/%s.json?force=1" % self.blocked)
+        self.assertEqual(code, 200)
+        self.assertEqual(json.loads(raw.decode())["uid"], self.blocked)
+
+    def test_blocked_package_is_409_and_forced_ok(self):
+        code, headers, raw = http_bin(
+            self.base, "/download/package/%s.zip" % self.ready)
+        self.assertEqual(code, 200)  # ready package streams
+        code, headers, raw = http_bin(
+            self.base, "/download/package/%s.zip" % self.blocked)
+        self.assertEqual(code, 409)
+
+    def test_download_all_blocked_until_forced(self):
+        code, headers, raw = http_bin(self.base, "/download/all.zip")
+        self.assertEqual(code, 409)
+        code, headers, raw = http_bin(self.base,
+                                      "/download/all.zip?force=1")
+        self.assertEqual(code, 200)
+        zf = zipfile.ZipFile(io.BytesIO(raw))
+        self.assertIn(self.ready + "/dashboard.json", zf.namelist())
+
+
+class MetricsUnknownDsTests(WebServerTestCase):
+    """C2: /api/metrics for a uid that names no datasource is a clear
+    404, not an opaque empty list or a 500."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        websrv.SESSION.grafana_url = "http://gf.local:3000"
+        websrv.SESSION.grafana_token = "tok"
+
+    def setUp(self):
+        with websrv._METRICS_LOCK:
+            websrv._METRICS_CACHE.clear()
+
+    def test_unknown_uid_is_404(self):
+        code, body = self.api("GET", "/api/metrics?uid=ghost")
+        self.assertEqual(code, 404)
+        self.assertIn("no datasource with uid", body["error"])
+        self.assertIn("Datasources", body["error"])
+
+    def test_known_uid_still_works(self):
+        code, body = self.api("GET", "/api/metrics?uid=mimir")
+        self.assertEqual(code, 200)
+        self.assertIn("up", body["metrics"])
 
 
 class JobInternalsTests(unittest.TestCase):

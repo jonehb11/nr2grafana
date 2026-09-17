@@ -30,7 +30,7 @@ General invariants:
 
 | FROM | Target | Status | Notes |
 | --- | --- | --- | --- |
-| `Metric` | PromQL | varies | name via `metric_map` config, else heuristics (`_total` -> counter, `_bucket` -> histogram, percentile/apdex arg -> histogram, else gauge); heuristic hits are `needs-review` |
+| `Metric` | PromQL | varies | name via `metric_map` config, else heuristics (`_total` -> counter, `_bucket` -> histogram, `histogram()`/`apdex()` arg -> histogram, `percentile()`/`median()` arg -> histogram only when the name looks like a duration/latency histogram else gauge, else gauge); heuristic hits are `needs-review` |
 | `Transaction` | PromQL | approximate | OTel semconv `http_server_request_duration_seconds` histogram (legacy flavor and config overrides supported); requires OTel instrumentation |
 | `TransactionError` | PromQL | needs-review | approximated as 5xx responses on the same histogram |
 | `Span` (aggregations) | PromQL | needs-review | span metrics (`spanmetrics_flavor` config: otel / otel-seconds / tempo / legacy); metric names are deployment-specific |
@@ -61,7 +61,8 @@ General invariants:
 | `latest(x)` | exact | instant vector (instant) / `last_over_time(m[$__interval])` (range); histogram -> recent average, approximate |
 | `earliest(x)` | untranslatable | PromQL has no `first_over_time` (LogQL does - see below) |
 | `percentile(x, p...)` histogram | approximate | `histogram_quantile(p/100, sum by (le, ...)(rate(_bucket[W])))`; bucket interpolation vs NR event data noted; multiple p values -> one target each |
-| `percentile(x, p)` gauge | needs-review | `quantile_over_time` per series (avg across series); NOT emitted against a nonexistent `_bucket` family |
+| `percentile(x, p)` gauge (or unmapped non-histogram name) | needs-review | `quantile_over_time(p/100, m[W])` per series (avg across series); NR computes percentiles over all raw events. An unmapped `FROM Metric` name with no `_bucket`/duration/latency hint resolves as a gauge and takes this path — it is NEVER emitted as `histogram_quantile` over a nonexistent `m_bucket` family (which would return no data) |
+| `percentile(x, p)` counter | untranslatable | a counter has neither a `_bucket` series nor rankable raw samples; note says to map the metric to a histogram in `metric_map` |
 | `median(x)` | as percentile | p50 |
 | `apdex(x, t: T)` histogram | needs-review | `(sum(rate(b{le=T})) + sum(rate(b{le=4T}))) / 2 / sum(rate(_count))`; algebraically `(satisfied + tolerating/2) / total` because buckets are cumulative. Requires bucket bounds at exactly T and 4T (noted). Thresholds scale x1000 for millisecond histograms. Integral bounds match both `le="2"` and `le="2.0"` spellings via regex |
 | `apdex()` non-histogram | untranslatable | needs a histogram metric |
@@ -82,7 +83,7 @@ General invariants:
 | `FACET cases(WHERE c1 AS a, ...)` | approximate | one filtered query per case (legend = alias); NR's implicit "Other" bucket is not emitted; degrades to a dropped-grouping note when a case cannot become matchers |
 | `funnel(...)` | untranslatable | event-sequence analysis; no metric equivalent (same message for every event type) |
 | `eventType()` / `keyset()` / `aggregationEndTime()` | untranslatable | NRDB introspection |
-| `agg(x) / agg(y)` | composes | ratio of two aggregations (classic error-rate shape) |
+| `agg(x) / agg(y)` | approximate | ratio of two aggregations (classic error-rate shape): each operand is translated in the SAME context (so both carry the shared `FACET` grouping and outer `WHERE`) and divided as `(left) / (right)`; PromQL matches the two vectors on the group labels (a series present in only one operand drops out; the denominator must be non-zero). `count/count`, `rate/rate`, `uniqueCount/...` (count-shaped over count-shaped) hint `unit:percentunit`; other ratios (e.g. `sum/sum`) force no unit. Chained `a/b/c` nests left as `(a/b)/c`. The operands' own unit hints do not carry to the quotient |
 | `agg(x) * N`, `N * agg(x)`, `agg(x) / N` | preserved | multiplier kept in the expr; derived unit hint dropped with a note |
 | multiple SELECT items | composes | one target per aggregation; non-aggregated items dropped with a note |
 

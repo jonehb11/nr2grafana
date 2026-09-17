@@ -45,10 +45,14 @@ _NR_META_KEYS = ("facet", "beginTimeSeconds", "endTimeSeconds",
 
 # Weight per verdict for the 0-100 score. nr-error rows earn the
 # "Grafana has data but no NR comparison" weight when the Grafana side
-# did return points (see _row_weight).
+# did return points (see _row_weight). ``unverifiable`` /
+# ``unverifiable-logs`` are honest "cannot compare this panel's data"
+# verdicts (logs, traces, tables): weight 0.0 so they are NOT counted
+# as verified -- they neither pass nor fail and must be checked by hand.
 _WEIGHTS = {"match": 1.0, "close": 0.8, "nr-empty": 0.6,
             "both-empty": 0.5, "value-mismatch": 0.25,
             "shape-mismatch": 0.25, "gf-empty": 0.25,
+            "unverifiable": 0.0, "unverifiable-logs": 0.0,
             "nr-error": 0.0, "gf-error": 0.0}
 
 # Known constant ratios (grafana/nr) that hint at unit mismatches.
@@ -376,8 +380,10 @@ def compare(nr_series: List[Dict], gf_series: List[Dict],
     Returns ``{"verdict", "detail", "ratio", "nr_summary",
     "gf_summary"}``. Verdicts: match | close | value-mismatch |
     shape-mismatch | nr-empty | gf-empty | both-empty. ``close`` means
-    within tolerance or a consistent constant ratio (noise-tolerant:
-    median ratio with a MAD check); known constants add a unit hint.
+    within tolerance or a constant ratio that maps to a *recognized*
+    unit conversion (ms/s, per-min/per-s). An unrecognized constant
+    ratio is a real discrepancy: it is reported as ``value-mismatch``
+    (with the ratio recorded) and never masked as agreement.
     """
     nr_sum = _summary(nr_series)
     gf_sum = _summary(gf_series)
@@ -450,19 +456,28 @@ def compare(nr_series: List[Dict], gf_series: List[Dict],
         consistent = abs(med_r) > eps \
             and mad <= max(0.1 * abs(med_r), eps)
         hint = _unit_hint(med_r) if consistent else ""
-        if consistent and (hint or len(ratios) >= 3):
-            result["verdict"] = "close"
+        if consistent:
+            # Record the ratio so the UI can surface it, but a constant
+            # factor only earns "close" when it maps to a KNOWN unit
+            # conversion. An unrecognized constant ratio is a genuine
+            # mismatch and must not be masked as agreement.
             result["ratio"] = med_r
-            detail = ("consistent constant ratio ~%.4g "
-                      "(Grafana/New Relic)" % med_r)
             if hint:
-                detail += " - " + hint
-            result["detail"] = detail + extra
-            return result
+                result["verdict"] = "close"
+                result["detail"] = ("consistent constant ratio ~%.4g "
+                                    "(Grafana/New Relic) - %s%s"
+                                    % (med_r, hint, extra))
+                return result
 
     result["verdict"] = "value-mismatch"
-    result["detail"] = ("values differ: %s (%.0f%% off)%s"
-                        % (mean_note, worst * 100, extra))
+    if result["ratio"] is not None:
+        result["detail"] = ("values differ by a consistent factor ~%.4g "
+                            "(Grafana/New Relic), not a recognized unit "
+                            "conversion: %s%s"
+                            % (result["ratio"], mean_note, extra))
+    else:
+        result["detail"] = ("values differ: %s (%.0f%% off)%s"
+                            % (mean_note, worst * 100, extra))
     return result
 
 
@@ -500,6 +515,26 @@ def _row_weight(row: Dict[str, Any]) -> float:
             and (row.get("gf_summary") or {}).get("points"):
         return 0.6  # Grafana has data; only the NR comparison failed.
     return _WEIGHTS.get(verdict, 0.0)
+
+
+def _target_kind(panel_type: Optional[str], ds_type: Optional[str]) -> str:
+    """Classify a panel/target whose data cannot be verified by numeric
+    comparison.
+
+    Returns ``"logs"`` (log/Loki), ``"traces"`` (trace/Tempo) or
+    ``"table"``, else ``""``. These panels must never be graded as a
+    numeric match/empty: log lines and spans do not reduce to numbers,
+    and table cells carry heterogeneous, reformatted values.
+    """
+    dt = (ds_type or "").lower()
+    pt = (panel_type or "").lower()
+    if "loki" in dt or pt == "logs":
+        return "logs"
+    if "tempo" in dt or pt in ("traces", "trace"):
+        return "traces"
+    if pt in ("table", "table-old"):
+        return "table"
+    return ""
 
 
 def _nrql_for_target(entry: Optional[Dict[str, Any]], idx: int) -> str:
@@ -641,12 +676,34 @@ def run_parity(nr, account_ids, grafana, dash, widget_report,
             row["verdict"] = "nr-error"
             row["detail"] = nr_err
         else:
-            cmp_result = compare(nr_series, gf_series)
-            row["verdict"] = cmp_result["verdict"]
-            row["detail"] = cmp_result["detail"]
-            row["ratio"] = cmp_result["ratio"]
-            row["nr_summary"] = cmp_result["nr_summary"]
-            row["gf_summary"] = cmp_result["gf_summary"]
+            kind = _target_kind(panel.get("type"), ds_type)
+            if kind == "traces":
+                # Spans do not reduce to comparable numbers even when a
+                # coincidental count lines up; flag for a human.
+                row["verdict"] = "unverifiable"
+                row["detail"] = ("trace/Tempo panel: span data is not "
+                                 "numerically comparable; verify this "
+                                 "panel manually")
+            elif kind == "logs" and not (nr_series and gf_series):
+                # Log panels normalize to no comparable numbers; never
+                # claim both-empty/no-data when logs actually flowed.
+                row["verdict"] = "unverifiable-logs"
+                row["detail"] = ("log/Loki panel: log contents are not "
+                                 "numerically comparable; verify this "
+                                 "panel manually")
+            elif kind == "table" and nr_series and gf_series:
+                row["verdict"] = "unverifiable"
+                row["detail"] = ("table panel: per-cell values are not "
+                                 "reliably comparable across the "
+                                 "translation; verify this panel "
+                                 "manually")
+            else:
+                cmp_result = compare(nr_series, gf_series)
+                row["verdict"] = cmp_result["verdict"]
+                row["detail"] = cmp_result["detail"]
+                row["ratio"] = cmp_result["ratio"]
+                row["nr_summary"] = cmp_result["nr_summary"]
+                row["gf_summary"] = cmp_result["gf_summary"]
         emit("  %-15s %s [%s] %s" % (row["verdict"],
                                      row["panel_title"], row["refId"],
                                      row["detail"]))
@@ -736,6 +793,11 @@ def readiness(parity, check_rows=None, test_rows=None,
     if n:
         reasons.append("%d panel(s) had no New Relic data to compare "
                        "against" % n)
+    n = count("unverifiable", "unverifiable-logs")
+    if n:
+        reasons.append("%d panel(s) could not be verified automatically "
+                       "and need a manual check (logs, traces or "
+                       "tables)" % n)
     if test_rows and summary:
         n = sum(1 for r in test_rows if r.get("status") == "error")
         if n:
