@@ -272,6 +272,35 @@ class VizKindTests(unittest.TestCase):
         self.assertEqual(len(row["nr"]["rows"]), 2)
         self.assertEqual(row["nr"]["rows"][0]["appName"], "web")
         self.assertEqual(row["nr"]["rows"][0]["value"], 5.0)
+        # Table cells are heterogeneous / reformatted: even with rows on
+        # both sides this is honestly UNVERIFIABLE, not a numeric match.
+        self.assertEqual(row["verdict"], "unverifiable")
+
+    def test_tempo_unverifiable_even_when_numbers_line_up(self):
+        # A trace/Tempo panel must never be graded a numeric match even
+        # if a coincidental count lines up on both sides.
+        p = panel(1, "timeseries", "traces_expr",
+                  "SELECT count(*) FROM Span Q", ds_type="tempo",
+                  uid="tempo-uid")
+        row, _nr, _g = self.run_one(
+            p, {"Q": nr_ts([1, 2, 3])},
+            {"traces_expr": gf_response([gf_frame([100, 160, 220],
+                                                  [1, 2, 3])])})
+        self.assertEqual(row["datasource"], "tempo")
+        self.assertEqual(row["verdict"], "unverifiable")
+
+    def test_tempo_unverifiable_not_counted_as_verified(self):
+        p = panel(1, "timeseries", "traces_expr",
+                  "SELECT count(*) FROM Span Q", ds_type="tempo",
+                  uid="tempo-uid")
+        dash = dash_of([p])
+        out = build_comparison(
+            FakeNR({"Q": nr_ts([1, 2, 3])}), [123],
+            FakeGrafana({"traces_expr": gf_response(
+                [gf_frame([100, 160, 220], [1, 2, 3])])}),
+            {}, dash, report_for(dash))
+        self.assertEqual(out["summary"], {"unverifiable": 1})
+        self.assertEqual(out["score"], 0)
 
     def test_logs_lines(self):
         p = panel(1, "logs", '{job="app"}',
@@ -288,11 +317,45 @@ class VizKindTests(unittest.TestCase):
         self.assertEqual(row["grafana"]["kind"], "logs")
         self.assertEqual(len(row["nr"]["lines"]), 2)
         self.assertEqual(row["nr"]["lines"][0]["line"], "hello")
-        # both have 2 lines -> counts agree
-        self.assertEqual(row["verdict"], "match")
+        # Both sides return log lines: line contents are sampled and not
+        # numerically comparable, so this is honestly UNVERIFIABLE (a
+        # human must eyeball them) -- never a data-parity "match".
+        self.assertEqual(row["verdict"], "unverifiable-logs")
         # raw SELECT * derived for the NR side
         self.assertTrue(any("SELECT * FROM Log" in q
                             for _a, q in nr.calls))
+
+    def test_logs_unverifiable_not_counted_as_verified(self):
+        # A panel that is only unverifiable-logs must NOT score as
+        # verified: weight 0.0 -> score 0.
+        p = panel(1, "logs", '{job="app"}',
+                  "SELECT count(*) FROM Log LIMIT 100",
+                  ds_type="loki", uid="loki-uid")
+        nr_rows = [{"timestamp": 1700000000000, "message": "a"},
+                   {"timestamp": 1700000001000, "message": "b"}]
+        gf = gf_response([gf_log_frame([1700000000, 1700000001],
+                                       ["a", "b"])])
+        row, _nr, _g = self.run_one(p, {"FROM Log": nr_rows},
+                                    {'{job="app"}': gf})
+        self.assertEqual(row["verdict"], "unverifiable-logs")
+
+    def test_logs_gf_empty_when_grafana_returns_no_lines(self):
+        # New Relic has logs but Grafana returns none: a real, honest
+        # gf-empty signal, not a false "unverifiable" or "both-empty".
+        p = panel(1, "logs", '{job="app"}',
+                  "SELECT count(*) FROM Log LIMIT 100",
+                  ds_type="loki", uid="loki-uid")
+        nr_rows = [{"timestamp": 1700000000000, "message": "a"}]
+        row, _nr, _g = self.run_one(p, {"FROM Log": nr_rows}, {})
+        self.assertEqual(row["verdict"], "gf-empty")
+
+    def test_logs_nr_empty_when_only_grafana_has_lines(self):
+        p = panel(1, "logs", '{job="app"}',
+                  "SELECT count(*) FROM Log LIMIT 100",
+                  ds_type="loki", uid="loki-uid")
+        gf = gf_response([gf_log_frame([1700000000], ["only-gf"])])
+        row, _nr, _g = self.run_one(p, {}, {'{job="app"}': gf})
+        self.assertEqual(row["verdict"], "nr-empty")
 
     def test_text_panel_no_query(self):
         p = {"id": 1, "type": "text", "title": "Notes",

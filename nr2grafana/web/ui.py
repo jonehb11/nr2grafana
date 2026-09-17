@@ -1787,7 +1787,8 @@ var VERDICT_CLS = { match: 'ok', close: 'info',
                     'value-mismatch': 'warn',
                     'shape-mismatch': 'warn', 'nr-empty': 'dim',
                     'gf-empty': 'warn', 'both-empty': 'dim',
-                    'nr-error': 'err', 'gf-error': 'err' };
+                    'nr-error': 'err', 'gf-error': 'err',
+                    'unverifiable': 'warn', 'unverifiable-logs': 'warn' };
 /* Plain-language tooltip for every verdict -- used as the default
    badge title so hovering any verdict explains what it means. */
 var VERDICT_HELP = {
@@ -1800,13 +1801,20 @@ var VERDICT_HELP = {
     'datasource or a query that needs a fix.',
   'both-empty': 'Neither side returned data for this range.',
   'nr-error': 'The New Relic query failed to run.',
-  'gf-error': 'The Grafana query failed to run.' };
+  'gf-error': 'The Grafana query failed to run.',
+  'unverifiable': 'Both sides return data, but this panel type ' +
+    '(traces/table) cannot be compared numerically -- check it ' +
+    'manually.',
+  'unverifiable-logs': 'Both sides return log lines, but log ' +
+    'volume is not a data-parity check -- verify the logs ' +
+    'manually.' };
 /* Short, friendly label for a compare agreement badge. */
 var VERDICT_LBL = {
   match: 'match', close: 'close', 'value-mismatch': 'values differ',
   'shape-mismatch': 'shape differs', 'nr-empty': 'NR: no data',
   'gf-empty': 'Grafana: no data', 'both-empty': 'no data',
-  'nr-error': 'NR error', 'gf-error': 'Grafana error' };
+  'nr-error': 'NR error', 'gf-error': 'Grafana error',
+  'unverifiable': 'manual check', 'unverifiable-logs': 'manual check' };
 /* Verdicts that count as agreement (hidden by "only disagreements"). */
 var AGREE_OK = { match: 1, close: 1 };
 var SEV_CLS = { blocker: 'err', warn: 'warn', info: 'info' };
@@ -4103,7 +4111,8 @@ function worstStatus(tests) {
 
 function worstVerdict(prow) {
   var order = ['gf-error', 'nr-error', 'shape-mismatch',
-               'value-mismatch', 'gf-empty', 'both-empty',
+               'value-mismatch', 'unverifiable', 'unverifiable-logs',
+               'gf-empty', 'both-empty',
                'nr-empty', 'close', 'match'];
   var best = '';
   var rows = Object.keys(prow || {}).map(function (k) {

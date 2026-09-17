@@ -907,6 +907,11 @@ def _job_grafana_import(job: _Job, body: Dict[str, Any], store) \
                 dash, folder_uid=folder_uid, overwrite=overwrite,
                 message="Imported by nr2grafana web")
             url = res.get("url", "")
+            # Grafana returns a root-relative url ("/d/<uid>/..."); make
+            # it absolute so the UI's "Open in Grafana" link works when
+            # the page is served from a different origin (localhost).
+            if url.startswith("/") and SESSION.grafana_url:
+                url = SESSION.grafana_url.rstrip("/") + url
             out.append({"slug": slug, "status": "ok", "url": url,
                         "uid": res.get("uid", "")})
             ok += 1
@@ -1426,8 +1431,68 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError("request body must be a JSON object", 400)
         return body
 
+    # Hostnames a browser may legitimately use to reach this localhost
+    # server. Any other Host header means the request was aimed at us
+    # via a rebound DNS name (DNS-rebinding), and is refused.
+    _ALLOWED_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+    def _host_allowed(self, netloc: str) -> bool:
+        """True when ``netloc`` (a Host/Origin/Referer host[:port]) names
+        this local server: an allowed loopback hostname and, when a port
+        is present, this server's own port."""
+        if not netloc:
+            return False
+        hostname = netloc
+        port = ""
+        if netloc.startswith("["):  # bracketed IPv6, e.g. [::1]:8765
+            rb = netloc.find("]")
+            if rb == -1:
+                return False
+            hostname = netloc[1:rb]
+            rest = netloc[rb + 1:]
+            if rest.startswith(":"):
+                port = rest[1:]
+        elif netloc.count(":") == 1:
+            hostname, port = netloc.rsplit(":", 1)
+        if hostname not in self._ALLOWED_HOSTS:
+            return False
+        if port and port != str(self.server.server_address[1]):
+            return False
+        return True
+
+    def _security_guard(self) -> None:
+        """Refuse DNS-rebinding and cross-site requests BEFORE dispatch.
+
+        (i) Every request must carry a loopback Host header, else a
+        rebound DNS name is pointing a victim's browser at this server.
+        (ii) State-changing methods (POST/PUT/DELETE) must additionally
+        carry a same-origin Origin (or, absent that, Referer) so a
+        malicious page cannot drive this API from the user's browser.
+        GET/HEAD are exempt from (ii) so the page and its data load."""
+        if not self._host_allowed(self.headers.get("Host", "")):
+            raise ApiError("forbidden: unexpected Host header %r -- this "
+                           "server only answers loopback requests"
+                           % self.headers.get("Host", ""), 403)
+        if self.command not in ("POST", "PUT", "DELETE"):
+            return
+        origin = self.headers.get("Origin")
+        if origin is not None:
+            if self._host_allowed(urlsplit(origin).netloc):
+                return
+            raise ApiError("forbidden: cross-origin request blocked "
+                           "(Origin %s)" % origin, 403)
+        referer = self.headers.get("Referer")
+        if referer:
+            if self._host_allowed(urlsplit(referer).netloc):
+                return
+            raise ApiError("forbidden: cross-origin request blocked "
+                           "(Referer %s)" % referer, 403)
+        raise ApiError("forbidden: state-changing request needs a "
+                       "same-origin Origin or Referer header", 403)
+
     def _dispatch(self, fn: Callable[[], None]) -> None:
         try:
+            self._security_guard()
             fn()
         except ApiError as e:
             self._json({"error": str(e)}, e.code)
@@ -1755,6 +1820,24 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError("missing 'uid' query parameter", 400)
         query = (q.get("q") or [""])[0].strip().lower()
         live = _grafana_live()
+        # A uid that names no datasource on the instance would otherwise
+        # surface as an opaque empty list or a 500; verify it up front
+        # (skipping when we already have cached names for it) and return
+        # an actionable 404 instead.
+        with _METRICS_LOCK:
+            entry = _METRICS_CACHE.get(uid)
+            cached = bool(entry and time.time() - entry[0] < _METRICS_TTL)
+        if not cached:
+            known = set()
+            try:
+                known = set(d.get("uid") for d in (live.datasources()
+                                                   or []) if d.get("uid"))
+            except Exception:
+                known = set()
+            if known and uid not in known:
+                raise ApiError("no datasource with uid %r on this "
+                               "Grafana instance; pick one from "
+                               "Datasources" % uid, 404)
         names = _cached_metric_names(live, uid)
         if query:
             names = [n for n in names if query in n.lower()]
@@ -2037,8 +2120,59 @@ class Handler(BaseHTTPRequestHandler):
                            404)
         return row
 
+    def _force_download(self) -> bool:
+        """True when the request carries ?force=1 / ?force=true, letting
+        the caller download past the readiness gate deliberately."""
+        q = parse_qs(urlsplit(self.path).query)
+        return (q.get("force") or [""])[0].lower() in ("1", "true", "yes")
+
+    def _download_block_reason(self, slug: str) -> str:
+        """Actionable reason a dashboard must not be downloaded, or ""
+        when it is clear to ship. A dashboard is blocked when a panel
+        was rejected in human review, or when parity.readiness grades it
+        "blocked" after a verification run. A freshly converted
+        dashboard with no parity/check/test/review artifacts has nothing
+        to block on and downloads freely."""
+        review = _artifact(self.store, slug, "review")
+        rows = []
+        if isinstance(review, dict):
+            rows = list((review.get("reviews") or {}).values())
+        rejected = [r for r in rows if r.get("verdict") == "rejected"]
+        if rejected:
+            return ("%d panel(s) were rejected in human review -- fix "
+                    "or re-review them, or add ?force=1 to download "
+                    "anyway" % len(rejected))
+        parity = _artifact(self.store, slug, "parity")
+        check = _artifact(self.store, slug, "check")
+        test = _artifact(self.store, slug, "datatest")
+        if not (parity or check or test):
+            return ""  # nothing verified yet -- nothing to block on
+        try:
+            res = _lazy("parity").readiness(
+                parity, check_rows=(check or {}).get("items"),
+                test_rows=(test or {}).get("results"), review=review)
+        except Exception:
+            return ""  # never let a readiness hiccup block a download
+        if res.get("grade") == "blocked":
+            reasons = "; ".join(res.get("reasons") or []) \
+                or "migration not ready"
+            return ("migration readiness is blocked (score %s): %s -- "
+                    "resolve the issues or add ?force=1 to download "
+                    "anyway" % (res.get("score"), reasons))
+        return ""
+
+    def _gate_download(self, slug: str) -> None:
+        """Raise 409 when ``slug`` is not ready to download, unless the
+        request forced it with ?force=1."""
+        if self._force_download():
+            return
+        reason = self._download_block_reason(slug)
+        if reason:
+            raise ApiError(reason, 409)
+
     def _download_dashboard(self, slug: str) -> None:
         row = self._known_slug(slug)
+        self._gate_download(slug)
         dash = _dash_from_row(slug, row)
         raw = (json.dumps(dash, indent=2, ensure_ascii=False)
                + "\n").encode("utf-8")
@@ -2060,6 +2194,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _download_package(self, slug: str) -> None:
         self._known_slug(slug)
+        self._gate_download(slug)
         pkg = _package_dir(self.store, slug)
         if not pkg:
             raise ApiError("no package directory for %r -- run Convert "
@@ -2074,6 +2209,21 @@ class Handler(BaseHTTPRequestHandler):
         if not rows:
             raise ApiError("no dashboards stored yet -- run Convert "
                            "first", 404)
+        if not self._force_download():
+            blocked = []
+            for row in rows:
+                slug = row.get("slug", "")
+                if not slug or not _SLUG_RE.match(slug):
+                    continue
+                if self._download_block_reason(slug):
+                    blocked.append(slug)
+            if blocked:
+                raise ApiError(
+                    "%d dashboard(s) are not ready to download (%s) -- "
+                    "resolve them or add ?force=1 to download the whole "
+                    "set anyway" % (len(blocked),
+                                    ", ".join(sorted(blocked)[:10])),
+                    409)
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
             for row in rows:
