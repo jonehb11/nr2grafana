@@ -18,7 +18,10 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
+import time
 import unittest
+import urllib.error
 import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -1159,6 +1162,184 @@ class TcoMockTest(unittest.TestCase):
         self.assertIn("change_correlation", res)
         self.assertTrue(res.get("assumptions"),
                         "TCO report must carry labeled assumptions")
+
+
+def _web_req(base, method, path, body=None, timeout=20):
+    """Drive the nr2grafana web server over HTTP with a loopback
+    Origin (its 1.7.1 security guard requires a same-origin Origin on
+    state-changing methods)."""
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(
+        base + path, data=data, method=method,
+        headers={"Content-Type": "application/json", "Origin": base})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status, json.loads(resp.read().decode() or "{}")
+    except urllib.error.HTTPError as e:
+        try:
+            return e.code, json.loads(e.read().decode() or "{}")
+        except ValueError:
+            return e.code, {}
+
+
+def _web_poll(base, jid, timeout=25.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        code, job = _web_req(base, "GET", "/api/jobs/" + jid)
+        if code == 200 and job.get("status") in ("done", "error"):
+            return job
+        time.sleep(0.1)
+    raise AssertionError("web job %s did not finish in time" % jid)
+
+
+class WebPasteAndAiConvertTest(MockStackBase):
+    """The 1.8 core-flow additions driven through the REAL web server
+    over HTTP against the offline mock stack: paste a NR dashboard to
+    convert it (SEAM-2), then run conversion-mode AI over an
+    untranslatable panel and apply the proposal (SEAM-1 + SEAM-3),
+    with a fake local console agent standing in for the AI backend."""
+
+    def setUp(self):
+        super(WebPasteAndAiConvertTest, self).setUp()
+        self.tmp = tempfile.mkdtemp(prefix="nr2g-web-e2e-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        store_mod, web = _import_or_skip(
+            self, "nr2grafana.store", "nr2grafana.web.server")
+        self.web = web
+        self.out_dir = os.path.join(self.tmp, "out")
+        st = store_mod.Store(os.path.join(self.tmp, "web.db"))
+        # Fresh in-memory session so nothing leaks between tests.
+        web.SESSION = web.Session()
+        web.SESSION.grafana_url = ""
+        web.SESSION.nr_api_key = ""
+        web.SESSION.anthropic_api_key = ""
+        web.SESSION.out_dir = self.out_dir
+        self.httpd = web.create_server("127.0.0.1", 0, store=st)
+        self.base = "http://127.0.0.1:%d" % self.httpd.server_address[1]
+        self.thread = threading.Thread(target=self.httpd.serve_forever,
+                                       daemon=True)
+        self.thread.start()
+
+        def _shutdown():
+            self.httpd.shutdown()
+            self.httpd.server_close()
+            self.thread.join(timeout=5)
+            try:
+                st.close()
+            except Exception:
+                pass
+        self.addCleanup(_shutdown)
+
+    def _fixture_object(self):
+        ng = self.nerdgraph()
+        guid = next(e["guid"] for e in ng.list_dashboards()
+                    if e["name"] == "Checkout Service Overview")
+        return ng.get_dashboard(guid)
+
+    def _fake_agent(self, expr):
+        """Write a tiny console agent that prints a strict-JSON
+        suggest_fix reply carrying ``expr`` -- a stand-in local AI."""
+        script = os.path.join(self.tmp, "agent.py")
+        payload = json.dumps({
+            "explanation": "translated the funnel into a metric query",
+            "fixed_expr": expr, "confidence": "medium", "actions": []})
+        with open(script, "w", encoding="utf-8") as f:
+            f.write("import sys\n")
+            f.write("sys.stdin.read()\n")
+            f.write("print(%r)\n" % payload)
+        return "%s %s" % (sys.executable, script)
+
+    def test_paste_convert_then_ai_convert_untranslatable_panel(self):
+        obj = self._fixture_object()
+
+        # -- 1. SEAM-2: paste the NR dashboard object to convert it -----
+        code, resp = _web_req(self.base, "POST", "/api/convert",
+                              {"nr_json": obj, "out_dir": self.out_dir,
+                               "package": True})
+        self.assertEqual(code, 200, resp)
+        job = _web_poll(self.base, resp["job"])
+        self.assertEqual(job["status"], "done", job)
+        self.assertGreaterEqual(len(job["result"]["dashboards"]), 1)
+        slug = job["result"]["dashboards"][0]["slug"]
+
+        # persisted + packaged on disk
+        code, det = _web_req(self.base, "GET",
+                             "/api/dashboards/" + slug)
+        self.assertEqual(code, 200)
+        self.assertIn("panels", det["dashboard"])
+        pkg = os.path.join(self.out_dir, slug)
+        self.assertTrue(os.path.isfile(
+            os.path.join(pkg, "dashboard.json")))
+        self.assertTrue(os.path.isfile(
+            os.path.join(pkg, "datatest.json")))
+
+        # locate the untranslatable "Checkout funnel" placeholder panel
+        wr = det["widget_report"]
+        funnel = next(w for w in wr
+                      if w.get("confidence") == "untranslatable")
+        pid = funnel["panel_id"]
+        panel = next(p for p in det["dashboard"]["panels"]
+                     if p.get("id") == pid)
+        self.assertEqual(panel["type"], "text")  # dead placeholder
+        self.assertNotIn("targets", panel)
+
+        # -- 2. wire up the fake local AI agent -------------------------
+        new_expr = "sum(rate(checkout_orders_completed_total[5m]))"
+        cmd = self._fake_agent(new_expr)
+        code, _ = _web_req(self.base, "POST", "/api/settings",
+                           {"ai_command": cmd})
+        self.assertEqual(code, 200)
+
+        # -- 3. SEAM-1: conversion-mode AI suggest for that panel -------
+        code, sug = _web_req(self.base, "POST", "/api/ai/suggest",
+                             {"slug": slug, "panel_id": pid,
+                              "mode": "convert",
+                              "ds_family": "prometheus"})
+        self.assertEqual(code, 200, sug)
+        self.assertEqual(sug["fixed_expr"], new_expr)
+
+        # -- 4. SEAM-3: apply the proposal via /api/panel/convert -------
+        code, out = _web_req(self.base, "POST", "/api/panel/convert",
+                             {"slug": slug, "panel_id": pid,
+                              "expr": sug["fixed_expr"],
+                              "ds_family": "prometheus"})
+        self.assertEqual(code, 200, out)
+        self.assertEqual(out["was_type"], "text")
+        conv = out["panel"]
+        self.assertEqual(conv["targets"][0]["expr"], new_expr)
+        self.assertEqual(conv["targets"][0]["datasource"]["type"],
+                         "prometheus")
+        self.assertEqual(conv["datasource"]["type"], "prometheus")
+        self.assertNotEqual(conv["type"], "text")  # a live viz now
+
+        # the panel really gained a real target in the stored dashboard
+        code, det2 = _web_req(self.base, "GET",
+                              "/api/dashboards/" + slug)
+        self.assertEqual(code, 200)
+        panel2 = next(p for p in det2["dashboard"]["panels"]
+                      if p.get("id") == pid)
+        self.assertIn(new_expr,
+                      json.dumps(panel2.get("targets") or []))
+
+        # and the package datatest.json was rewritten to include it
+        with open(os.path.join(pkg, "datatest.json"),
+                  encoding="utf-8") as f:
+            dt = json.load(f)
+        self.assertIn(new_expr,
+                      json.dumps(dt.get("targets") or []))
+
+        # a change was recorded for the applied conversion
+        code, ch = _web_req(self.base, "GET",
+                            "/api/changes?slug=" + slug)
+        self.assertEqual(code, 200)
+        self.assertTrue(any(c.get("action") == "query-edit"
+                            for c in ch["changes"]))
+
+    def test_paste_non_dashboard_is_rejected(self):
+        code, body = _web_req(self.base, "POST", "/api/convert",
+                              {"nr_json": {"totally": "not a dashboard"}})
+        self.assertEqual(code, 400)
+        self.assertIn("error", body)
 
 
 class FixtureLoadingTest(unittest.TestCase):

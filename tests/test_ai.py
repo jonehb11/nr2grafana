@@ -10,9 +10,10 @@ import urllib.error
 from unittest import mock
 
 from nr2grafana.ai import (AIAssist, AIError, DEFAULT_MODEL, LocalAgent,
-                           get_assistant, _parse_fix, _parse_fix_loose,
+                           get_assistant, _CONVERT_SYSTEM, _FIX_SYSTEM,
+                           _fix_prompt, _parse_fix, _parse_fix_loose,
                            _render_prompt, _strip_ansi, _strip_echo,
-                           _strip_fences)
+                           _strip_fences, _system_for)
 
 FAKE_KEY = "sk-ant-test-key-do-not-log"
 
@@ -169,6 +170,111 @@ class SuggestFixTests(unittest.TestCase):
         self.assertIn("http_request_total", user)
         self.assertIn("SELECT count(*)", user)
         self.assertIn("metrics_sample", json.dumps(self.context))
+
+
+CONVERT_CONTEXT = {
+    "mode": "convert",
+    "panel": "Latency p95",
+    "datasource": "prometheus",
+    "ds_family": "prometheus",
+    "original_nrql": "SELECT percentile(duration, 95) FROM Transaction "
+                     "FACET appName",
+    "translation_notes": ["percentile() has no exact PromQL equivalent",
+                          "FACET appName maps to a label grouping"],
+    "confidence": "needs-review",
+    "instance": {"metrics_sample": ["http_server_duration_seconds_bucket"]},
+}
+
+
+class ConversionModePromptTests(unittest.TestCase):
+    """Conversion-mode framing: distinct system + enriched prompt."""
+
+    def test_system_for_picks_convert(self):
+        self.assertIs(_system_for({"mode": "convert"}), _CONVERT_SYSTEM)
+        self.assertIs(_system_for({"mode": "CONVERT "}), _CONVERT_SYSTEM)
+
+    def test_system_for_defaults_to_fix(self):
+        self.assertIs(_system_for({}), _FIX_SYSTEM)
+        self.assertIs(_system_for({"mode": "fix"}), _FIX_SYSTEM)
+        self.assertIs(_system_for({"mode": ""}), _FIX_SYSTEM)
+
+    def test_convert_and_fix_systems_are_distinct(self):
+        self.assertNotEqual(_CONVERT_SYSTEM, _FIX_SYSTEM)
+        # Both still demand strict JSON so both parse identically.
+        self.assertIn("STRICT JSON", _CONVERT_SYSTEM)
+        self.assertIn("STRICT JSON", _FIX_SYSTEM)
+        # The conversion framing is OTel/translation oriented.
+        self.assertIn("OTel", _CONVERT_SYSTEM)
+        self.assertNotIn("OTel", _FIX_SYSTEM)
+
+    def test_convert_prompt_includes_notes_nrql_ds_family(self):
+        prompt = _fix_prompt(CONVERT_CONTEXT)
+        self.assertIn("Translate", prompt)
+        self.assertNotIn("Fix this failing", prompt)
+        # original_nrql carried through.
+        self.assertIn("percentile(duration, 95)", prompt)
+        self.assertIn("original_nrql", prompt)
+        # translation_notes carried through.
+        self.assertIn("no exact PromQL equivalent", prompt)
+        self.assertIn("translation_notes", prompt)
+        # ds_family carried through.
+        self.assertIn("ds_family", prompt)
+        self.assertIn("prometheus", prompt)
+        # converter confidence carried through.
+        self.assertIn("needs-review", prompt)
+
+    def test_convert_prompt_distinct_from_fix_prompt(self):
+        convert = _fix_prompt(CONVERT_CONTEXT)
+        fix_ctx = dict(CONVERT_CONTEXT)
+        fix_ctx["mode"] = "fix"
+        fix = _fix_prompt(fix_ctx)
+        self.assertNotEqual(convert, fix)
+        self.assertTrue(fix.startswith("Fix this failing"))
+
+    def test_fix_prompt_omits_convert_fields_when_absent(self):
+        prompt = _fix_prompt({"panel": "P", "expr": "up",
+                              "error": "no data"})
+        self.assertNotIn("translation_notes", prompt)
+        self.assertNotIn("original_nrql", prompt)
+        self.assertNotIn("ds_family", prompt)
+
+    def test_api_suggest_fix_convert_uses_convert_system(self):
+        ai = AIAssist(api_key=FAKE_KEY)
+        with mock.patch("urllib.request.urlopen",
+                        return_value=api_response(
+                            json.dumps(FIX_JSON))) as m:
+            out = ai.suggest_fix(CONVERT_CONTEXT)
+        self.assertEqual(out, FIX_JSON)
+        body = json.loads(m.call_args[0][0].data.decode())
+        self.assertEqual(body["system"], _CONVERT_SYSTEM)
+        self.assertIn("OTel", body["system"])
+        user = body["messages"][0]["content"]
+        self.assertIn("percentile(duration, 95)", user)
+
+    def test_api_suggest_fix_default_uses_fix_system(self):
+        ai = AIAssist(api_key=FAKE_KEY)
+        ctx = {"panel": "P", "expr": "up", "error": "no data"}
+        with mock.patch("urllib.request.urlopen",
+                        return_value=api_response(
+                            json.dumps(FIX_JSON))) as m:
+            ai.suggest_fix(ctx)
+        body = json.loads(m.call_args[0][0].data.decode())
+        self.assertEqual(body["system"], _FIX_SYSTEM)
+
+    def test_local_agent_convert_sees_convert_system_and_parses(self):
+        # The agent echoes a marker proving the conversion system text
+        # reached its stdin, then emits the JSON reply; loose parse
+        # recovers the JSON from the surrounding prose.
+        code = ("import sys; d = sys.stdin.read();"
+                " print('SAW_OTEL' if 'OTel' in d else 'NO_OTEL');"
+                " print(%r)" % json.dumps(FIX_JSON))
+        agent = LocalAgent(cli(code), timeout=30)
+        raw = agent.chat([{"role": "user",
+                           "content": _fix_prompt(CONVERT_CONTEXT)}],
+                         system=_CONVERT_SYSTEM)
+        self.assertIn("SAW_OTEL", raw)
+        out = agent.suggest_fix(CONVERT_CONTEXT)
+        self.assertEqual(out, FIX_JSON)
 
 
 class ErrorMappingTests(unittest.TestCase):

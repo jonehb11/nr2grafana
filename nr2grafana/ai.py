@@ -73,6 +73,27 @@ fences -- with exactly these keys:
   "actions": array of strings: manual steps the user must take (may be [])
 """
 
+_CONVERT_SYSTEM = """\
+You are helping migrate New Relic dashboards to Grafana backed by an LGTM
+stack (Loki logs, Grafana, Tempo traces, Mimir/Prometheus metrics). A panel
+was auto-migrated from NRQL, but the converter marked it needs-review or
+untranslatable for the reasons in translation_notes. Produce a
+higher-fidelity (or from-scratch) query for the panel's datasource family
+(ds_family) that reproduces the original_nrql's intent against an OTel-fed
+LGTM stack: PromQL for prometheus, LogQL for loki, TraceQL for tempo. OTel
+metric names often carry unit/total suffixes (e.g. _seconds, _total) and NRQL
+FACET / WHERE dimensions usually map to labels; prefer metric and label names
+present in the provided instance data. If the required data does not exist
+yet, set fixed_expr to null and list the manual steps instead.
+
+Respond with STRICT JSON only -- a single object, no prose and no markdown
+fences -- with exactly these keys:
+  "explanation": short string: how the query reproduces the NRQL intent
+  "fixed_expr": the translated query string, or null if none applies
+  "confidence": "high" | "medium" | "low"
+  "actions": array of strings: manual steps the user must take (may be [])
+"""
+
 
 class AIError(Exception):
     """Raised when the Claude API cannot be used or returns an error."""
@@ -149,21 +170,50 @@ def _parse_fix_loose(raw_text: str) -> Dict[str, Any]:
     return out
 
 
+def _is_convert(context: Dict[str, Any]) -> bool:
+    """True when the caller asked for conversion-mode framing."""
+    return str(context.get("mode") or "").strip().lower() == "convert"
+
+
+def _system_for(context: Dict[str, Any]) -> str:
+    """Pick the system framing by ``context["mode"]`` (default fix)."""
+    return _CONVERT_SYSTEM if _is_convert(context) else _FIX_SYSTEM
+
+
 def _fix_prompt(context: Dict[str, Any]) -> str:
-    """Render the suggest_fix user prompt from a panel context."""
+    """Render the suggest_fix / convert user prompt from a context.
+
+    Shared by fix mode and convert mode; ``context["mode"]`` selects the
+    framing sentence. When present, the converter's migration hints
+    (original_nrql, translation_notes, confidence, ds_family) are folded
+    in alongside the existing panel/query/error/datasource, requirements
+    excerpt and instance metric/label samples.
+    """
     instance = context.get("instance") or {}
+    convert = _is_convert(context)
     detail: Dict[str, Any] = {}
     for key in ("panel", "expr", "error", "datasource", "nrql"):
         if context.get(key):
             detail[key] = context[key]
+    if context.get("original_nrql"):
+        detail["original_nrql"] = context["original_nrql"]
+    if context.get("translation_notes"):
+        detail["translation_notes"] = context["translation_notes"]
+    if context.get("confidence"):
+        detail["converter_confidence"] = context["confidence"]
+    if context.get("ds_family"):
+        detail["ds_family"] = context["ds_family"]
     if context.get("requirements"):
         detail["requirements_excerpt"] = context["requirements"]
     if instance.get("datasources"):
         detail["instance_datasources"] = instance["datasources"]
     if instance.get("metrics_sample"):
         detail["sample_metric_names"] = instance["metrics_sample"]
-    return ("Fix this failing Grafana panel query. Context:\n"
-            + json.dumps(detail, indent=2, default=str, sort_keys=True))
+    body = json.dumps(detail, indent=2, default=str, sort_keys=True)
+    if convert:
+        return ("Translate this auto-migrated New Relic panel into a "
+                "higher-fidelity Grafana/LGTM query. Context:\n" + body)
+    return "Fix this failing Grafana panel query. Context:\n" + body
 
 
 def _strip_ansi(text: str) -> str:
@@ -231,13 +281,16 @@ class AIAssist:
 
         context keys (all optional): "panel", "expr", "error",
         "datasource", "requirements", "instance" (dict with
-        "datasources" and "metrics_sample" lists), "nrql".
+        "datasources" and "metrics_sample" lists), "nrql". Conversion
+        mode adds "mode" ("fix"|"convert"), "original_nrql",
+        "translation_notes", "confidence" and "ds_family"; when
+        mode == "convert" the conversion system framing is used.
 
         Returns {"explanation", "fixed_expr", "confidence", "actions"}.
         """
         user = _fix_prompt(context)
         raw = self.chat([{"role": "user", "content": user}],
-                        system=_FIX_SYSTEM)
+                        system=_system_for(context))
         return _parse_fix(raw)
 
     def chat(self, messages: List[Dict[str, str]],
@@ -353,11 +406,12 @@ class LocalAgent:
     def suggest_fix(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """Ask the local agent to fix a broken panel query.
 
-        Same context and return shape as AIAssist.suggest_fix.
+        Same context and return shape as AIAssist.suggest_fix,
+        including conversion mode via ``context["mode"]``.
         """
         user = _fix_prompt(context)
         raw = self.chat([{"role": "user", "content": user}],
-                        system=_FIX_SYSTEM)
+                        system=_system_for(context))
         return _parse_fix_loose(raw)
 
     def chat(self, messages: List[Dict[str, str]],

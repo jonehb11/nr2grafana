@@ -425,6 +425,239 @@ def _write_package_dashboard(store, slug: str,
     return path
 
 
+def _family_ds_ref(cfg: Dict[str, Any], family: str) -> Dict[str, str]:
+    """Datasource reference for one LGTM family from the config -- the
+    same {type, uid} shape grafana.builder._Build.ds_ref emits, so a
+    converted panel points at exactly what the auto-converter would."""
+    ds = (cfg.get("datasources") or {}).get(family, {})
+    return {"type": ds.get("type", family), "uid": ds.get("uid", "")}
+
+
+def _make_convert_target(ds_family: str, ref_id: str, expr: str,
+                         ds_ref: Dict[str, str]) -> Dict[str, Any]:
+    """A real Grafana query target for ``ds_family`` carrying ``expr``.
+    The query text lives under the key Grafana reads for that family:
+    "query" (TraceQL) for tempo, "expr" for prometheus/loki."""
+    tgt: Dict[str, Any] = {"refId": ref_id, "datasource": dict(ds_ref)}
+    if ds_family == "tempo":
+        tgt.update({"query": expr, "queryType": "traceql",
+                    "tableType": "traces", "filters": [], "limit": 20})
+    elif ds_family == "loki":
+        tgt.update({"expr": expr, "queryType": "range",
+                    "legendFormat": "", "editorMode": "code"})
+    else:
+        tgt.update({"expr": expr, "legendFormat": "__auto",
+                    "editorMode": "code", "range": True,
+                    "instant": False, "format": "time_series"})
+    return tgt
+
+
+_FAMILY_DEFAULT_VIZ = {"prometheus": "timeseries", "loki": "logs",
+                       "tempo": "table"}
+
+
+def _placeholder_viz(store, slug: str, panel: Dict[str, Any],
+                     ds_family: str) -> str:
+    """The Grafana panel type a converted text-placeholder should
+    become: the original NR visualization when recognized, else a
+    sensible per-family default. "" when the panel is not a text
+    placeholder (its existing type is kept)."""
+    if panel.get("type") != "text":
+        return ""
+    from ..grafana.builder import _panel_type_for
+    viz = ""
+    wr = (_artifact(store, slug, "widget-report") or {}).get(
+        "widgets", [])
+    for w in wr:
+        if w.get("panel_id") == panel.get("id"):
+            viz = _panel_type_for(w.get("visualization") or "")
+            break
+    return viz or _FAMILY_DEFAULT_VIZ.get(ds_family, "timeseries")
+
+
+def _apply_placeholder_viz(panel: Dict[str, Any], ptype: str) -> None:
+    """Turn a text placeholder into a real ``ptype`` panel: proper
+    options/fieldConfig, no leftover markdown content."""
+    from ..grafana.builder import (_base_thresholds, _legend,
+                                    _timeseries_custom)
+    panel["type"] = ptype
+    panel["transparent"] = False
+    fc: Dict[str, Any] = {"defaults": {}, "overrides": []}
+    if ptype == "timeseries":
+        fc["defaults"] = {"color": {"mode": "palette-classic"},
+                          "thresholds": _base_thresholds(),
+                          "mappings": [], "custom": _timeseries_custom()}
+        panel["options"] = {"legend": _legend(),
+                            "tooltip": {"mode": "multi", "sort": "desc"}}
+    elif ptype == "logs":
+        panel["options"] = {"showTime": True, "showLabels": False,
+                            "showCommonLabels": False,
+                            "wrapLogMessage": True,
+                            "prettifyLogMessage": False,
+                            "enableLogDetails": True,
+                            "dedupStrategy": "none",
+                            "sortOrder": "Descending"}
+    elif ptype == "table":
+        panel["options"] = {"showHeader": True, "cellHeight": "sm",
+                            "footer": {"show": False,
+                                       "reducer": ["sum"],
+                                       "countRows": False,
+                                       "fields": ""},
+                            "sortBy": []}
+    else:
+        panel["options"] = {}
+    panel["fieldConfig"] = fc
+
+
+def _write_package_datatest(store, slug: str,
+                            dash: Dict[str, Any]) -> str:
+    """Regenerate <package>/datatest.json from the (edited) dashboard so
+    the bundled smoke test stays in step with a converted panel."""
+    pkg = _package_dir(store, slug)
+    if not pkg:
+        return ""
+    artifacts = _lazy("artifacts")
+    build = getattr(artifacts, "build_datatest", None)
+    if build is None:  # sibling mid-build: skip, never break the edit
+        return ""
+    wr = (_artifact(store, slug, "widget-report") or {}).get(
+        "widgets", [])
+    path = os.path.join(pkg, "datatest.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(build(dash, wr), f, indent=2, ensure_ascii=False)
+        f.write("\n")
+    return path
+
+
+def _merge_datatest(store, slug: str,
+                    results: List[Dict[str, Any]]) -> None:
+    """Fold single-target test ``results`` into the stored datatest
+    artifact (replace matching panel_id/refId rows, else append)."""
+    try:
+        dt = store.get_artifact(slug, "datatest") or {}
+        merged = dt.get("results", [])
+        for r in results:
+            for i, old in enumerate(merged):
+                if (old.get("panel_id") == r.get("panel_id")
+                        and old.get("refId") == r.get("refId")):
+                    merged[i] = r
+                    break
+            else:
+                merged.append(r)
+        counts: Dict[str, int] = {}
+        for r in merged:
+            s = r.get("status", "?")
+            counts[s] = counts.get(s, 0) + 1
+        store.save_artifact(slug, "datatest",
+                            {"results": merged, "summary": counts})
+    except Exception:
+        pass
+
+
+def _widget_nrql(w: Dict[str, Any]) -> str:
+    """The widget's raw NRQL as one string (the report stores a list)."""
+    raw = w.get("nrql")
+    if isinstance(raw, list):
+        return "; ".join(str(q) for q in raw if q)
+    return str(raw) if raw else ""
+
+
+def _widget_family(w: Dict[str, Any], panel: Dict[str, Any]) -> str:
+    """Best LGTM family for a flagged widget: the converter's own
+    target datasource when one exists, else the panel's target
+    datasource type, else prometheus (metrics are the common case)."""
+    for qq in w.get("queries") or []:
+        fam = qq.get("datasource")
+        if fam in ("prometheus", "loki", "tempo"):
+            return fam
+        if fam == "newrelic":
+            return "prometheus"
+    for t in panel.get("targets") or []:
+        typ = ((t.get("datasource") or {}).get("type") or "").lower()
+        if "loki" in typ:
+            return "loki"
+        if "tempo" in typ:
+            return "tempo"
+        if "prometheus" in typ:
+            return "prometheus"
+    return "prometheus"
+
+
+def _first_ref_id(panel: Dict[str, Any]) -> str:
+    for t in panel.get("targets") or []:
+        if t.get("refId"):
+            return t["refId"]
+    return "A"
+
+
+def _first_expr(panel: Dict[str, Any]) -> str:
+    for t in panel.get("targets") or []:
+        for k in _QUERY_KEYS:
+            v = t.get(k)
+            if isinstance(v, str) and v.strip():
+                return v
+    return ""
+
+
+def _flagged_convert_context(store, slug: str, w: Dict[str, Any],
+                             panel: Dict[str, Any],
+                             instance: Optional[List[Dict[str, Any]]]) \
+        -> Tuple[Dict[str, Any], str, str]:
+    """Build the conversion-mode AI context (SEAM-1 keys) for one
+    flagged widget-report row. Returns (context, ds_family, ref_id)."""
+    ds_family = _widget_family(w, panel)
+    ref_id = _first_ref_id(panel)
+    ctx: Dict[str, Any] = {"mode": "convert", "ds_family": ds_family}
+    notes = w.get("notes")
+    if isinstance(notes, list) and notes:
+        ctx["translation_notes"] = notes
+    raw = _widget_nrql(w)
+    if raw:
+        ctx["original_nrql"] = raw
+    if w.get("confidence"):
+        ctx["confidence"] = w["confidence"]
+    title = w.get("widget") or w.get("widget_title")
+    if title:
+        ctx["panel"] = title
+    expr = _first_expr(panel)
+    if expr:
+        ctx["expr"] = expr
+    if instance:
+        ctx["instance"] = {"datasources": instance}
+    return ctx, ds_family, ref_id
+
+
+def _normalize_nr_json(nr_json: Any) -> List[Dict[str, Any]]:
+    """Validate a pasted ``nr_json`` (a NR dashboard object OR a list of
+    them) and return the list of dashboard dicts, raising a clear 400
+    when anything is not a New Relic dashboard."""
+    from ..model import parse_nr_dashboard
+    is_list = isinstance(nr_json, list)
+    if isinstance(nr_json, dict):
+        items = [nr_json]
+    elif is_list:
+        items = nr_json
+    else:
+        raise ApiError("nr_json must be a New Relic dashboard object or "
+                       "a list of dashboards", 400)
+    if not items:
+        raise ApiError("nr_json is empty -- paste at least one New "
+                       "Relic dashboard", 400)
+    out: List[Dict[str, Any]] = []
+    for i, item in enumerate(items):
+        where = "[%d]" % i if is_list else ""
+        if not isinstance(item, dict):
+            raise ApiError("nr_json%s is not a dashboard object" % where,
+                           400)
+        try:
+            parse_nr_dashboard(item)
+        except ValueError as e:
+            raise ApiError("nr_json%s is not a valid New Relic "
+                           "dashboard: %s" % (where, e), 400)
+        out.append(item)
+    return out
+
+
 def _collect_json_files(input_dir: str) -> List[str]:
     if not os.path.isdir(input_dir):
         raise ApiError("input directory not found: %s" % input_dir, 400)
@@ -744,8 +977,14 @@ def _job_nr_fetch(job: _Job, body: Dict[str, Any]) -> Dict[str, Any]:
     return {"written": written, "failed": failed, "out": out}
 
 
-def _job_convert(job: _Job, body: Dict[str, Any], store) \
+def _job_convert(job: _Job, body: Dict[str, Any], store,
+                 pasted: Optional[List[Dict[str, Any]]] = None) \
         -> Dict[str, Any]:
+    """Convert one or more NR dashboards. Reads .json files from an
+    input directory by default; when ``pasted`` is given (the SEAM-2
+    ``nr_json`` branch) it converts those in-memory dashboards instead
+    and never touches the filesystem for input. Output packaging and
+    persistence are identical either way."""
     artifacts = _lazy("artifacts")
     reqmod = _lazy("requirements")
     from ..config import load_config
@@ -763,15 +1002,31 @@ def _job_convert(job: _Job, body: Dict[str, Any], store) \
         cfg = load_config(config_path)
     except (FileNotFoundError, json.JSONDecodeError) as e:
         raise ApiError("config: %s" % e, 400)
-    files = _collect_json_files(input_dir)
+
+    # inputs: (source label, zero-arg loader returning the NR json).
+    inputs: List[Tuple[str, Callable[[], Any]]] = []
+    if pasted is not None:
+        for i, obj in enumerate(pasted):
+            inputs.append(("pasted[%d]" % i, (lambda o=obj: o)))
+        run_meta: Dict[str, Any] = {"pasted": len(pasted),
+                                    "out_dir": out_dir,
+                                    "package": package}
+        job.add("Converting %d pasted dashboard(s)" % len(inputs))
+    else:
+        for path in _collect_json_files(input_dir):
+            def _load(p=path):
+                with open(p, encoding="utf-8") as f:
+                    return json.load(f)
+            inputs.append((path, _load))
+        run_meta = {"input_dir": input_dir, "out_dir": out_dir,
+                    "package": package}
+        job.add("Converting %d file(s) from %s"
+                % (len(inputs), input_dir))
     os.makedirs(out_dir, exist_ok=True)
-    job.add("Converting %d file(s) from %s" % (len(files), input_dir))
 
     run_id = None
     try:
-        run_id = store.record_run("convert", {"input_dir": input_dir,
-                                              "out_dir": out_dir,
-                                              "package": package})
+        run_id = store.record_run("convert", run_meta)
     except Exception:
         pass
 
@@ -779,15 +1034,15 @@ def _job_convert(job: _Job, body: Dict[str, Any], store) \
     results: List[Dict[str, Any]] = []
     failed: List[Dict[str, str]] = []
     seen_slugs: Dict[str, int] = {}
-    for path in files:
+    for source, loader in inputs:
+        label = os.path.basename(source)
         try:
-            with open(path, encoding="utf-8") as f:
-                data = json.load(f)
+            data = loader()
             nr = parse_nr_dashboard(data)
             outputs = build_dashboards(nr, cfg)
-        except Exception as e:  # one bad file must not kill the batch
-            job.add("FAIL %s: %s" % (os.path.basename(path), _errmsg(e)))
-            failed.append({"source": path, "error": _errmsg(e)})
+        except Exception as e:  # one bad input must not kill the batch
+            job.add("FAIL %s: %s" % (label, _errmsg(e)))
+            failed.append({"source": source, "error": _errmsg(e)})
             continue
         for filename, dash, report in outputs:
             slug = filename[:-5] if filename.endswith(".json") \
@@ -806,7 +1061,7 @@ def _job_convert(job: _Job, body: Dict[str, Any], store) \
                     json.dump(dash, f, indent=2, ensure_ascii=False)
                     f.write("\n")
             _persist_dashboard(store, slug, dash.get("title", slug),
-                               path, getattr(nr, "guid", "") or "",
+                               source, getattr(nr, "guid", "") or "",
                                dash, report, reqs, pkg_dir,
                                nr_raw=data if isinstance(data, dict)
                                else None)
@@ -822,7 +1077,7 @@ def _job_convert(job: _Job, body: Dict[str, Any], store) \
             entries.append(entry)
             results.append(entry)
             job.add("%s -> %s  (%s)"
-                    % (os.path.basename(path), pkg_dir or slug + ".json",
+                    % (label, pkg_dir or slug + ".json",
                        ", ".join("%d %s" % (v, k)
                                  for k, v in sorted(counts.items()))
                        or "no widgets"))
@@ -1283,6 +1538,76 @@ def _job_troubleshoot(job: _Job, body: Dict[str, Any], store,
     return result
 
 
+def _job_ai_convert_panels(job: _Job, body: Dict[str, Any], store,
+                           assistant) -> Dict[str, Any]:
+    """Iterate the dashboard's needs-review/untranslatable panels and
+    ask the AI backend, in conversion mode, for a higher-fidelity (or
+    from-scratch) query per panel. Returns PROPOSALS only -- nothing is
+    applied to the dashboard; the UI reviews then applies each via
+    /api/panel/convert or /api/panel/update."""
+    slug = body.get("slug") or ""
+    if not slug:
+        raise ApiError("missing 'slug'", 400)
+    dash = _dash_from_row(slug, store.get_dashboard(slug))
+    wr = (_artifact(store, slug, "widget-report") or {}).get(
+        "widgets", [])
+    instance: Optional[List[Dict[str, Any]]] = None
+    if SESSION.grafana_url:
+        try:
+            live = _grafana_live()
+            instance = [{"name": d.get("name"), "type": d.get("type"),
+                         "uid": d.get("uid")}
+                        for d in live.datasources()]
+        except Exception:
+            instance = None  # AI conversion works without a live stack
+    flagged = [w for w in wr
+               if w.get("confidence") in ("needs-review",
+                                          "untranslatable")]
+    job.add("Asking the %s AI backend to convert %d flagged panel(s)"
+            % (SESSION.ai_backend(), len(flagged)))
+    proposals: List[Dict[str, Any]] = []
+    for w in flagged:
+        pid = w.get("panel_id")
+        try:
+            panel = _find_panel(dash, pid)
+        except ApiError:
+            continue  # report row without a matching panel -- skip
+        ctx, ds_family, ref_id = _flagged_convert_context(
+            store, slug, w, panel, instance)
+        title = w.get("widget") or w.get("widget_title") or ""
+        proposal: Dict[str, Any] = {
+            "panel_id": pid, "refId": ref_id, "ds_family": ds_family,
+            "panel_title": title,
+            "original_nrql": ctx.get("original_nrql", ""),
+            "notes": ctx.get("translation_notes", []),
+            "converter_confidence": w.get("confidence"),
+        }
+        try:
+            res = assistant.suggest_fix(ctx)
+        except Exception as e:
+            proposal.update({"proposed_expr": None, "explanation": "",
+                             "confidence": "", "actions": [],
+                             "error": _errmsg(e)})
+            job.add("panel %s: AI error: %s" % (pid, _errmsg(e)))
+            proposals.append(proposal)
+            continue
+        proposal.update({
+            "proposed_expr": res.get("fixed_expr"),
+            "explanation": res.get("explanation", ""),
+            "confidence": res.get("confidence", ""),
+            "actions": res.get("actions") or [],
+        })
+        proposals.append(proposal)
+        job.add("panel %s (%s): %s"
+                % (pid, w.get("confidence"),
+                   res.get("fixed_expr") or "manual steps only"))
+    SESSION.status["ai"] = "ok"
+    job.add("Prepared %d proposal(s) -- review and apply each"
+            % len(proposals))
+    return {"slug": slug, "proposals": proposals,
+            "count": len(proposals)}
+
+
 def _job_tco(job: _Job, body: Dict[str, Any], store) -> Dict[str, Any]:
     """Discover AWS spend over time via Cost Explorer (read-only, local
     auth), attribute the observability share, correlate it with the
@@ -1634,8 +1959,10 @@ class Handler(BaseHTTPRequestHandler):
             "/api/fix": self._post_fix,
             "/api/heal": self._post_heal,
             "/api/panel/update": self._post_panel_update,
+            "/api/panel/convert": self._post_panel_convert,
             "/api/panel/test": self._post_panel_test,
             "/api/ai/suggest": self._post_ai_suggest,
+            "/api/ai/convert-panels": self._post_ai_convert_panels,
             "/api/ai/chat": self._post_ai_chat,
             "/api/ai/test": self._post_ai_test,
             "/api/deepdive": self._post_deepdive,
@@ -2288,6 +2615,17 @@ class Handler(BaseHTTPRequestHandler):
     def _post_convert(self) -> None:
         body = self._body()
         store = self.store
+        nr_json = body.get("nr_json")
+        if nr_json is not None:
+            # SEAM-2: convert pasted NR json directly (no filesystem
+            # input). Validate synchronously so a non-dashboard is a
+            # clear 400 rather than a job that quietly errors.
+            pasted = _normalize_nr_json(nr_json)
+            self._json({"job": _start_job(
+                "convert",
+                lambda job: _job_convert(job, body, store,
+                                         pasted=pasted))})
+            return
         self._json({"job": _start_job(
             "convert", lambda job: _job_convert(job, body, store))})
 
@@ -2668,26 +3006,7 @@ class Handler(BaseHTTPRequestHandler):
             results = _single_target_test(live, dash, panel, target,
                                           expr)
             resp["test"] = results
-            try:
-                dt = store.get_artifact(slug, "datatest") or {}
-                merged = dt.get("results", [])
-                for r in results:
-                    for i, old in enumerate(merged):
-                        if (old.get("panel_id") == r.get("panel_id")
-                                and old.get("refId") == r.get("refId")):
-                            merged[i] = r
-                            break
-                    else:
-                        merged.append(r)
-                counts: Dict[str, int] = {}
-                for r in merged:
-                    s = r.get("status", "?")
-                    counts[s] = counts.get(s, 0) + 1
-                store.save_artifact(slug, "datatest",
-                                    {"results": merged,
-                                     "summary": counts})
-            except Exception:
-                pass
+            _merge_datatest(store, slug, results)
         if body.get("push"):
             live = _grafana_live()
             res = live.update_dashboard(
@@ -2697,6 +3016,78 @@ class Handler(BaseHTTPRequestHandler):
                         "grafana:%s" % SESSION.grafana_url, "",
                         res.get("url", "updated"),
                         why="pushed edited query",
+                        source=body.get("source", "user"))
+            resp["push"] = res
+        self._json(resp)
+
+    def _post_panel_convert(self) -> None:
+        """SEAM-3: give a target-less (untranslatable) panel a real
+        query. Attaches a family datasource ref + expr, sets the panel
+        datasource, flips a text placeholder to the proper viz where
+        known, and rewrites the stored + package dashboard.json +
+        datatest.json. Returns the updated panel. AI conversions are
+        proposals -- this route only runs on an explicit apply."""
+        body = self._body()
+        slug = body.get("slug") or ""
+        expr = body.get("expr")
+        ds_family = str(body.get("ds_family") or "").strip().lower()
+        if not slug or expr is None or not ds_family:
+            raise ApiError("missing 'slug', 'expr' or 'ds_family'", 400)
+        if ds_family not in ("prometheus", "loki", "tempo"):
+            raise ApiError("ds_family must be prometheus, loki or tempo",
+                           400)
+        store = self.store
+        row = store.get_dashboard(slug)
+        dash = _dash_from_row(slug, row)
+        panel = _find_panel(dash, body.get("panel_id"))
+        cfg = _load_cfg()
+        ds_ref = _family_ds_ref(cfg, ds_family)
+        ref_id = body.get("refId") or "A"
+        target = _make_convert_target(ds_family, ref_id, expr, ds_ref)
+        was_type = panel.get("type")
+        viz = _placeholder_viz(store, slug, panel, ds_family)
+        if viz:
+            _apply_placeholder_viz(panel, viz)
+            title = panel.get("title", "")
+            for marker in (" [MANUAL]", " [NRQL PASSTHROUGH]",
+                           " [REVIEW]"):
+                title = title.replace(marker, "")
+            panel["title"] = title
+        panel["targets"] = [target]
+        panel["datasource"] = dict(ds_ref)
+        store.upsert_dashboard(slug,
+                               row.get("title", dash.get("title", slug)),
+                               row.get("source", ""),
+                               row.get("nr_guid", ""), dash)
+        pkg_dash = _write_package_dashboard(store, slug, dash)
+        pkg_dt = _write_package_datatest(store, slug, dash)
+        clog = _lazy("changelog").ChangeLog(store)
+        clog.record(slug, "query-edit",
+                    "panel %s [%s] convert->%s"
+                    % (body.get("panel_id"), ref_id, ds_family),
+                    "", expr, why=body.get("why", "AI conversion"),
+                    source=body.get("source", "user"))
+        resp: Dict[str, Any] = {
+            "ok": True, "slug": slug, "panel_id": panel.get("id"),
+            "panel": panel, "ds_family": ds_family, "refId": ref_id,
+            "was_type": was_type, "type": panel.get("type"),
+            "after": expr, "package_file": pkg_dash,
+            "datatest_file": pkg_dt}
+        if body.get("retest"):
+            live = _grafana_live()
+            results = _single_target_test(live, dash, panel, target,
+                                          expr)
+            resp["test"] = results
+            _merge_datatest(store, slug, results)
+        if body.get("push"):
+            live = _grafana_live()
+            res = live.update_dashboard(
+                dash, message="nr2grafana: converted panel %s"
+                % body.get("panel_id"))
+            clog.record(slug, "dashboard-updated",
+                        "grafana:%s" % SESSION.grafana_url, "",
+                        res.get("url", "updated"),
+                        why="pushed converted panel",
                         source=body.get("source", "user"))
             resp["push"] = res
         self._json(resp)
@@ -2719,7 +3110,9 @@ class Handler(BaseHTTPRequestHandler):
         body = self._body()
         ai = _ai()
         ctx: Dict[str, Any] = dict(body.get("context") or {})
-        for key in ("panel", "expr", "error", "datasource", "nrql"):
+        for key in ("panel", "expr", "error", "datasource", "nrql",
+                    "mode", "ds_family", "original_nrql",
+                    "translation_notes", "confidence"):
             if body.get(key) is not None:
                 ctx[key] = body[key]
         slug = body.get("slug") or ""
@@ -2745,8 +3138,27 @@ class Handler(BaseHTTPRequestHandler):
         SESSION.status["ai"] = "ok"
         self._json(res)
 
+    def _post_ai_convert_panels(self) -> None:
+        """Batch conversion-mode AI over a dashboard's flagged panels.
+        Returns a job whose result is a list of PROPOSALS -- nothing is
+        applied until the user applies each via panel/convert or
+        panel/update."""
+        body = self._body()
+        ai = _ai()  # 400 fast when no AI backend is configured
+        store = self.store
+        self._json({"job": _start_job(
+            "ai-convert-panels",
+            lambda job: _job_ai_convert_panels(job, body, store, ai))})
+
     def _enrich_ai_context(self, ctx: Dict[str, Any], slug: str,
                            panel_id: Any, ref_id: str) -> None:
+        """Fold the stored converter output for one panel into the AI
+        context. Beyond the fix-mode fields (requirements, nrql, panel
+        title, datasource, error, expr) this fills the SEAM-1
+        conversion keys the ai module consumes -- mode (default "fix"),
+        translation_notes, original_nrql, ds_family and confidence --
+        from the widget-report row so convert-mode has the reasons the
+        auto-converter flagged the panel."""
         try:
             reqs = self.store.get_artifact(slug, "requirements")
             if reqs:
@@ -2759,16 +3171,33 @@ class Handler(BaseHTTPRequestHandler):
                 if w.get("panel_id") == panel_id:
                     if w.get("nrql"):
                         ctx.setdefault("nrql", w.get("nrql"))
+                    raw = _widget_nrql(w)
+                    if raw:
+                        ctx.setdefault("original_nrql", raw)
+                    notes = w.get("notes")
+                    if isinstance(notes, list) and notes:
+                        ctx.setdefault("translation_notes", notes)
+                    if w.get("confidence"):
+                        ctx.setdefault("confidence", w.get("confidence"))
                     title = w.get("widget") or w.get("widget_title")
                     if title:
                         ctx.setdefault("panel", title)
-                    if not ctx.get("datasource"):
-                        for qq in w.get("queries", []):
-                            ctx["datasource"] = qq.get("datasource")
-                            break
+                    fam = None
+                    for qq in w.get("queries", []):
+                        fam = qq.get("datasource")
+                        break
+                    if fam:
+                        if not ctx.get("datasource"):
+                            ctx["datasource"] = fam
+                        ctx.setdefault(
+                            "ds_family",
+                            "prometheus" if fam == "newrelic" else fam)
                     break
         except Exception:
             pass
+        # mode defaults to "fix"; the UI sends "convert" for the
+        # needs-review / untranslatable panels it wants re-translated.
+        ctx.setdefault("mode", "fix")
         try:
             dt = self.store.get_artifact(slug, "datatest") or {}
             for r in dt.get("results", []):
