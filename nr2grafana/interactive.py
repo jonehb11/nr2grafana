@@ -265,6 +265,7 @@ class Wizard:
                     "🕵️   Investigate a cost anomaly (RCA + mitigation)",
                     "🌐  Launch web UI",
                     "⚙️   Choose / create a mapping config",
+                    "🤝  Expose to AI (MCP server / API)",
                     "👋  Quit",
                 ])
                 if choice == 0:
@@ -310,6 +311,8 @@ class Wizard:
                     self.flow_web()
                 elif choice == 19:
                     self.flow_config()
+                elif choice == 20:
+                    self.flow_expose_ai()
                 else:
                     print(dim("bye!"))
                     return 0
@@ -1014,6 +1017,46 @@ class Wizard:
         return cmd_web(argparse.Namespace(host="127.0.0.1",
                                           port=int(port_raw),
                                           no_browser=False))
+
+    # -- expose to AI (MCP server / HTTP API) -------------------------------
+
+    def flow_expose_ai(self) -> int:
+        header("Expose nr2grafana to AI (MCP server / HTTP API)")
+        print(dim("Two ways to let a local AI or a script drive every "
+                  "nr2grafana capability. Secrets stay in your "
+                  "environment; the API token is never written to disk."))
+        print()
+        print(bold("1) MCP server (stdio) -- for Claude / Kiro"))
+        print(dim("   Add this to your MCP client config. Secrets come "
+                  "from your environment, never the file:"))
+        snippet = {
+            "mcpServers": {
+                "nr2grafana": {
+                    "command": "python3",
+                    "args": ["-m", "nr2grafana", "mcp", "serve"],
+                    "env": {
+                        "GRAFANA_URL": self.recall(
+                            "grafana_url", "http://localhost:3000"),
+                    },
+                }
+            }
+        }
+        print(json.dumps(snippet, indent=2))
+        print(dim("   (nr2grafana mcp config also wires this up for you.)"))
+        print()
+        print(bold("2) Headless HTTP API (bearer token)"))
+        print(dim("   Generate a token, export it, then start the API. "
+                  "The server never prints the token value:"))
+        port = self.recall("web_port", "8765")
+        print("   export N2G_API_TOKEN=\"$(python3 -c 'import secrets; "
+              "print(secrets.token_urlsafe(32))')\"")
+        print("   nr2grafana api serve --host 127.0.0.1 --port %s" % port)
+        print(dim("   Clients then send:  Authorization: Bearer "
+                  "$N2G_API_TOKEN"))
+        print(dim("   A non-loopback --host is refused unless a token is "
+                  "set. GET stays open on loopback; state-changing "
+                  "requests always need the token off loopback."))
+        return 0
 
     # -- import -------------------------------------------------------------
 

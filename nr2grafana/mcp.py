@@ -66,6 +66,15 @@ AWS_REGION_ENV = "AWS_REGION"
 AWS_PROFILE_REF = "${AWS_PROFILE}"
 AWS_REGION_REF = "${AWS_REGION}"
 
+# nr2grafana's OWN MCP server: run the CLI's stdio MCP server as a Python
+# module so a local AI can drive every nr2grafana capability. It reads
+# only non-secret PREFERENCES from the env (Grafana URL, AWS profile /
+# region); every secret (Grafana token, New Relic key, API token) is read
+# by the process from the user's own environment at run time and is NEVER
+# embedded -- not even as an env reference -- in the generated config.
+N2G_MCP_COMMAND = "python3"
+N2G_MCP_ARGS = ["-m", "nr2grafana", "mcp", "serve"]
+
 DEFAULT_TIMEOUT = 30
 _STDERR_TAIL = 500
 _MAX_MESSAGE = 8 * 1024 * 1024
@@ -584,6 +593,30 @@ def _grafana_server_entry(grafana_url: str, kind: str) -> Dict[str, Any]:
     return entry
 
 
+def _n2g_server_entry(grafana_url: str, kind: str) -> Dict[str, Any]:
+    """nr2grafana's own stdio MCP server entry (drives every capability).
+
+    Only NON-SECRET preferences are referenced through ``${...}`` env
+    interpolation: the Grafana URL and the AWS profile / region. Secrets
+    (Grafana token, New Relic key, API token) are read by the launched
+    process from the user's own environment -- they are NEVER written into
+    the returned config, not even as an env reference.
+    """
+    entry: Dict[str, Any] = {
+        "command": N2G_MCP_COMMAND,
+        "args": list(N2G_MCP_ARGS),
+        "env": {
+            GRAFANA_URL_ENV: grafana_url or "${%s}" % GRAFANA_URL_ENV,
+            AWS_PROFILE_ENV: AWS_PROFILE_REF,
+            AWS_REGION_ENV: AWS_REGION_REF,
+        },
+    }
+    if kind == "kiro":
+        entry["disabled"] = False
+        entry["autoApprove"] = []
+    return entry
+
+
 def _context_server_entry(context_path: str, kind: str) -> Dict[str, Any]:
     """A read-only filesystem server exposing the nr2grafana context.
 
@@ -653,7 +686,8 @@ def generate_mcp_config(grafana_url: str = "", kind: str = "claude",
                         n2g_context_path: str = "",
                         include_grafana: bool = True,
                         include_aws_cost: bool = False,
-                        include_aws_cloudwatch: bool = False
+                        include_aws_cloudwatch: bool = False,
+                        include_n2g: bool = True
                         ) -> Dict[str, Any]:
     """Build an MCP servers config for a local AI client.
 
@@ -671,7 +705,12 @@ def generate_mcp_config(grafana_url: str = "", kind: str = "claude",
     an ``aws-cloudwatch`` server (awslabs CloudWatch MCP via ``uvx``, for
     metrics + Logs Insights over VPC Flow Logs) is added. Both read
     ``AWS_PROFILE`` / ``AWS_REGION`` from the local credential chain --
-    AWS keys are NEVER written into the returned config.
+    AWS keys are NEVER written into the returned config. When
+    ``include_n2g`` is true (the default) an ``nr2grafana`` server running
+    ``python3 -m nr2grafana mcp serve`` is added so the AI can drive every
+    nr2grafana capability directly; its env references only non-secret
+    preferences (Grafana URL, AWS profile / region) -- no secret is ever
+    embedded.
 
     Returns a plain dict ready to ``json.dumps`` into the client's MCP
     config file.
@@ -680,6 +719,8 @@ def generate_mcp_config(grafana_url: str = "", kind: str = "claude",
         raise MCPError("unknown MCP config kind %r -- use one of: %s"
                        % (kind, ", ".join(_VALID_KINDS)))
     servers: Dict[str, Any] = {}
+    if include_n2g:
+        servers["nr2grafana"] = _n2g_server_entry(grafana_url, kind)
     if include_grafana:
         servers["grafana"] = _grafana_server_entry(grafana_url, kind)
     if include_aws_cost:

@@ -20,6 +20,7 @@ Design notes:
 from __future__ import annotations
 
 import copy
+import hmac
 import importlib
 import io
 import json
@@ -69,6 +70,73 @@ _COST_CONFIG_FILES = {
     "prometheus-relabel": "prometheus-relabel.yaml",
     "mimir-limits": "mimir-limits.yaml",
 }
+
+
+# Stable, machine-readable description of the programmatic HTTP API for
+# GET /api/spec, so an AI/script can discover what to call. This is a
+# curated contract: (method, path, unauthed_on_loopback, summary). Keep
+# it stable across releases; add rows, avoid renaming existing paths.
+API_SPEC_ENDPOINTS = (
+    ("GET", "/api/health", True,
+     "Liveness/readiness probe. Unauthed on loopback."),
+    ("GET", "/api/spec", True,
+     "This machine-readable API description (routes + summaries)."),
+    ("GET", "/api/state", False,
+     "App version, session (no secrets), connection status, feature "
+     "flags and db counts."),
+    ("GET", "/api/dashboards", False,
+     "List stored converted dashboards with per-slug summaries."),
+    ("GET", "/api/dashboards/<slug>", False,
+     "One stored dashboard plus its artifacts (requirements, "
+     "widget-report, datatest, parity, diagnosis, samples, review)."),
+    ("GET", "/api/jobs/<id>", False,
+     "Poll a background job: {status, log, result, error}."),
+    ("GET", "/api/readiness", False,
+     "Migration-readiness grade for ?slug=."),
+    ("GET", "/api/ai/context", False,
+     "AI context bundle for ?slug= (?format=markdown for text)."),
+    ("GET", "/api/deepdive", False,
+     "Stored LGTM stack deep-dive (and packing) for ?slug=."),
+    ("GET", "/api/tco", False,
+     "Stored TCO report (instance-wide by default)."),
+    ("POST", "/api/settings", False,
+     "Update the in-memory session (keys stay in memory only)."),
+    ("POST", "/api/convert", False,
+     "Convert NR dashboards from an input_dir or pasted nr_json -> "
+     "job. Body: {input_dir?|nr_json?, out_dir?, package?}."),
+    ("POST", "/api/nr/list", False,
+     "List New Relic dashboards (needs NR key) -> job."),
+    ("POST", "/api/nr/fetch", False,
+     "Fetch NR dashboards to disk (read-only) -> job. Body: "
+     "{guids?, out?}."),
+    ("POST", "/api/grafana/test", False,
+     "Data-test a stored dashboard against Grafana -> job. Body: "
+     "{slug}."),
+    ("POST", "/api/grafana/import", False,
+     "Import stored dashboards into Grafana -> job. Body: "
+     "{slug|slugs, folder?, overwrite?}."),
+    ("POST", "/api/parity", False,
+     "NR-vs-Grafana parity for a slug -> job."),
+    ("POST", "/api/compare", False,
+     "Side-by-side comparison for a slug -> job."),
+    ("POST", "/api/samples", False,
+     "Pull raw samples for a slug -> job."),
+    ("POST", "/api/diagnose", False,
+     "Diagnose a stored dashboard -> job. Body: {slug}."),
+    ("POST", "/api/deepdive", False,
+     "Deep-dive the LGTM stack -> job. Body: {prom?, mimir?, loki?, "
+     "kube?}."),
+    ("POST", "/api/cost", False,
+     "Cost estimate + safe optimization recommendations -> job."),
+    ("POST", "/api/tco", False,
+     "AWS TCO analysis (read-only Cost Explorer) -> job."),
+    ("POST", "/api/rca", False,
+     "Root-cause a cost anomaly (pasted report or anomaly_id) -> job."),
+    ("POST", "/api/mitigate", False,
+     "Plan reliability-safe mitigations from an RCA -> job."),
+    ("POST", "/api/mcp/config", False,
+     "Generate an MCP client config (no secrets embedded)."),
+)
 
 
 def _lazy(name):
@@ -2148,6 +2216,37 @@ class Handler(BaseHTTPRequestHandler):
             return False
         return True
 
+    def _peer_is_loopback(self) -> bool:
+        """True when the TCP peer is the loopback interface. On the
+        default 127.0.0.1 bind this is always true; it only matters when
+        the server was deliberately bound to a non-loopback host (which
+        requires an API token) so remote peers can be told apart from
+        local ones."""
+        peer = ""
+        if self.client_address:
+            peer = self.client_address[0] or ""
+        if peer in ("127.0.0.1", "::1", "localhost",
+                    "::ffff:127.0.0.1"):
+            return True
+        return peer.startswith("127.")
+
+    def _valid_bearer_token(self) -> bool:
+        """True when the request carries an Authorization: Bearer token
+        matching the configured N2G_API_TOKEN. Constant-time compare; the
+        token is never logged or echoed. Returns False when no token is
+        configured (auth degrades to today's same-origin-only behavior)."""
+        api_token = getattr(self.server, "api_token", "") or ""
+        if not api_token:
+            return False
+        header = self.headers.get("Authorization", "") or ""
+        prefix = "Bearer "
+        if not header.startswith(prefix):
+            return False
+        presented = header[len(prefix):].strip()
+        if not presented:
+            return False
+        return hmac.compare_digest(presented, api_token)
+
     def _security_guard(self) -> None:
         """Refuse DNS-rebinding and cross-site requests BEFORE dispatch.
 
@@ -2156,12 +2255,42 @@ class Handler(BaseHTTPRequestHandler):
         (ii) State-changing methods (POST/PUT/DELETE) must additionally
         carry a same-origin Origin (or, absent that, Referer) so a
         malicious page cannot drive this API from the user's browser.
-        GET/HEAD are exempt from (ii) so the page and its data load."""
-        if not self._host_allowed(self.headers.get("Host", "")):
+        GET/HEAD are exempt from (ii) so the page and its data load.
+
+        A valid ``Authorization: Bearer <N2G_API_TOKEN>`` marks a trusted
+        programmatic (non-browser) client and BYPASSES (ii) -- such
+        clients send no Origin. When the server was bound to a
+        non-loopback host (only possible with a token configured), the
+        token becomes the security boundary: the loopback-Host guard (i)
+        is relaxed and every request from a remote peer must present the
+        token."""
+        has_token = self._valid_bearer_token()
+        nonloopback = bool(getattr(self.server, "bound_nonloopback",
+                                   False))
+        state_changing = self.command in ("POST", "PUT", "DELETE")
+
+        # (i) Host / DNS-rebinding guard. A non-loopback bind (which
+        # required a token) makes the token the guard, so any Host is
+        # accepted there; otherwise only loopback Host names pass.
+        if not nonloopback \
+                and not self._host_allowed(self.headers.get("Host", "")):
             raise ApiError("forbidden: unexpected Host header %r -- this "
                            "server only answers loopback requests"
                            % self.headers.get("Host", ""), 403)
-        if self.command not in ("POST", "PUT", "DELETE"):
+
+        # Remote peers (only reachable on a non-loopback bind) must
+        # always present a valid token -- GET included.
+        if not self._peer_is_loopback():
+            if has_token:
+                return
+            raise ApiError("forbidden: remote requests require a valid "
+                           "Authorization: Bearer token", 403)
+
+        if not state_changing:
+            return
+        # A trusted programmatic client (valid token) bypasses the
+        # same-origin/CSRF check; browsers keep the same-origin rule.
+        if has_token:
             return
         origin = self.headers.get("Origin")
         if origin is not None:
@@ -2176,7 +2305,8 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError("forbidden: cross-origin request blocked "
                            "(Referer %s)" % referer, 403)
         raise ApiError("forbidden: state-changing request needs a "
-                       "same-origin Origin or Referer header", 403)
+                       "same-origin Origin or Referer header (or a valid "
+                       "Authorization: Bearer token)", 403)
 
     def _dispatch(self, fn: Callable[[], None]) -> None:
         try:
@@ -2216,6 +2346,10 @@ class Handler(BaseHTTPRequestHandler):
         if path in ("/", "/index.html"):
             from . import ui
             self._html(ui.PAGE)
+        elif path == "/api/health":
+            self._get_health()
+        elif path == "/api/spec":
+            self._get_spec()
         elif path == "/api/state":
             self._get_state()
         elif path == "/api/dashboards":
@@ -2347,6 +2481,53 @@ class Handler(BaseHTTPRequestHandler):
         fn()
 
     # -- GET handlers ----------------------------------------------------
+
+    @staticmethod
+    def _version() -> str:
+        try:
+            from .. import __version__
+            return str(__version__)
+        except Exception:
+            return ""
+
+    def _get_health(self) -> None:
+        """Unauthed liveness/readiness probe (loopback). Never carries
+        any secret or the API token."""
+        self._json({"ok": True, "app": "nr2grafana",
+                    "version": self._version(), "status": "ok"})
+
+    def _get_spec(self) -> None:
+        """Stable, machine-readable API description so an AI/script can
+        discover the endpoints. Advertises the bearer-token model but
+        never echoes the token value."""
+        token_configured = bool(getattr(self.server, "api_token", ""))
+        endpoints = [{"method": m, "path": p,
+                      "auth": (not unauth), "summary": s}
+                     for (m, p, unauth, s) in API_SPEC_ENDPOINTS]
+        self._json({
+            "app": "nr2grafana",
+            "version": self._version(),
+            "spec_version": "1",
+            "auth": {
+                "scheme": "bearer",
+                "header": "Authorization: Bearer <token>",
+                "env": "N2G_API_TOKEN",
+                "token_configured": token_configured,
+                "note": "A valid token marks a trusted non-browser "
+                        "client: it bypasses the same-origin/CSRF check "
+                        "for state-changing requests. When the server is "
+                        "bound to a non-loopback host a token is "
+                        "mandatory and every remote request must carry "
+                        "it. GET /api/health and GET /api/spec are "
+                        "unauthed on loopback.",
+            },
+            "content_type": "application/json",
+            "jobs": {
+                "note": "Long operations return {\"job\": <id>}; poll "
+                        "GET /api/jobs/<id> until status is done|error.",
+            },
+            "endpoints": endpoints,
+        })
 
     def _get_state(self) -> None:
         db = {"dashboards": 0, "changes": 0, "runs": 0, "path": ""}
@@ -3877,34 +4058,81 @@ def _load_prefs(store) -> None:
         SESSION.status["ai"] = "ok"
 
 
+def _is_loopback_host(host: str) -> bool:
+    """True when ``host`` names the loopback interface. Empty ("", i.e.
+    bind all interfaces) and 0.0.0.0 count as non-loopback -- they expose
+    the server and therefore require an API token."""
+    h = (host or "").strip().lower()
+    if h in ("127.0.0.1", "localhost", "::1"):
+        return True
+    return h.startswith("127.")
+
+
 def create_server(host: str = "127.0.0.1", port: int = 8765,
-                  store=None) -> ThreadingHTTPServer:
+                  store=None, api_token: str = "") -> ThreadingHTTPServer:
     """Build the HTTP server (bound, not yet serving). Used by serve()
-    and by tests, which pass port=0 and their own Store."""
+    and by tests, which pass port=0 and their own Store.
+
+    ``api_token`` (when set) enables bearer-token auth: a request bearing
+    it may drive the API without a same-origin Origin. Binding a
+    non-loopback host is REFUSED unless an api_token is set, so a network-
+    reachable instance is always authenticated."""
     if store is None:
         store = _lazy("store").Store()
     _load_prefs(store)
+    nonloopback = not _is_loopback_host(host)
+    if nonloopback and not api_token:
+        raise ValueError(
+            "refusing to bind non-loopback host %r without an API token "
+            "-- set N2G_API_TOKEN (or pass --api-token) so remote access "
+            "is authenticated, or bind 127.0.0.1" % (host or "0.0.0.0"))
     httpd = ThreadingHTTPServer((host, port), Handler)
     httpd.daemon_threads = True  # type: ignore[attr-defined]
     httpd.store = store  # type: ignore[attr-defined]
+    # Auth state read by the request handler's security guard. The token
+    # lives in process memory only -- never logged or written to disk.
+    httpd.api_token = api_token or ""  # type: ignore[attr-defined]
+    httpd.bound_nonloopback = nonloopback  # type: ignore[attr-defined]
     return httpd
 
 
 def serve(host: str = "127.0.0.1", port: int = 8765,
-          open_browser: bool = True, store=None) -> int:
-    """Run the web UI until interrupted. Returns an exit code."""
+          open_browser: bool = True, store=None, api_token: str = "",
+          headless: bool = False) -> int:
+    """Run the web UI (or a headless API) until interrupted. Returns an
+    exit code. ``api_token`` defaults to the N2G_API_TOKEN env var;
+    ``headless`` skips opening a browser and prints the API access note.
+    The token value is never printed."""
+    if not api_token:
+        api_token = os.environ.get("N2G_API_TOKEN", "")
     try:
-        httpd = create_server(host, port, store)
+        httpd = create_server(host, port, store, api_token=api_token)
+    except ValueError as e:
+        print("error: %s" % e)
+        return 2
     except OSError as e:
         print("error: cannot bind %s:%d (%s) -- is another nr2grafana "
               "web instance running? Try --port." % (host, port, e))
         return 1
     real_port = httpd.server_address[1]
     url = "http://%s:%d/" % (host or "127.0.0.1", real_port)
-    print("nr2grafana web UI: %s  (Ctrl-C to stop)" % url)
-    print("API keys entered in the UI stay in this process's memory "
-          "only.")
-    if open_browser:
+    if headless:
+        print("nr2grafana API: %s  (Ctrl-C to stop)" % url)
+        if api_token:
+            print("API token active -- programmatic POST requires "
+                  "'Authorization: Bearer <token>'.")
+        else:
+            print("No API token set -- programmatic POSTs are refused "
+                  "unless same-origin. Set N2G_API_TOKEN to allow "
+                  "non-browser clients.")
+    else:
+        print("nr2grafana web UI: %s  (Ctrl-C to stop)" % url)
+        print("API keys entered in the UI stay in this process's memory "
+              "only.")
+        if api_token:
+            print("API token active -- programmatic POST requires "
+                  "'Authorization: Bearer <token>'.")
+    if open_browser and not headless:
         threading.Timer(0.4, webbrowser.open, [url]).start()
     try:
         httpd.serve_forever()

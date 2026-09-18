@@ -210,7 +210,7 @@ class NoCommandTests(unittest.TestCase):
 
 class VersionTests(unittest.TestCase):
     def test_package_version(self):
-        self.assertEqual(nr2grafana.__version__, "1.9.0")
+        self.assertEqual(nr2grafana.__version__, "1.10.0")
 
 
 class _TempDbMixin:
@@ -2046,6 +2046,177 @@ class AwsProfilesTests(unittest.TestCase):
         code, out, err = run_cli(["aws"])
         self.assertEqual(code, 2)
         self.assertIn("profiles", out)
+
+
+# ---------------------------------------------------------------------------
+# global --json flag (1.10): one JSON object on stdout, human text on stderr
+# ---------------------------------------------------------------------------
+
+class JsonFlagTests(_TempDbMixin, unittest.TestCase):
+    def test_example_config_json_envelope(self):
+        code, out, err = run_cli(["--json", "example-config"])
+        self.assertEqual(code, 0)
+        # stdout is exactly one JSON object
+        obj = json.loads(out)
+        self.assertTrue(obj["ok"])
+        self.assertEqual(obj["command"], "example-config")
+        # the command's JSON stdout becomes the structured result
+        self.assertEqual(obj["result"], DEFAULT_CONFIG)
+        self.assertNotIn("error", obj)
+
+    def test_convert_json_stdout_pure_human_on_stderr(self):
+        with tempfile.TemporaryDirectory() as out_dir:
+            code, out, err = run_cli(
+                ["--json", "convert", SAMPLE, "-o", out_dir])
+        self.assertEqual(code, 0)
+        # stdout is pure JSON (a single parseable object)
+        obj = json.loads(out)
+        self.assertTrue(obj["ok"])
+        self.assertEqual(obj["command"], "convert")
+        # convert's human summary is routed to stderr, never stdout
+        self.assertNotIn("dashboards written", out)
+        self.assertIn("dashboards written", err)
+
+    def test_failing_command_reports_error(self):
+        with tempfile.TemporaryDirectory() as out_dir:
+            code, out, err = run_cli(
+                ["--json", "convert", "/nonexistent/path.json",
+                 "-o", out_dir])
+        self.assertEqual(code, 2)
+        obj = json.loads(out)
+        self.assertFalse(obj["ok"])
+        self.assertEqual(obj["command"], "convert")
+        self.assertIn("error", obj)
+        # the human error line stays on stderr
+        self.assertIn("no input files", err)
+
+    def test_subcommand_path_in_command_field(self):
+        code, out, err = run_cli(["--json", "changes", "report"])
+        self.assertEqual(code, 0)
+        obj = json.loads(out)
+        self.assertEqual(obj["command"], "changes report")
+        # changes report emits JSON, captured as the structured result
+        self.assertEqual(obj["result"]["schema"], "nr2grafana/changes/v1")
+
+    def test_no_command_with_json(self):
+        code, out, err = run_cli(["--json"])
+        self.assertEqual(code, 2)
+        obj = json.loads(out)
+        self.assertFalse(obj["ok"])
+        self.assertIn("error", obj)
+
+
+# ---------------------------------------------------------------------------
+# serve commands (1.10): mcp serve + headless token API serve
+# ---------------------------------------------------------------------------
+
+class McpServeTests(unittest.TestCase):
+    def test_mcp_serve_registered(self):
+        code, out, err = run_cli(["mcp"])
+        self.assertEqual(code, 2)
+        self.assertIn("serve", out)
+
+    def test_mcp_serve_launches_serve_stdio(self):
+        import types
+        fake = types.ModuleType("nr2grafana.mcp_server")
+        calls = {}
+
+        def serve_stdio(store=None, log=None):
+            calls["store"] = store
+            calls["called"] = True
+
+        fake.serve_stdio = serve_stdio
+        with mock.patch.dict("sys.modules",
+                             {"nr2grafana.mcp_server": fake}):
+            code, out, err = run_cli(["mcp", "serve"])
+        self.assertEqual(code, 0)
+        self.assertTrue(calls.get("called"))
+
+    def test_mcp_serve_unavailable_exits_two(self):
+        with mock.patch.dict("sys.modules",
+                             {"nr2grafana.mcp_server": None}):
+            code, out, err = run_cli(["mcp", "serve"])
+        self.assertEqual(code, 2)
+        self.assertIn("not importable", err)
+
+
+class ApiServeTests(_TempDbMixin, unittest.TestCase):
+    def test_registered(self):
+        code, out, err = run_cli(["api"])
+        self.assertEqual(code, 2)
+        self.assertIn("serve", out)
+
+    def test_refuses_non_loopback_without_token(self):
+        env = dict(os.environ)
+        env.pop("N2G_API_TOKEN", None)
+        with mock.patch.dict(os.environ, env, clear=True):
+            code, out, err = run_cli(
+                ["api", "serve", "--host", "0.0.0.0", "--no-browser"])
+        self.assertEqual(code, 2)
+        self.assertIn("token", err.lower())
+        self.assertIn("0.0.0.0", err)
+
+    def test_non_loopback_with_token_starts_headless(self):
+        captured = {}
+
+        def fake_serve(host="127.0.0.1", port=8765, open_browser=True,
+                       store=None, api_token="", headless=False):
+            captured.update(host=host, port=port, api_token=api_token,
+                            headless=headless)
+            return 0
+
+        env = {"N2G_API_TOKEN": "s3cr3t-token"}
+        with mock.patch("nr2grafana.web.serve", fake_serve), \
+                mock.patch.dict(os.environ, env):
+            code, out, err = run_cli(
+                ["api", "serve", "--host", "0.0.0.0", "--port", "0",
+                 "--no-browser"])
+        self.assertEqual(code, 0)
+        self.assertTrue(captured["headless"])
+        self.assertEqual(captured["api_token"], "s3cr3t-token")
+        self.assertEqual(captured["host"], "0.0.0.0")
+        # the token value is never printed to stdout or stderr
+        self.assertNotIn("s3cr3t-token", out)
+        self.assertNotIn("s3cr3t-token", err)
+
+    def test_token_from_flag_not_echoed(self):
+        captured = {}
+
+        def fake_serve(host="127.0.0.1", port=8765, open_browser=True,
+                       store=None, api_token="", headless=False):
+            captured["api_token"] = api_token
+            return 0
+
+        env = dict(os.environ)
+        env.pop("N2G_API_TOKEN", None)
+        with mock.patch("nr2grafana.web.serve", fake_serve), \
+                mock.patch.dict(os.environ, env, clear=True):
+            code, out, err = run_cli(
+                ["api", "serve", "--api-token", "flagtok",
+                 "--port", "0", "--no-browser"])
+        self.assertEqual(code, 0)
+        self.assertEqual(captured["api_token"], "flagtok")
+        self.assertNotIn("flagtok", out)
+        self.assertNotIn("flagtok", err)
+
+
+class ExposeAiWizardTests(unittest.TestCase):
+    def test_flow_expose_ai_prints_config_and_command(self):
+        from nr2grafana.interactive import Wizard
+        w = Wizard.__new__(Wizard)
+        w.state = {}
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = w.flow_expose_ai()
+        text = buf.getvalue()
+        self.assertEqual(rc, 0)
+        # the MCP stdio server config snippet is shown
+        self.assertIn("nr2grafana", text)
+        self.assertIn("\"mcp\"", text)
+        self.assertIn("\"serve\"", text)
+        # and the headless API serve command
+        self.assertIn("api serve", text)
+        self.assertIn("N2G_API_TOKEN", text)
 
 
 if __name__ == "__main__":

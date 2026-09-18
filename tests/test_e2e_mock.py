@@ -1541,6 +1541,250 @@ class RcaMitigateMockTest(unittest.TestCase):
                         "target health")
 
 
+def _web_req_hdr(base, method, path, headers, body=None, timeout=20):
+    """Drive the web server with arbitrary headers (no implicit Origin),
+    returning (status, parsed_json)."""
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(base + path, data=data, method=method,
+                                 headers=dict(headers))
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status, json.loads(resp.read().decode() or "{}")
+    except urllib.error.HTTPError as e:
+        try:
+            return e.code, json.loads(e.read().decode() or "{}")
+        except ValueError:
+            return e.code, {}
+
+
+def _web_poll_hdr(base, jid, headers, timeout=25.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        code, job = _web_req_hdr(base, "GET", "/api/jobs/" + jid, headers)
+        if code == 200 and job.get("status") in ("done", "error"):
+            return job
+        time.sleep(0.1)
+    raise AssertionError("web job %s did not finish in time" % jid)
+
+
+class TokenApiE2ETest(MockStackBase):
+    """B/E: the token-authed headless HTTP API driven over real HTTP.
+
+    A programmatic (non-browser) client with a valid bearer token can
+    POST without a same-origin Origin; the same POST without the token is
+    403. Exercises a real convert of a pasted NR dashboard object end to
+    end through the web server against the offline mock stack."""
+
+    TOKEN = "n2g_e2e_token_0123456789abcdef"
+
+    def setUp(self):
+        super(TokenApiE2ETest, self).setUp()
+        self.tmp = tempfile.mkdtemp(prefix="nr2g-tok-e2e-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        store_mod, web = _import_or_skip(
+            self, "nr2grafana.store", "nr2grafana.web.server")
+        self.web = web
+        self.out_dir = os.path.join(self.tmp, "out")
+        st = store_mod.Store(os.path.join(self.tmp, "web.db"))
+        web.SESSION = web.Session()
+        web.SESSION.grafana_url = ""
+        web.SESSION.nr_api_key = ""
+        web.SESSION.anthropic_api_key = ""
+        web.SESSION.out_dir = self.out_dir
+        self.httpd = web.create_server("127.0.0.1", 0, store=st,
+                                       api_token=self.TOKEN)
+        self.base = "http://127.0.0.1:%d" % self.httpd.server_address[1]
+        self.thread = threading.Thread(target=self.httpd.serve_forever,
+                                       daemon=True)
+        self.thread.start()
+
+        def _shutdown():
+            self.httpd.shutdown()
+            self.httpd.server_close()
+            self.thread.join(timeout=5)
+            try:
+                st.close()
+            except Exception:
+                pass
+        self.addCleanup(_shutdown)
+
+    def _fixture_object(self):
+        ng = self.nerdgraph()
+        guid = next(e["guid"] for e in ng.list_dashboards()
+                    if e["name"] == "Checkout Service Overview")
+        return ng.get_dashboard(guid)
+
+    def test_token_post_succeeds_without_token_403(self):
+        obj = self._fixture_object()
+        auth = {"Content-Type": "application/json",
+                "Authorization": "Bearer " + self.TOKEN}
+        no_auth = {"Content-Type": "application/json"}
+
+        # -- without a token (and no Origin), a POST is refused ----------
+        code, body = _web_req_hdr(self.base, "POST", "/api/convert",
+                                  no_auth,
+                                  body={"nr_json": obj,
+                                        "out_dir": self.out_dir,
+                                        "package": False})
+        self.assertEqual(code, 403, body)
+
+        # -- with a valid token, the same POST is accepted and runs -----
+        code, resp = _web_req_hdr(self.base, "POST", "/api/convert", auth,
+                                  body={"nr_json": obj,
+                                        "out_dir": self.out_dir,
+                                        "package": False})
+        self.assertEqual(code, 200, resp)
+        self.assertIn("job", resp)
+        job = _web_poll_hdr(self.base, resp["job"], auth)
+        self.assertEqual(job["status"], "done", job)
+        self.assertGreaterEqual(len(job["result"]["dashboards"]), 1)
+        slug = job["result"]["dashboards"][0]["slug"]
+
+        # the converted dashboard is discoverable via the token API
+        code, det = _web_req_hdr(self.base, "GET",
+                                 "/api/dashboards/" + slug, auth)
+        self.assertEqual(code, 200, det)
+        self.assertIn("panels", det["dashboard"])
+
+    def test_health_and_spec_unauthed_and_token_not_leaked(self):
+        code, health = _web_req_hdr(self.base, "GET", "/api/health", {})
+        self.assertEqual(code, 200)
+        self.assertTrue(health["ok"])
+        code, spec = _web_req_hdr(self.base, "GET", "/api/spec", {})
+        self.assertEqual(code, 200)
+        self.assertEqual(spec["auth"]["scheme"], "bearer")
+        self.assertTrue(spec["endpoints"])
+        # the token value never appears in a discovery response
+        self.assertNotIn(self.TOKEN, json.dumps(spec))
+        self.assertNotIn(self.TOKEN, json.dumps(health))
+
+
+def _mcp_rpc(proc, msg):
+    """Send one newline-delimited JSON-RPC message and read the next
+    newline-delimited JSON response from the MCP server subprocess."""
+    proc.stdin.write((json.dumps(msg) + "\n").encode())
+    proc.stdin.flush()
+    line = proc.stdout.readline()
+    if not line:
+        raise AssertionError("MCP server closed stdout unexpectedly")
+    return json.loads(line.decode())
+
+
+def _mcp_tool_json(result):
+    """Extract the JSON payload from an MCP tools/call result
+    ({content:[{type:'text', text:<json>}]})."""
+    content = (result or {}).get("content") or []
+    for item in content:
+        if item.get("type") == "text":
+            try:
+                return json.loads(item.get("text") or "")
+            except ValueError:
+                return item.get("text")
+    return None
+
+
+class McpServerStdioE2ETest(MockStackBase):
+    """E: nr2grafana AS an MCP server, driven over real stdio JSON-RPC.
+
+    Launches ``python -m nr2grafana mcp serve`` as a subprocess (an
+    isolated store via N2G_DB) and runs a full op through it: convert a
+    pasted NR dashboard object -> list_dashboards -> get_dashboard. The
+    mcp_server module is developed concurrently; this skips cleanly until
+    it (and its CLI wiring) is present."""
+
+    def setUp(self):
+        super(McpServerStdioE2ETest, self).setUp()
+        # The MCP server module must exist to run this round-trip. Probe
+        # with find_spec (never import it here) so this test process's
+        # nr2grafana package namespace stays clean -- importing the real
+        # submodule would leave it cached as an attribute of the package
+        # and defeat a later test that patches it out. The subprocess
+        # imports it fresh anyway.
+        try:
+            spec = importlib.util.find_spec("nr2grafana.mcp_server")
+        except (ImportError, ValueError):
+            spec = None
+        if spec is None:
+            self.skipTest("nr2grafana.mcp_server not written yet")
+        self.tmp = tempfile.mkdtemp(prefix="nr2g-mcp-e2e-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def _fixture_object(self):
+        ng = self.nerdgraph()
+        guid = next(e["guid"] for e in ng.list_dashboards()
+                    if e["name"] == "Checkout Service Overview")
+        return ng.get_dashboard(guid)
+
+    def test_convert_list_get_over_stdio(self):
+        import subprocess
+        obj = self._fixture_object()
+        out_dir = os.path.join(self.tmp, "out")
+        env = dict(os.environ)
+        env["N2G_DB"] = os.path.join(self.tmp, "mcp.db")
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "nr2grafana", "mcp", "serve"],
+            cwd=ROOT, env=env, stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            init = _mcp_rpc(proc, {
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2024-11-05",
+                           "capabilities": {},
+                           "clientInfo": {"name": "e2e", "version": "1"}}})
+            self.assertIn("result", init, init)
+            self.assertIn("serverInfo", init["result"], init["result"])
+
+            listed = _mcp_rpc(proc, {"jsonrpc": "2.0", "id": 2,
+                                     "method": "tools/list", "params": {}})
+            tools = [t.get("name")
+                     for t in (listed.get("result") or {}).get("tools", [])]
+            for needed in ("convert", "list_dashboards", "get_dashboard"):
+                self.assertIn(needed, tools,
+                              "MCP server missing tool %r: %s"
+                              % (needed, tools))
+
+            # -- convert the pasted NR dashboard object -----------------
+            conv = _mcp_rpc(proc, {
+                "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                "params": {"name": "convert",
+                           "arguments": {"nr_json": obj,
+                                         "out_dir": out_dir,
+                                         "package": False}}})
+            self.assertIn("result", conv, conv)
+            self.assertFalse(conv["result"].get("isError"), conv)
+            conv_payload = _mcp_tool_json(conv["result"])
+            self.assertIsInstance(conv_payload, dict, conv_payload)
+            dashboards = conv_payload.get("dashboards") or []
+            self.assertTrue(dashboards, conv_payload)
+            slug = dashboards[0]["slug"]
+
+            # -- list_dashboards sees the converted dashboard -----------
+            listed2 = _mcp_rpc(proc, {
+                "jsonrpc": "2.0", "id": 4, "method": "tools/call",
+                "params": {"name": "list_dashboards", "arguments": {}}})
+            lst_payload = _mcp_tool_json(listed2["result"])
+            slugs = json.dumps(lst_payload)
+            self.assertIn(slug, slugs, lst_payload)
+
+            # -- get_dashboard returns the converted dashboard JSON -----
+            got = _mcp_rpc(proc, {
+                "jsonrpc": "2.0", "id": 5, "method": "tools/call",
+                "params": {"name": "get_dashboard",
+                           "arguments": {"slug": slug}}})
+            got_payload = _mcp_tool_json(got["result"])
+            self.assertIn("panels", json.dumps(got_payload), got_payload)
+        finally:
+            for stream in (proc.stdin, proc.stdout, proc.stderr):
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                proc.kill()
+
+
 class FixtureLoadingTest(unittest.TestCase):
     """load_fixtures serves only well-formed dashboards."""
 

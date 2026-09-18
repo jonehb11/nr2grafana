@@ -313,6 +313,7 @@ def cmd_convert(args: argparse.Namespace) -> int:
             all_reports.append({
                 "source": path,
                 "output": out_path,
+                "slug": slug,
                 "dashboard": dash.get("title"),
                 "widgets": report,
                 "summary": counts,
@@ -345,6 +346,23 @@ def cmd_convert(args: argparse.Namespace) -> int:
         except (StoreError, ValueError):
             pass
         store.close()
+    if getattr(args, "json_out", False):
+        # Machine-readable summary on stdout so an AI driving `--json`
+        # gets the written dashboards (slug/path/title/counts) and any
+        # failures, not just the human recap on stderr.
+        print(json.dumps({
+            "out_dir": args.out,
+            "report": report_path,
+            "dashboards": [
+                {"slug": r["slug"], "output": r["output"],
+                 "title": r["dashboard"], "source": r["source"],
+                 "confidence": r["summary"]}
+                for r in all_reports],
+            "failed_inputs": failed_inputs,
+            "totals": {"dashboards": len(written), "widgets": total,
+                       "needs_review": review,
+                       "failed": len(failed_inputs)},
+        }, ensure_ascii=False))
     return 1 if had_error else 0
 
 
@@ -2336,7 +2354,11 @@ def cmd_mcp_config(args: argparse.Namespace) -> int:
         cfg = mcp_mod.generate_mcp_config(
             grafana_url, kind=args.kind,
             n2g_context_path=getattr(args, "context", "") or "",
-            include_grafana=not getattr(args, "no_grafana", False))
+            include_grafana=not getattr(args, "no_grafana", False),
+            include_aws_cost=bool(getattr(args, "aws_cost", False)),
+            include_aws_cloudwatch=bool(
+                getattr(args, "aws_cloudwatch", False)),
+            include_n2g=not getattr(args, "no_n2g", False))
     except Exception as e:
         _err(str(e))
         return 2
@@ -2657,12 +2679,191 @@ def cmd_web(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# programmatic API surface (1.10): stdio MCP server + headless token API
+# ---------------------------------------------------------------------------
+
+def _is_loopback(host: str) -> bool:
+    """True when ``host`` is a loopback bind address (or unset). Anything
+    else (0.0.0.0, a LAN/public address) is treated as non-loopback and
+    may only be bound with an API token set."""
+    h = (host or "").strip().lower()
+    if h in ("", "127.0.0.1", "::1", "localhost", "[::1]"):
+        return True
+    return h.startswith("127.")
+
+
+def cmd_mcp_serve(args: argparse.Namespace) -> int:
+    """Run nr2grafana AS a stdio JSON-RPC MCP server so a local AI
+    (Claude/Kiro) can call its operations as tools. Blocks reading stdin
+    until the client disconnects. Config/secrets come from the process
+    environment, never from the transport."""
+    import importlib
+    try:
+        mcp_server = importlib.import_module("nr2grafana.mcp_server")
+    except Exception as e:
+        _err("MCP server is unavailable (nr2grafana.mcp_server not "
+             "importable): %s" % e)
+        return 2
+    if not hasattr(mcp_server, "serve_stdio"):
+        _err("MCP server is unavailable (serve_stdio entry point missing)")
+        return 2
+    store = _open_store_soft()
+    log = lambda m: print(m, file=sys.stderr)
+    try:
+        mcp_server.serve_stdio(store=store, log=log)
+    except KeyboardInterrupt:
+        return 0
+    except Exception as e:
+        _err("MCP server error: %s" % e)
+        return 1
+    finally:
+        if store is not None:
+            store.close()
+    return 0
+
+
+def cmd_api_serve(args: argparse.Namespace) -> int:
+    """Launch the localhost web app as a headless, token-authed HTTP API
+    so non-browser clients (scripts / AI) can drive it with a bearer
+    token. The token is read from --api-token or N2G_API_TOKEN and is
+    NEVER printed, echoed or logged. A non-loopback --host is refused
+    unless a token is set (so a remotely reachable API always requires
+    authentication)."""
+    from .web import serve
+    host = getattr(args, "host", "") or "127.0.0.1"
+    token = getattr(args, "api_token", "") \
+        or os.environ.get("N2G_API_TOKEN", "")
+    if not _is_loopback(host) and not token:
+        _err("refusing to bind non-loopback host %r without an API token: "
+             "pass --api-token or set N2G_API_TOKEN so remote clients must "
+             "authenticate" % host)
+        return 2
+    try:
+        store = Store(_db_path())
+    except Exception as e:
+        _err("cannot open local store: %s" % e)
+        return 1
+    if token:
+        print("API token configured: programmatic requests must send the "
+              "'Authorization: Bearer <token>' header (the token value is "
+              "never printed or logged).", file=sys.stderr)
+    else:
+        print("no API token set: the API stays browser same-origin only on "
+              "loopback; set --api-token or N2G_API_TOKEN to allow "
+              "programmatic (non-browser) clients.", file=sys.stderr)
+    try:
+        return serve(host=host, port=args.port,
+                     open_browser=not getattr(args, "no_browser", False),
+                     store=store, api_token=token, headless=True)
+    finally:
+        store.close()
+
+
+# ---------------------------------------------------------------------------
+# global --json wrapper: one JSON object on stdout, human/log text on stderr
+# ---------------------------------------------------------------------------
+
+_SUBCOMMAND_DESTS = (
+    "grafana_command", "changes_command", "cost_command", "mcp_command",
+    "tco_command", "aws_command", "ai_command", "api_command")
+
+
+def _command_name(args: argparse.Namespace) -> str:
+    """Full dotted command path (e.g. 'grafana parity') for the JSON
+    envelope's ``command`` field."""
+    parts: List[str] = []
+    top = getattr(args, "command", None)
+    if top:
+        parts.append(str(top))
+    for dest in _SUBCOMMAND_DESTS:
+        val = getattr(args, dest, None)
+        if val:
+            parts.append(str(val))
+            break
+    return " ".join(parts)
+
+
+def _json_error_line(err_text: str) -> str:
+    """Best-effort short error message from captured stderr: the last
+    'error: ...' line, else the last non-empty line."""
+    last = ""
+    for line in err_text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        last = stripped
+        if stripped.startswith("error:"):
+            return stripped[len("error:"):].strip()
+    return last
+
+
+def _emit_json(command: str, ok: bool, result: Any, error: Optional[str],
+               stream) -> None:
+    obj: Dict[str, Any] = {"ok": ok, "command": command, "result": result}
+    if error:
+        obj["error"] = error
+    stream.write(json.dumps(obj, ensure_ascii=False) + "\n")
+    stream.flush()
+
+
+def _run_json(command: str, func, args: argparse.Namespace) -> int:
+    """Run ``func`` with stdout/stderr captured, then print a single JSON
+    envelope to the real stdout. Human/log text (anything the command
+    wrote to stderr, plus any non-JSON stdout) is forwarded to the real
+    stderr so stdout stays pure JSON. Exit codes are unchanged."""
+    import io as _io
+    real_stdout, real_stderr = sys.stdout, sys.stderr
+    buf_out, buf_err = _io.StringIO(), _io.StringIO()
+    rc = 1
+    exc_error: Optional[str] = None
+    try:
+        sys.stdout, sys.stderr = buf_out, buf_err
+        try:
+            rc = func(args)
+        except SystemExit as e:
+            code = e.code
+            rc = code if isinstance(code, int) else \
+                (0 if code is None else 1)
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:
+            rc = 1
+            exc_error = "%s: %s" % (type(e).__name__, e)
+    finally:
+        sys.stdout, sys.stderr = real_stdout, real_stderr
+    err_text = buf_err.getvalue()
+    if err_text:
+        real_stderr.write(err_text)
+    out_text = buf_out.getvalue()
+    result: Any = None
+    if out_text.strip():
+        try:
+            result = json.loads(out_text)
+        except (json.JSONDecodeError, ValueError):
+            # Not JSON: it is human text -> stderr, keep stdout clean.
+            real_stderr.write(out_text)
+    real_stderr.flush()
+    if not isinstance(rc, int):
+        rc = 0 if rc is None else 1
+    ok = rc == 0
+    error = exc_error
+    if not ok and error is None:
+        error = _json_error_line(err_text) or "command failed"
+    _emit_json(command, ok, result, error, real_stdout)
+    return rc
+
+
+# ---------------------------------------------------------------------------
 
 def main(argv: List[str] = None) -> int:
     ap = argparse.ArgumentParser(
         prog="nr2grafana",
         description="Convert New Relic dashboards to Grafana (LGTM stack) "
                     "dashboards.")
+    ap.add_argument("--json", action="store_true", dest="json_out",
+                    help="emit one JSON object result to stdout and route "
+                         "all human/log text to stderr (for scripts and "
+                         "AI); place before the subcommand")
     sub = ap.add_subparsers(dest="command")
 
     def add_nr_args(p):
@@ -3103,6 +3304,17 @@ def main(argv: List[str] = None) -> int:
                              "the assistant can read it alongside Grafana")
     mc_cfg.add_argument("--no-grafana", action="store_true",
                         help="omit the Grafana MCP server entry")
+    mc_cfg.add_argument("--no-n2g", action="store_true",
+                        help="omit the nr2grafana MCP server entry")
+    mc_cfg.add_argument("--aws-cost", action="store_true",
+                        help="also register the awslabs AWS Cost Explorer "
+                             "MCP server (uvx, read-only) for cost / anomaly "
+                             "work; AWS auth via AWS_PROFILE/AWS_REGION, no "
+                             "keys embedded")
+    mc_cfg.add_argument("--aws-cloudwatch", action="store_true",
+                        help="also register the awslabs CloudWatch MCP "
+                             "server (uvx, read-only) for metrics + Logs "
+                             "Insights over VPC Flow Logs")
     mc_cfg.add_argument("--out", "-o", default="",
                         help="write to FILE instead of stdout")
     add_grafana_args(mc_cfg)
@@ -3115,6 +3327,11 @@ def main(argv: List[str] = None) -> int:
     mc_pr.add_argument("--command", default="",
                        help="stdio MCP server command (e.g. 'mcp-grafana')")
     mc_pr.set_defaults(func=cmd_mcp_probe)
+    mc_srv = mcpsub.add_parser(
+        "serve",
+        help="run nr2grafana AS a stdio JSON-RPC MCP server so a local AI "
+             "(Claude/Kiro) can call every operation as a tool")
+    mc_srv.set_defaults(func=cmd_mcp_serve)
 
     # -- AWS TCO trend analysis (1.7) -----------------------------------
 
@@ -3178,6 +3395,31 @@ def main(argv: List[str] = None) -> int:
              "only; no credential values are ever read)")
     a_pr.set_defaults(func=cmd_aws_profiles)
 
+    p_api = sub.add_parser(
+        "api",
+        help="run nr2grafana's localhost web app as a headless, token-"
+             "authed HTTP API for scripts and AI clients")
+    p_api.set_defaults(func=_need_sub(p_api))
+    apisub = p_api.add_subparsers(dest="api_command")
+    a_srv = apisub.add_parser(
+        "serve",
+        help="launch the headless token-authed HTTP API (bearer token from "
+             "--api-token or N2G_API_TOKEN; a non-loopback host is refused "
+             "without a token)")
+    a_srv.add_argument("--host", default="127.0.0.1",
+                       help="bind address (default: %(default)s; a non-"
+                            "loopback host REQUIRES an API token)")
+    a_srv.add_argument("--port", type=int, default=8765,
+                       help="port to listen on (default: %(default)s)")
+    a_srv.add_argument("--api-token", dest="api_token", default="",
+                       help="bearer token that programmatic clients must "
+                            "present; or set N2G_API_TOKEN (the value is "
+                            "never printed or logged)")
+    a_srv.add_argument("--no-browser", action="store_true",
+                       help="do not open a browser (the headless API is "
+                            "non-interactive)")
+    a_srv.set_defaults(func=cmd_api_serve)
+
     p_web = sub.add_parser(
         "web", help="launch the localhost web UI")
     p_web.add_argument("--port", type=int, default=8765,
@@ -3200,15 +3442,23 @@ def main(argv: List[str] = None) -> int:
     p_int.set_defaults(func=cmd_interactive)
 
     args = ap.parse_args(argv)
-    if not getattr(args, "func", None):
+    if getattr(args, "region", None):
+        args.region = args.region.upper()
+    json_out = bool(getattr(args, "json_out", False))
+    func = getattr(args, "func", None)
+    if not func:
         # No subcommand: interactive wizard in a terminal, help otherwise.
+        if json_out:
+            _emit_json(_command_name(args), False, None,
+                       "no command given", sys.stdout)
+            return 2
         if sys.stdin.isatty() and sys.stdout.isatty():
             return cmd_interactive(args)
         ap.print_help()
         return 2
-    if getattr(args, "region", None):
-        args.region = args.region.upper()
-    return args.func(args)
+    if json_out:
+        return _run_json(_command_name(args), func, args)
+    return func(args)
 
 
 if __name__ == "__main__":

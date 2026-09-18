@@ -15,6 +15,7 @@ from nr2grafana.mcp import (MCPClient, MCPError, GRAFANA_TOKEN_ENV,
                             AWS_COST_MCP_COMMAND, AWS_COST_MCP_PACKAGE,
                             AWS_CLOUDWATCH_MCP_COMMAND,
                             AWS_CLOUDWATCH_MCP_PACKAGE,
+                            GRAFANA_URL_ENV, N2G_MCP_COMMAND, N2G_MCP_ARGS,
                             generate_mcp_config, cost_via_mcp, probe)
 
 
@@ -484,6 +485,87 @@ class AwsCloudWatchConfigTests(unittest.TestCase):
         cost = cfg["mcpServers"]["aws-cost-explorer"]
         cw = cfg["mcpServers"]["aws-cloudwatch"]
         self.assertNotEqual(cost["args"], cw["args"])
+
+
+class N2gServerConfigTests(unittest.TestCase):
+    def test_n2g_on_by_default(self):
+        cfg = generate_mcp_config(grafana_url="https://g.example")
+        self.assertIn("nr2grafana", cfg["mcpServers"])
+        entry = cfg["mcpServers"]["nr2grafana"]
+        self.assertEqual(entry["command"], N2G_MCP_COMMAND)
+        self.assertEqual(entry["args"], list(N2G_MCP_ARGS))
+        # It launches nr2grafana's own stdio MCP server.
+        self.assertEqual(entry["args"], ["-m", "nr2grafana", "mcp", "serve"])
+
+    def test_n2g_can_be_disabled(self):
+        cfg = generate_mcp_config(grafana_url="https://g.example",
+                                  include_n2g=False)
+        self.assertNotIn("nr2grafana", cfg["mcpServers"])
+
+    def test_n2g_present_for_claude(self):
+        cfg = generate_mcp_config(grafana_url="https://g.example",
+                                  kind="claude")
+        entry = cfg["mcpServers"]["nr2grafana"]
+        # claude entries carry no kiro-only fields
+        self.assertNotIn("disabled", entry)
+        self.assertNotIn("autoApprove", entry)
+
+    def test_n2g_present_for_kiro_with_extra_fields(self):
+        cfg = generate_mcp_config(grafana_url="https://g.example",
+                                  kind="kiro")
+        entry = cfg["mcpServers"]["nr2grafana"]
+        self.assertEqual(entry["disabled"], False)
+        self.assertEqual(entry["autoApprove"], [])
+
+    def test_n2g_env_references_only_non_secret_prefs(self):
+        cfg = generate_mcp_config(grafana_url="https://g.example")
+        env = cfg["mcpServers"]["nr2grafana"]["env"]
+        self.assertEqual(env[GRAFANA_URL_ENV], "https://g.example")
+        self.assertEqual(env[AWS_PROFILE_ENV], AWS_PROFILE_REF)
+        self.assertEqual(env[AWS_REGION_ENV], AWS_REGION_REF)
+        # No secret env vars are referenced or embedded in this entry.
+        self.assertNotIn(GRAFANA_TOKEN_ENV, env)
+        self.assertNotIn("NEW_RELIC_API_KEY", env)
+        self.assertNotIn("N2G_API_TOKEN", env)
+
+    def test_n2g_grafana_url_defaults_to_env_ref(self):
+        cfg = generate_mcp_config()
+        env = cfg["mcpServers"]["nr2grafana"]["env"]
+        self.assertEqual(env[GRAFANA_URL_ENV], "${%s}" % GRAFANA_URL_ENV)
+
+    def test_n2g_no_secret_embedded(self):
+        # Secrets present in the environment must never leak into the
+        # nr2grafana entry -- neither the value nor a reference.
+        token = "glsa_SUPER_SECRET_TOKEN_value_1234567890"
+        nr_key = "NRAK-SECRET_NEW_RELIC_KEY_0987654321"
+        api_tok = "n2g_api_secret_token_abcdef"
+        with mock.patch.dict("os.environ",
+                             {GRAFANA_TOKEN_ENV: token,
+                              "NEW_RELIC_API_KEY": nr_key,
+                              "N2G_API_TOKEN": api_tok}, clear=False):
+            cfg = generate_mcp_config(grafana_url="https://g.example")
+        blob = json.dumps(cfg["mcpServers"]["nr2grafana"])
+        self.assertNotIn(token, blob)
+        self.assertNotIn(nr_key, blob)
+        self.assertNotIn(api_tok, blob)
+
+    def test_n2g_coexists_with_grafana_and_aws(self):
+        cfg = generate_mcp_config(grafana_url="https://g.example",
+                                  include_aws_cost=True,
+                                  include_aws_cloudwatch=True)
+        servers = cfg["mcpServers"]
+        self.assertIn("nr2grafana", servers)
+        self.assertIn("grafana", servers)
+        self.assertIn("aws-cost-explorer", servers)
+        self.assertIn("aws-cloudwatch", servers)
+
+    def test_n2g_coexists_with_context_entry(self):
+        cfg = generate_mcp_config(
+            grafana_url="https://g.example",
+            n2g_context_path="/tmp/out/ai-context.md")
+        servers = cfg["mcpServers"]
+        self.assertIn("nr2grafana", servers)
+        self.assertIn("nr2grafana-context", servers)
 
 
 class CostViaMcpTests(unittest.TestCase):
