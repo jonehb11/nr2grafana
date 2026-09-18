@@ -3157,6 +3157,240 @@ class SecurityGuardTests(WebServerTestCase):
         self.assertEqual(code, 403)
 
 
+API_TOKEN = "n2g_test_token_abcdef0123456789"
+
+
+def _raw_request_full(base, method, path, headers, body=None):
+    """Like _raw_request but returns (status, headers dict, text)."""
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(base + path, data=data, method=method,
+                                 headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return resp.status, dict(resp.headers), resp.read().decode()
+    except urllib.error.HTTPError as e:
+        return e.code, dict(e.headers), e.read().decode()
+
+
+class TokenAuthTests(unittest.TestCase):
+    """B: N2G_API_TOKEN bearer auth. A valid token bypasses the
+    same-origin/CSRF guard for non-browser clients; a wrong/absent token
+    still 403s an off-origin POST; the token never appears in a response;
+    /api/spec is discoverable; a non-loopback bind without a token is
+    refused."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._patcher = mock.patch.dict(sys.modules, STUBS)
+        cls._patcher.start()
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.db_path = os.path.join(cls.tmp.name, "settings.json")
+        cls.store = FakeStore(cls.db_path)
+        websrv.SESSION = websrv.Session()
+        websrv.SESSION.nr_api_key = ""
+        websrv.SESSION.grafana_url = ""
+        websrv.SESSION.grafana_token = ""
+        websrv.SESSION.anthropic_api_key = ""
+        websrv._JOBS.clear()
+        cls.httpd = websrv.create_server("127.0.0.1", 0, store=cls.store,
+                                         api_token=API_TOKEN)
+        cls.port = cls.httpd.server_address[1]
+        cls.base = "http://127.0.0.1:%d" % cls.port
+        cls.thread = threading.Thread(
+            target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+        cls.thread.join(timeout=5)
+        cls.tmp.cleanup()
+        cls._patcher.stop()
+
+    def test_token_bypasses_csrf_for_off_origin_post(self):
+        # An off-origin POST that would normally 403 succeeds with a
+        # valid bearer token (non-browser client, evil Origin present).
+        code, _hdrs, text = _raw_request_full(
+            self.base, "POST", "/api/settings",
+            {"Content-Type": "application/json",
+             "Origin": "http://evil.example.com",
+             "Authorization": "Bearer " + API_TOKEN},
+            body={"nr_region": "US"})
+        self.assertEqual(code, 200, text)
+        self.assertTrue(json.loads(text)["ok"])
+
+    def test_token_bypasses_csrf_with_no_origin(self):
+        # No Origin/Referer at all (a plain curl) also succeeds with a
+        # valid token -- this is the headless-client path.
+        code, _hdrs, text = _raw_request_full(
+            self.base, "POST", "/api/settings",
+            {"Content-Type": "application/json",
+             "Authorization": "Bearer " + API_TOKEN},
+            body={"nr_region": "US"})
+        self.assertEqual(code, 200, text)
+        self.assertTrue(json.loads(text)["ok"])
+
+    def test_wrong_token_still_403_off_origin(self):
+        code, _hdrs, text = _raw_request_full(
+            self.base, "POST", "/api/settings",
+            {"Content-Type": "application/json",
+             "Authorization": "Bearer WRONG-" + API_TOKEN},
+            body={"nr_region": "US"})
+        self.assertEqual(code, 403)
+        self.assertIn("forbidden", text)
+
+    def test_absent_token_still_403_off_origin(self):
+        code, _hdrs, text = _raw_request_full(
+            self.base, "POST", "/api/settings",
+            {"Content-Type": "application/json"},
+            body={"nr_region": "US"})
+        self.assertEqual(code, 403)
+
+    def test_malformed_auth_header_still_403(self):
+        # Not "Bearer <token>" -- e.g. Basic, or the bare token.
+        for value in ("Basic " + API_TOKEN, API_TOKEN, "Bearer ",
+                      "Bearer  "):
+            code, _hdrs, _text = _raw_request_full(
+                self.base, "POST", "/api/settings",
+                {"Content-Type": "application/json",
+                 "Authorization": value},
+                body={"nr_region": "US"})
+            self.assertEqual(code, 403, value)
+
+    def test_same_origin_post_still_works_without_token(self):
+        # The browser path (same-origin, no token) is unchanged.
+        code, _hdrs, text = _raw_request_full(
+            self.base, "POST", "/api/settings",
+            {"Content-Type": "application/json", "Origin": self.base},
+            body={"nr_region": "US"})
+        self.assertEqual(code, 200, text)
+
+    def test_token_never_in_any_response(self):
+        # Health, spec and state must never leak the token in body or
+        # headers -- even when the request presents it.
+        for method, path, body, hdrs in (
+                ("GET", "/api/health", None, {}),
+                ("GET", "/api/spec", None, {}),
+                ("GET", "/api/state", None,
+                 {"Authorization": "Bearer " + API_TOKEN}),
+                ("POST", "/api/settings", {"nr_region": "US"},
+                 {"Content-Type": "application/json",
+                  "Authorization": "Bearer " + API_TOKEN})):
+            code, resp_hdrs, text = _raw_request_full(
+                self.base, method, path, hdrs, body=body)
+            self.assertIn(code, (200,), (path, code, text))
+            self.assertNotIn(API_TOKEN, text, path)
+            self.assertNotIn(API_TOKEN, json.dumps(resp_hdrs), path)
+
+    def test_health_is_unauthed_on_loopback(self):
+        code, _hdrs, text = _raw_request_full(
+            self.base, "GET", "/api/health", {})
+        self.assertEqual(code, 200)
+        body = json.loads(text)
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["app"], "nr2grafana")
+
+    def test_spec_shape_is_discoverable(self):
+        code, _hdrs, text = _raw_request_full(
+            self.base, "GET", "/api/spec", {})
+        self.assertEqual(code, 200)
+        spec = json.loads(text)
+        self.assertEqual(spec["app"], "nr2grafana")
+        self.assertIn("version", spec)
+        self.assertEqual(spec["auth"]["scheme"], "bearer")
+        self.assertEqual(spec["auth"]["env"], "N2G_API_TOKEN")
+        self.assertTrue(spec["auth"]["token_configured"])
+        self.assertTrue(spec["endpoints"])
+        paths = set()
+        for ep in spec["endpoints"]:
+            self.assertIn("method", ep)
+            self.assertIn("path", ep)
+            self.assertIn("summary", ep)
+            self.assertIn("auth", ep)
+            paths.add((ep["method"], ep["path"]))
+        self.assertIn(("GET", "/api/health"), paths)
+        self.assertIn(("GET", "/api/spec"), paths)
+        self.assertIn(("POST", "/api/convert"), paths)
+        # health + spec are advertised as unauthed.
+        for ep in spec["endpoints"]:
+            if ep["path"] in ("/api/health", "/api/spec"):
+                self.assertFalse(ep["auth"], ep)
+
+
+class NoTokenServerTests(WebServerTestCase):
+    """When no token is configured (the default server), a bearer header
+    must NOT help an off-origin POST -- behavior is exactly as before."""
+
+    def test_bogus_bearer_does_not_bypass_without_configured_token(self):
+        code, text = _raw_request(
+            self.base, "POST", "/api/settings",
+            {"Content-Type": "application/json",
+             "Origin": "http://evil.example.com",
+             "Authorization": "Bearer anything-at-all"},
+            body={"nr_region": "US"})
+        self.assertEqual(code, 403)
+
+    def test_spec_reports_token_not_configured(self):
+        code, spec = self.api("GET", "/api/spec")
+        self.assertEqual(code, 200)
+        self.assertFalse(spec["auth"]["token_configured"])
+
+    def test_health_ok(self):
+        code, body = self.api("GET", "/api/health")
+        self.assertEqual(code, 200)
+        self.assertTrue(body["ok"])
+
+
+class NonLoopbackBindTests(unittest.TestCase):
+    """B: binding a non-loopback host is refused without a token, and
+    accepted with one."""
+
+    def test_create_server_refuses_0000_without_token(self):
+        with self.assertRaises(ValueError) as ctx:
+            websrv.create_server("0.0.0.0", 0)
+        msg = str(ctx.exception)
+        self.assertIn("token", msg.lower())
+        self.assertIn("0.0.0.0", msg)
+
+    def test_create_server_refuses_empty_host_without_token(self):
+        # "" binds all interfaces -> treated as non-loopback.
+        with self.assertRaises(ValueError):
+            websrv.create_server("", 0)
+
+    def test_serve_refuses_0000_without_token(self):
+        # serve() must not bind/serve; it returns a non-zero code.
+        # Clear any ambient N2G_API_TOKEN so serve() truly has no token.
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("N2G_API_TOKEN", None)
+            rc = websrv.serve("0.0.0.0", 0, open_browser=False,
+                              store=FakeStore(os.path.join(
+                                  tempfile.mkdtemp(), "s.json")),
+                              api_token="")
+        self.assertNotEqual(rc, 0)
+
+    def test_create_server_accepts_non_loopback_with_token(self):
+        tmp = tempfile.mkdtemp()
+        store = FakeStore(os.path.join(tmp, "s.json"))
+        httpd = websrv.create_server("0.0.0.0", 0, store=store,
+                                     api_token=API_TOKEN)
+        try:
+            self.assertTrue(httpd.bound_nonloopback)
+            self.assertEqual(httpd.api_token, API_TOKEN)
+        finally:
+            httpd.server_close()
+
+    def test_loopback_bind_is_not_flagged_nonloopback(self):
+        tmp = tempfile.mkdtemp()
+        store = FakeStore(os.path.join(tmp, "s.json"))
+        httpd = websrv.create_server("127.0.0.1", 0, store=store)
+        try:
+            self.assertFalse(httpd.bound_nonloopback)
+            self.assertEqual(httpd.api_token, "")
+        finally:
+            httpd.server_close()
+
+
 class DownloadGateTests(WebServerTestCase):
     """A4: downloads are gated on migration readiness / human review,
     with ?force=1 as the deliberate override."""
