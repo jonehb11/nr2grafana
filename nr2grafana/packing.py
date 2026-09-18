@@ -218,13 +218,30 @@ def kubectl_available() -> bool:
         return False
 
 
+# kubectl is invoked ONLY to READ cluster state. This is the hard,
+# belt-and-suspenders gate mirroring awscost.ALLOWED: nr2grafana proposes
+# changes, it never executes them, so the sole permitted kubectl verb is a
+# read verb. Any other verb (apply/create/delete/patch/scale/edit/...) is
+# refused before exec even if a future caller passes it by mistake.
+_KUBECTL_READ_VERBS = frozenset(["get"])
+
+
 def _kget(args: List[str],
           log: Optional[Callable[[str], None]] = None) -> Optional[Dict]:
     """Run ``kubectl <args> -o json`` and return parsed JSON, or None.
 
     Never raises: a missing cluster / CRD / permission error becomes a
-    logged note and a None return so callers degrade cleanly.
+    logged note and a None return so callers degrade cleanly. The FIRST
+    token in ``args`` is the kubectl verb and MUST be a read verb (``get``);
+    anything else is refused before exec (nr2grafana never mutates a
+    cluster -- it proposes, GitOps/IaC applies).
     """
+    verb = args[0] if args else ""
+    if verb not in _KUBECTL_READ_VERBS:
+        _emit(log, "kubectl %r refused: nr2grafana only READS cluster "
+              "state (read-only verbs: %s)"
+              % (verb, ", ".join(sorted(_KUBECTL_READ_VERBS))))
+        return None
     try:
         out = subprocess.run(
             ["kubectl"] + list(args) + ["-o", "json"],

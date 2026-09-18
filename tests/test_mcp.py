@@ -13,6 +13,8 @@ from nr2grafana.mcp import (MCPClient, MCPError, GRAFANA_TOKEN_ENV,
                             GRAFANA_TOKEN_REF, AWS_PROFILE_ENV,
                             AWS_REGION_ENV, AWS_PROFILE_REF, AWS_REGION_REF,
                             AWS_COST_MCP_COMMAND, AWS_COST_MCP_PACKAGE,
+                            AWS_CLOUDWATCH_MCP_COMMAND,
+                            AWS_CLOUDWATCH_MCP_PACKAGE,
                             generate_mcp_config, cost_via_mcp, probe)
 
 
@@ -424,6 +426,64 @@ class AwsCostConfigTests(unittest.TestCase):
                                   include_aws_cost=True)
         self.assertIn("grafana", cfg["mcpServers"])
         self.assertIn("aws-cost-explorer", cfg["mcpServers"])
+
+
+class AwsCloudWatchConfigTests(unittest.TestCase):
+    def test_cloudwatch_off_by_default(self):
+        cfg = generate_mcp_config(grafana_url="https://g.example")
+        self.assertNotIn("aws-cloudwatch", cfg["mcpServers"])
+
+    def test_cloudwatch_server_added(self):
+        cfg = generate_mcp_config(grafana_url="https://g.example",
+                                  include_aws_cloudwatch=True)
+        self.assertIn("aws-cloudwatch", cfg["mcpServers"])
+        entry = cfg["mcpServers"]["aws-cloudwatch"]
+        self.assertEqual(entry["command"], AWS_CLOUDWATCH_MCP_COMMAND)
+        self.assertEqual(entry["command"], "uvx")
+        self.assertIn(AWS_CLOUDWATCH_MCP_PACKAGE, entry["args"])
+        self.assertEqual(entry["env"][AWS_PROFILE_ENV], AWS_PROFILE_REF)
+        self.assertEqual(entry["env"][AWS_REGION_ENV], AWS_REGION_REF)
+
+    def test_cloudwatch_kiro_extra_fields(self):
+        cfg = generate_mcp_config(kind="kiro", include_grafana=False,
+                                  include_aws_cloudwatch=True)
+        entry = cfg["mcpServers"]["aws-cloudwatch"]
+        self.assertEqual(entry["disabled"], False)
+        self.assertEqual(entry["autoApprove"], [])
+
+    def test_cloudwatch_no_secret_embedded(self):
+        # A real-looking AWS key in the environment must never leak into
+        # the generated config -- only the ${AWS_PROFILE} reference.
+        akid = "AKIAIOSFODNN7EXAMPLE"
+        secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        with mock.patch.dict("os.environ",
+                             {"AWS_ACCESS_KEY_ID": akid,
+                              "AWS_SECRET_ACCESS_KEY": secret,
+                              AWS_PROFILE_ENV: "prod"}, clear=False):
+            cfg = generate_mcp_config(grafana_url="https://g.example",
+                                      include_aws_cloudwatch=True)
+        blob = json.dumps(cfg)
+        self.assertNotIn(akid, blob)
+        self.assertNotIn(secret, blob)
+        self.assertNotIn("prod", blob)
+        self.assertIn(AWS_PROFILE_REF, blob)
+        self.assertIn(AWS_REGION_REF, blob)
+
+    def test_all_aws_servers_coexist_with_grafana(self):
+        cfg = generate_mcp_config(grafana_url="https://g.example",
+                                  include_aws_cost=True,
+                                  include_aws_cloudwatch=True)
+        self.assertIn("grafana", cfg["mcpServers"])
+        self.assertIn("aws-cost-explorer", cfg["mcpServers"])
+        self.assertIn("aws-cloudwatch", cfg["mcpServers"])
+
+    def test_cost_and_cloudwatch_are_distinct_packages(self):
+        cfg = generate_mcp_config(include_grafana=False,
+                                  include_aws_cost=True,
+                                  include_aws_cloudwatch=True)
+        cost = cfg["mcpServers"]["aws-cost-explorer"]
+        cw = cfg["mcpServers"]["aws-cloudwatch"]
+        self.assertNotEqual(cost["args"], cw["args"])
 
 
 class CostViaMcpTests(unittest.TestCase):

@@ -40,7 +40,8 @@ ARTIFACT_KINDS = ("requirements", "widget-report", "datatest", "check",
                   "parity", "diagnosis", "heal", "samples", "review",
                   "comparison", "nr-source", "traffic", "cost",
                   "optimize", "deepdive", "packing", "ai-context",
-                  "tco", "tco-snapshot")
+                  "tco", "tco-snapshot", "rca", "mitigation",
+                  "flowlogs")
 
 CHANGE_SOURCES = ("user", "ai", "auto")
 

@@ -210,7 +210,7 @@ class NoCommandTests(unittest.TestCase):
 
 class VersionTests(unittest.TestCase):
     def test_package_version(self):
-        self.assertEqual(nr2grafana.__version__, "1.8.0")
+        self.assertEqual(nr2grafana.__version__, "1.9.0")
 
 
 class _TempDbMixin:
@@ -1673,8 +1673,379 @@ class NewCommandsListedTests(unittest.TestCase):
     def test_new_commands_appear_in_top_level_help(self):
         code, out, err = run_cli([])
         self.assertEqual(code, 2)
-        for name in ("deepdive", "ai-context", "ai", "mcp", "tco"):
+        for name in ("deepdive", "ai-context", "ai", "mcp", "tco", "aws"):
             self.assertIn(name, out)
+
+
+# ---------------------------------------------------------------------------
+# cost rca / cost mitigate / aws profiles (1.9) -- siblings stubbed
+# ---------------------------------------------------------------------------
+
+def _rca_stub_modules(available=True, anomalies=None, with_flowlogs=True):
+    """Fake awscost/rca/flowlogs/mitigate modules matching the section
+    2-4 contracts, installed under their nr2grafana.* names."""
+    import types
+
+    awscost = types.ModuleType("nr2grafana.awscost")
+    awscost.get_calls = []
+    awscost.AWSError = type("AWSError", (Exception,), {})
+
+    def aws_available():
+        return available
+
+    def list_profiles():
+        return ["default", "prod"]
+
+    def get_anomalies(start, end, monitor_arn="", max_results=0,
+                      region="us-east-1", profile=""):
+        awscost.get_calls.append({"start": start, "end": end,
+                                  "profile": profile})
+        return anomalies if anomalies is not None else []
+
+    def caller_identity(region="us-east-1", profile=""):
+        return {"Account": "348342704569"}
+
+    awscost.aws_available = aws_available
+    awscost.list_profiles = list_profiles
+    awscost.get_anomalies = get_anomalies
+    awscost.caller_identity = caller_identity
+
+    rca = types.ModuleType("nr2grafana.rca")
+    rca.analyze_calls = []
+    rca.parse_calls = []
+
+    def parse_anomaly_report(payload):
+        rca.parse_calls.append(payload)
+        usage = "USE1-DataTransfer-Regional-Bytes"
+        if isinstance(payload, dict):
+            for cause in (payload.get("RootCauses") or []):
+                if cause.get("UsageType"):
+                    usage = cause["UsageType"]
+        return {"usage_type": usage, "service": "EBS",
+                "account": "348342704569", "region": "us-east-1",
+                "usd_per_day": 164.0, "hypothesis_class": "CROSS_AZ_NETWORK"}
+
+    def analyze(anomaly, aws=None, flowlogs=None, deepdive=None,
+                packing=None, tco=None, k8s=None, cfg=None, log=None):
+        rca.analyze_calls.append({"anomaly": anomaly, "aws": aws,
+                                  "flowlogs": flowlogs, "cfg": cfg})
+        if log:
+            log("rca stub analyzing")
+        return {
+            "schema": "nr2grafana/rca/v1",
+            "incident": {"usage_type": anomaly.get("usage_type"),
+                         "service": anomaly.get("service"),
+                         "account": "348342704569", "region": "us-east-1",
+                         "usd_per_day": 164.0, "gb_per_day": 16470.0,
+                         "onset": "2026-08-31",
+                         "step_change": "2026-08-31"},
+            "cause": {
+                "dominant": {
+                    "share": 91,
+                    "summary": "Non-zone-aware Mimir/Loki ring "
+                               "replication + query fan-out on gRPC port "
+                               "9095 across 2 imbalanced AZs",
+                    "evidence": ["vpc-flow-logs: port 9095 = 91% of "
+                                 "cross-AZ bytes"]},
+                "secondary": [{
+                    "share": 8,
+                    "summary": "Cross-zone-enabled Mimir NLB",
+                    "evidence": ["elbv2: cross_zone.enabled=true"]}],
+                "ruled_out": [{
+                    "cause": "EBS storage growth",
+                    "evidence": "ce storage usage-type flat; volume "
+                                "count/size flat across the step-change"}]},
+            "evidence_convergence": ["cost-explorer", "vpc-flow-logs",
+                                     "eks-control-plane"],
+            "confidence": "HIGH" if flowlogs is not None else "LOW"}
+
+    rca.parse_anomaly_report = parse_anomaly_report
+    rca.analyze = analyze
+
+    flowlogs = types.ModuleType("nr2grafana.flowlogs")
+    flowlogs.analyze = lambda *a, **k: {"schema": "nr2grafana/flowlogs/v1"}
+
+    mitigate = types.ModuleType("nr2grafana.mitigate")
+    mitigate.plan_calls = []
+
+    def plan(rca_data, deepdive=None, packing=None, capacity=None,
+             cfg=None):
+        mitigate.plan_calls.append({"rca": rca_data, "deepdive": deepdive,
+                                    "packing": packing})
+        return {
+            "schema": "nr2grafana/mitigation/v1",
+            "mitigations": [
+                {"title": "Make Mimir/Loki zone-aware (write+read path)",
+                 "est_savings": {"usd_per_day": 149.0, "pct": 91},
+                 "reliability_guardrails": [
+                     "RF must be <= number of zones; deploy across >= RF "
+                     "zones (RF=3 -> 3 AZs)",
+                     "Migrate the live ring one zone at a time via the "
+                     "rollout-operator"],
+                 "keeps_availability": True, "keeps_durability": True,
+                 "keeps_performance": True,
+                 "handles_current_traffic": True,
+                 "owner": "GitOps/IaC -- proposal only, never executed",
+                 "configs": [{"target": "mimir", "language": "yaml",
+                              "snippet": "ingester:\n  ring:\n    "
+                                         "zone_awareness_enabled: true",
+                              "note": "RF must be <= #zones"}]},
+                {"title": "Disable cross-zone on the Mimir NLB",
+                 "est_savings": {"usd_per_day": 13.0, "pct": 8},
+                 "reliability_guardrails": [
+                     "confirm >=1 healthy target in EVERY enabled AZ via "
+                     "describe-target-health before disabling cross-zone, "
+                     "else the single-target AZ black-holes"],
+                 "keeps_availability": False, "keeps_durability": True,
+                 "keeps_performance": True,
+                 "handles_current_traffic": True,
+                 "owner": "GitOps/IaC -- proposal only, never executed",
+                 "configs": [{"target": "nlb", "language": "yaml",
+                              "snippet": "annotations:\n  "
+                                         "cross_zone.enabled=false",
+                              "note": "gated on target health"}]}],
+            "summary": {"usd_per_day_saved": 149.0}}
+
+    mitigate.plan = plan
+
+    mods = {"nr2grafana.awscost": awscost, "nr2grafana.rca": rca,
+            "nr2grafana.mitigate": mitigate}
+    # flowlogs absent -> rca.analyze gets flowlogs=None -> confidence LOW
+    mods["nr2grafana.flowlogs"] = flowlogs if with_flowlogs else None
+    return mods
+
+
+class CostRcaTests(_TempDbMixin, unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.out = os.path.join(self.tmp.name, "rca-out")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+        super().tearDown()
+
+    def _write_report(self, text="EBS DataTransfer-Regional-Bytes spike"):
+        path = os.path.join(self.tmp.name, "anomaly.txt")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        return path
+
+    def test_rca_from_file_writes_report_and_prints_breakdown(self):
+        path = self._write_report()
+        stubs = _rca_stub_modules()
+        with mock.patch.dict("sys.modules", stubs):
+            code, sout, serr = run_cli(
+                ["cost", "rca", "--anomaly-file", path, "-o", self.out])
+        self.assertEqual(code, 0)
+        # breakdown printed
+        self.assertIn("root-cause analysis", sout)
+        self.assertIn("dominant cause (91%)", sout)
+        self.assertIn("secondary cause", sout)
+        self.assertIn("ruled out", sout)
+        self.assertIn("EBS storage growth", sout)
+        self.assertIn("evidence convergence", sout)
+        self.assertIn("vpc-flow-logs", sout)
+        self.assertIn("confidence: HIGH", sout)
+        self.assertIn("$164.00/day", sout)
+        # rca.json on disk
+        rca_path = os.path.join(self.out, "rca.json")
+        self.assertTrue(os.path.isfile(rca_path))
+        with open(rca_path, encoding="utf-8") as f:
+            rca = json.load(f)
+        self.assertEqual(rca["schema"], "nr2grafana/rca/v1")
+        # persisted to the local store (instance slug)
+        with Store(self.db_path) as store:
+            art = store.get_artifact("__instance__", "rca")
+        self.assertEqual(art["confidence"], "HIGH")
+
+    def test_rca_flow_logs_group_threaded_into_cfg(self):
+        path = self._write_report()
+        stubs = _rca_stub_modules()
+        with mock.patch.dict("sys.modules", stubs):
+            code, sout, serr = run_cli(
+                ["cost", "rca", "--anomaly-file", path,
+                 "--flow-logs-group", "/vpc/flowlogs", "-o", self.out])
+        self.assertEqual(code, 0)
+        call = stubs["nr2grafana.rca"].analyze_calls[-1]
+        self.assertEqual(call["cfg"]["flow_logs_group"], "/vpc/flowlogs")
+
+    def test_rca_paste_from_stdin(self):
+        stubs = _rca_stub_modules()
+        with mock.patch.dict("sys.modules", stubs), \
+                mock.patch.object(cli.sys, "stdin",
+                                  io.StringIO("EBS Regional-Bytes spike")):
+            code, sout, serr = run_cli(
+                ["cost", "rca", "--paste", "-o", self.out])
+        self.assertEqual(code, 0)
+        self.assertIn("dominant cause", sout)
+        self.assertTrue(stubs["nr2grafana.rca"].parse_calls)
+
+    def test_rca_by_anomaly_id_fetches_via_ce(self):
+        anomaly = {"AnomalyId": "abc-123",
+                   "RootCauses": [{"Service": "EBS",
+                                   "UsageType":
+                                   "USE1-DataTransfer-Regional-Bytes"}]}
+        stubs = _rca_stub_modules(anomalies=[anomaly])
+        with mock.patch.dict("sys.modules", stubs):
+            code, sout, serr = run_cli(
+                ["cost", "rca", "--anomaly-id", "abc-123",
+                 "--profile", "prod", "-o", self.out])
+        self.assertEqual(code, 0)
+        self.assertTrue(stubs["nr2grafana.awscost"].get_calls)
+        self.assertEqual(
+            stubs["nr2grafana.awscost"].get_calls[-1]["profile"], "prod")
+        # the CE anomaly's usage type flowed through parse_anomaly_report
+        self.assertIn("DataTransfer-Regional-Bytes", sout)
+
+    def test_rca_anomaly_id_not_found_exits_one(self):
+        stubs = _rca_stub_modules(anomalies=[])
+        with mock.patch.dict("sys.modules", stubs):
+            code, sout, serr = run_cli(
+                ["cost", "rca", "--anomaly-id", "missing", "-o", self.out])
+        self.assertEqual(code, 1)
+        self.assertIn("not found", serr)
+
+    def test_rca_anomaly_id_without_aws_exits_two(self):
+        stubs = _rca_stub_modules(available=False)
+        with mock.patch.dict("sys.modules", stubs):
+            code, sout, serr = run_cli(
+                ["cost", "rca", "--anomaly-id", "abc", "-o", self.out])
+        self.assertEqual(code, 2)
+        self.assertIn("needs AWS access", serr)
+
+    def test_rca_no_source_exits_two(self):
+        stubs = _rca_stub_modules()
+        with mock.patch.dict("sys.modules", stubs):
+            code, sout, serr = run_cli(["cost", "rca", "-o", self.out])
+        self.assertEqual(code, 2)
+        self.assertIn("choose an anomaly source", serr)
+
+    def test_rca_degrades_without_aws_from_report(self):
+        # No AWS + no flow logs module -> confidence LOW, but still runs
+        path = self._write_report()
+        stubs = _rca_stub_modules(available=False, with_flowlogs=False)
+        with mock.patch.dict("sys.modules", stubs):
+            code, sout, serr = run_cli(
+                ["cost", "rca", "--anomaly-file", path, "-o", self.out])
+        self.assertEqual(code, 0)
+        self.assertIn("confidence: LOW", sout)
+        self.assertIn("AWS CLI not found", serr)
+
+    def test_rca_unavailable_exits_two(self):
+        with mock.patch.dict("sys.modules", {"nr2grafana.rca": None}):
+            code, sout, serr = run_cli(
+                ["cost", "rca", "--paste", "-o", self.out])
+        self.assertEqual(code, 2)
+        self.assertIn("nr2grafana.rca not importable", serr)
+
+
+class CostMitigateTests(_TempDbMixin, unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.out = os.path.join(self.tmp.name, "mit-out")
+        self.rca_path = os.path.join(self.tmp.name, "rca.json")
+        with open(self.rca_path, "w", encoding="utf-8") as f:
+            json.dump({"schema": "nr2grafana/rca/v1",
+                       "incident": {"usage_type": "regional-bytes"},
+                       "cause": {"dominant": {"share": 91}}}, f)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+        super().tearDown()
+
+    def test_mitigate_writes_plan_and_configs(self):
+        stubs = _rca_stub_modules()
+        with mock.patch.dict("sys.modules", stubs):
+            code, sout, serr = run_cli(
+                ["cost", "mitigate", self.rca_path, "-o", self.out])
+        self.assertEqual(code, 0)
+        # ranked table + savings + preconditions + loud caveat
+        self.assertIn("Reliability-safe mitigation plan", sout)
+        self.assertIn("Make Mimir/Loki zone-aware", sout)
+        self.assertIn("$149.00", sout)
+        self.assertIn("precondition:", sout)
+        self.assertIn("rollout-operator", sout)
+        # NLB mitigation reduces availability -> loud caveat
+        self.assertIn("CAUTION: may reduce availability", sout)
+        # safe headline excludes the demoted NLB item ($149, not $162)
+        self.assertIn("$149.00/day saveable without reducing", sout)
+        # plan + generic configs on disk
+        plan_path = os.path.join(self.out, "mitigation.json")
+        self.assertTrue(os.path.isfile(plan_path))
+        with open(plan_path, encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["schema"],
+                             "nr2grafana/mitigation/v1")
+        mimir = os.path.join(self.out, "config", "mimir-zone-aware.yaml")
+        nlb = os.path.join(self.out, "config", "nlb-crosszone.yaml")
+        self.assertTrue(os.path.isfile(mimir))
+        self.assertTrue(os.path.isfile(nlb))
+        with open(mimir, encoding="utf-8") as f:
+            text = f.read()
+        self.assertIn("zone_awareness_enabled: true", text)
+        self.assertIn("PRECONDITION:", text)
+        self.assertTrue(os.path.isfile(
+            os.path.join(self.out, "config", "README.md")))
+        # persisted to the local store
+        with Store(self.db_path) as store:
+            art = store.get_artifact("__instance__", "mitigation")
+        self.assertEqual(art["schema"], "nr2grafana/mitigation/v1")
+
+    def test_mitigate_default_rca_path(self):
+        # positional omitted -> defaults to ./rca.json (cwd)
+        stubs = _rca_stub_modules()
+        cwd = os.getcwd()
+        try:
+            os.chdir(self.tmp.name)
+            with mock.patch.dict("sys.modules", stubs):
+                code, sout, serr = run_cli(
+                    ["cost", "mitigate", "-o", self.out])
+        finally:
+            os.chdir(cwd)
+        self.assertEqual(code, 0)
+        self.assertTrue(stubs["nr2grafana.mitigate"].plan_calls)
+
+    def test_mitigate_missing_rca_exits_one(self):
+        stubs = _rca_stub_modules()
+        with mock.patch.dict("sys.modules", stubs):
+            code, sout, serr = run_cli(
+                ["cost", "mitigate", "/nonexistent/rca.json",
+                 "-o", self.out])
+        self.assertEqual(code, 1)
+        self.assertIn("could not read RCA file", serr)
+
+    def test_mitigate_unavailable_exits_two(self):
+        with mock.patch.dict("sys.modules",
+                             {"nr2grafana.mitigate": None}):
+            code, sout, serr = run_cli(
+                ["cost", "mitigate", self.rca_path, "-o", self.out])
+        self.assertEqual(code, 2)
+        self.assertIn("nr2grafana.mitigate not importable", serr)
+
+
+class AwsProfilesTests(unittest.TestCase):
+    def test_profiles_lists_local_profiles(self):
+        stubs = _rca_stub_modules()
+        with mock.patch.dict("sys.modules", stubs):
+            code, sout, serr = run_cli(["aws", "profiles"])
+        self.assertEqual(code, 0)
+        self.assertIn("default", sout)
+        self.assertIn("prod", sout)
+        self.assertIn("never", serr)  # credentials never read
+
+    def test_profiles_empty(self):
+        stubs = _rca_stub_modules()
+        stubs["nr2grafana.awscost"].list_profiles = lambda: []
+        with mock.patch.dict("sys.modules", stubs):
+            code, sout, serr = run_cli(["aws", "profiles"])
+        self.assertEqual(code, 0)
+        self.assertIn("no AWS profiles found", serr)
+
+    def test_aws_without_subcommand_prints_help(self):
+        code, out, err = run_cli(["aws"])
+        self.assertEqual(code, 2)
+        self.assertIn("profiles", out)
 
 
 if __name__ == "__main__":

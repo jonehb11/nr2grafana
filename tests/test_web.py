@@ -767,10 +767,19 @@ def _stub_aicontext():
         return {"answer": "stub answer to: %s" % question,
                 "backend": getattr(assistant, "backend_name", "api")}
 
+    def analyze_cost(assistant, context):
+        return {"root_cause": "cross-AZ ring on port 9095",
+                "mitigations": [{"title": "zone-aware Mimir",
+                                 "keeps_availability": True}],
+                "config_notes": "generic placeholders only",
+                "mode": context.get("mode"),
+                "backend": getattr(assistant, "backend_name", "api")}
+
     m.build_context = build_context
     m.to_markdown = to_markdown
     m.to_prompt = to_prompt
     m.troubleshoot = troubleshoot
+    m.analyze_cost = analyze_cost
     return m
 
 
@@ -842,7 +851,26 @@ def _stub_awscost():
         return {"Total": {"Amount": "0"}}
 
     def get_anomalies(*a, **k):
-        return []
+        # A cross-AZ "DataTransfer-Regional-Bytes" anomaly in the exact
+        # GetAnomalies JSON shape (0.7): the EBS service tag is a
+        # classification artifact; the dollars are cross-AZ transfer.
+        return [{
+            "AnomalyId": "anom-1",
+            "AnomalyStartDate": "2026-08-31",
+            "AnomalyEndDate": "2026-09-14",
+            "DimensionValue": "AmazonEBS",
+            "Impact": {"MaxImpact": 164.0, "TotalImpact": 2296.0,
+                       "TotalActualSpend": 2460.0,
+                       "TotalExpectedSpend": 164.0,
+                       "TotalImpactPercentage": 1400.0},
+            "RootCauses": [{
+                "Service": "AmazonEBS", "Region": "us-east-1",
+                "LinkedAccount": "348342704569",
+                "UsageType": "USE1-DataTransfer-Regional-Bytes",
+                "Impact": {"Contribution": 164.0}}]}]
+
+    def list_profiles(*a, **k):
+        return ["default", "prod-readonly"]
 
     def s3_bucket_sizes(*a, **k):
         return {}
@@ -853,7 +881,144 @@ def _stub_awscost():
     m.get_cost_and_usage = get_cost_and_usage
     m.get_cost_forecast = get_cost_forecast
     m.get_anomalies = get_anomalies
+    m.list_profiles = list_profiles
     m.s3_bucket_sizes = s3_bucket_sizes
+    return m
+
+
+def _stub_rca():
+    m = types.ModuleType("nr2grafana.rca")
+    m.analyze_calls = []
+    m.parse_calls = []
+
+    def parse_anomaly_report(text_or_json):
+        m.parse_calls.append(text_or_json)
+        usage = "USE1-DataTransfer-Regional-Bytes"
+        account = "348342704569"
+        region = "us-east-1"
+        if isinstance(text_or_json, dict):
+            rc = (text_or_json.get("RootCauses") or [{}])[0]
+            usage = rc.get("UsageType") or usage
+            account = rc.get("LinkedAccount") or account
+            region = rc.get("Region") or region
+        return {"schema": "nr2grafana/rca-anomaly/v1",
+                "usage_type": usage, "service": "AmazonEBS",
+                "account": account, "region": region,
+                "hypothesis_class": "CROSS_AZ_NETWORK",
+                "usd_per_day": 164.0, "gb_per_day": 8235.0,
+                "onset": "2026-08-31", "step_change": "2026-08-31"}
+
+    def analyze(anomaly, aws=None, flowlogs=None, deepdive=None,
+                packing=None, tco=None, k8s=None, cfg=None, log=None):
+        m.analyze_calls.append({"has_aws": aws is not None,
+                                "has_flowlogs": flowlogs is not None,
+                                "anomaly": anomaly})
+        if log:
+            log("rca stub converging evidence")
+        convergence = ["cost-explorer"]
+        if flowlogs is not None:
+            convergence.append("vpc-flow-logs")
+        return {"schema": "nr2grafana/rca/v1",
+                "incident": {"usage_type": anomaly.get("usage_type"),
+                             "usd_per_day": anomaly.get("usd_per_day"),
+                             "gb_per_day": anomaly.get("gb_per_day"),
+                             "step_change": anomaly.get("step_change")},
+                "cause": {"dominant": {
+                              "share": 91,
+                              "summary": "non-zone-aware ring cross-AZ "
+                                         "on gRPC port 9095",
+                              "evidence": convergence},
+                          "secondary": [{"share": 8,
+                                         "summary": "cross-zone NLB"}],
+                          "ruled_out": [{"cause": "EBS storage growth",
+                                         "evidence": "storage flat"}]},
+                "evidence_convergence": convergence,
+                "confidence": "high" if flowlogs is not None else "low"}
+
+    m.parse_anomaly_report = parse_anomaly_report
+    m.analyze = analyze
+    return m
+
+
+def _stub_mitigate():
+    m = types.ModuleType("nr2grafana.mitigate")
+    m.plan_calls = []
+
+    def plan(rca, deepdive=None, packing=None, capacity=None, cfg=None):
+        m.plan_calls.append({"rca": rca,
+                             "has_deepdive": deepdive is not None})
+        return {"schema": "nr2grafana/mitigation/v1",
+                "mitigations": [
+                    {"title": "Enable Mimir/Loki zone-aware replication",
+                     "expected_saving": {"usd_per_day": 149.0,
+                                         "pct": 91},
+                     "keeps_availability": True, "keeps_durability": True,
+                     "keeps_performance": True,
+                     "handles_current_traffic": True,
+                     "reliability_guardrails": [
+                         "deploy across a number of zones >= RF"],
+                     "owner": "GitOps/IaC -- proposal only, never "
+                              "executed",
+                     "configs": [
+                         {"filename": "mimir-zone-aware.yaml",
+                          "language": "yaml",
+                          "snippet": "mimir:\n  structuredConfig:\n"
+                                     "    ingester:\n      ring:\n"
+                                     "        zone_awareness_enabled: "
+                                     "true\n",
+                          "note": "migrate the live ring zone-by-zone"}]},
+                    {"title": "Disable NLB cross-zone (GATED)",
+                     "expected_saving": {"usd_per_day": 13.0, "pct": 8},
+                     "keeps_availability": False,
+                     "keeps_durability": True, "keeps_performance": True,
+                     "handles_current_traffic": True,
+                     "reliability_guardrails": [
+                         "confirm >=1 healthy target in EVERY enabled AZ "
+                         "before disabling cross-zone, else the thin AZ "
+                         "black-holes"],
+                     "owner": "GitOps/IaC -- proposal only, never "
+                              "executed",
+                     "configs": [
+                         {"target": "nlb-service", "language": "yaml",
+                          "snippet": "service.beta.kubernetes.io/"
+                                     "aws-load-balancer-attributes: "
+                                     "load_balancing.cross_zone."
+                                     "enabled=false\n",
+                          "note": "GATED: never blind-disable"}]}]}
+
+    m.plan = plan
+    return m
+
+
+def _stub_reliability():
+    m = types.ModuleType("nr2grafana.reliability")
+
+    def check(mitigation, context=None):
+        return {"safe": True, "violations": [],
+                "required_preconditions": []}
+
+    m.check = check
+    return m
+
+
+def _stub_flowlogs():
+    m = types.ModuleType("nr2grafana.flowlogs")
+    m.analyze_calls = []
+
+    def analyze(aws, log_group="", region="", profile="", start="",
+                end="", onset=None, cfg=None, log=None):
+        m.analyze_calls.append({"log_group": log_group,
+                                "region": region, "onset": onset})
+        if log:
+            log("flowlogs stub attributing cross-AZ bytes")
+        return {"schema": "nr2grafana/flowlogs/v1",
+                "log_group": log_group, "dominant_port": 9095,
+                "cross_az_gb_per_day": 8235.0,
+                "drivers": [{"port": 9095, "pct_of_cross_az": 91,
+                             "gb_per_day": 7500.0}],
+                "step_change": "2026-08-31"}
+
+    m.analyze = analyze
     return m
 
 
@@ -924,6 +1089,10 @@ STUBS = {
     "nr2grafana.mcp": _stub_mcp(),
     "nr2grafana.awscost": _stub_awscost(),
     "nr2grafana.tco": _stub_tco(),
+    "nr2grafana.rca": _stub_rca(),
+    "nr2grafana.mitigate": _stub_mitigate(),
+    "nr2grafana.reliability": _stub_reliability(),
+    "nr2grafana.flowlogs": _stub_flowlogs(),
 }
 
 
@@ -2711,6 +2880,199 @@ class TcoRouteTests(WebServerTestCase):
         self.assertEqual(code, 200)
         self.assertTrue(st["features"].get("tco"))
         self.assertTrue(st["features"].get("aws"))
+
+
+class RcaMitigateRouteTests(WebServerTestCase):
+    """1.9 cost-anomaly RCA + reliability-safe mitigation routes:
+    /api/rca (pasted report OR anomaly_id), /api/mitigate,
+    /api/rca/analyze, /api/aws/profiles, /api/aws/anomalies,
+    /download/mitigation-configs.zip, and the rca feature flag."""
+
+    def setUp(self):
+        STUBS["nr2grafana.awscost"].available = True
+        STUBS["nr2grafana.rca"].analyze_calls = []
+        STUBS["nr2grafana.rca"].parse_calls = []
+        STUBS["nr2grafana.mitigate"].plan_calls = []
+        STUBS["nr2grafana.flowlogs"].analyze_calls = []
+        websrv.SESSION.anthropic_api_key = ""
+
+    def test_state_features_include_rca(self):
+        code, st = self.api("GET", "/api/state")
+        self.assertEqual(code, 200)
+        self.assertTrue(st["features"].get("rca"))
+
+    def test_rca_requires_report_or_id(self):
+        code, body = self.api("POST", "/api/rca", {})
+        self.assertEqual(code, 400)
+        self.assertIn("error", body)
+
+    def test_rca_from_pasted_report(self):
+        code, resp = self.api(
+            "POST", "/api/rca",
+            {"report": "EBS DataTransfer-Regional-Bytes spike ~$164/day, "
+                       "step change 2026-08-31, acct 348342704569 "
+                       "us-east-1"})
+        self.assertEqual(code, 200)
+        job = poll_job(self.base, resp["job"])
+        self.assertEqual(job["status"], "done", job)
+        rca = job["result"]["rca"]
+        self.assertEqual(rca["schema"], "nr2grafana/rca/v1")
+        self.assertEqual(rca["cause"]["ruled_out"][0]["cause"],
+                         "EBS storage growth")
+        art = self.store.get_artifact(websrv._INSTANCE_SLUG, "rca")
+        self.assertIsNotNone(art)
+        self.assertTrue(STUBS["nr2grafana.rca"].parse_calls)
+
+    def test_rca_with_flow_logs_persists_flowlogs(self):
+        code, resp = self.api(
+            "POST", "/api/rca",
+            {"report": "cross-AZ DataTransfer-Regional-Bytes",
+             "flow_logs_group": "/aws/vpc/flowlogs"})
+        self.assertEqual(code, 200)
+        job = poll_job(self.base, resp["job"])
+        self.assertEqual(job["status"], "done", job)
+        self.assertTrue(STUBS["nr2grafana.flowlogs"].analyze_calls)
+        self.assertEqual(
+            STUBS["nr2grafana.flowlogs"].analyze_calls[-1]["log_group"],
+            "/aws/vpc/flowlogs")
+        fl = self.store.get_artifact(websrv._INSTANCE_SLUG, "flowlogs")
+        self.assertIsNotNone(fl)
+        self.assertEqual(fl["dominant_port"], 9095)
+        # converged flow-log evidence lifts confidence
+        self.assertEqual(job["result"]["rca"]["confidence"], "high")
+        self.assertIn("vpc-flow-logs",
+                      job["result"]["rca"]["evidence_convergence"])
+
+    def test_rca_by_anomaly_id(self):
+        code, resp = self.api("POST", "/api/rca",
+                              {"anomaly_id": "anom-1"})
+        self.assertEqual(code, 200)
+        job = poll_job(self.base, resp["job"])
+        self.assertEqual(job["status"], "done", job)
+        # parsed from the CE-fetched GetAnomalies JSON, not a string
+        parsed = STUBS["nr2grafana.rca"].parse_calls[-1]
+        self.assertIsInstance(parsed, dict)
+        self.assertEqual(parsed["AnomalyId"], "anom-1")
+
+    def test_rca_unknown_anomaly_id_is_error_job(self):
+        code, resp = self.api("POST", "/api/rca",
+                              {"anomaly_id": "no-such-anom"})
+        self.assertEqual(code, 200)
+        job = poll_job(self.base, resp["job"])
+        self.assertEqual(job["status"], "error")
+        self.assertIn("no anomaly", job["error"])
+
+    def test_rca_anomaly_id_requires_aws(self):
+        STUBS["nr2grafana.awscost"].available = False
+        code, body = self.api("POST", "/api/rca",
+                              {"anomaly_id": "anom-1"})
+        self.assertEqual(code, 400)
+        self.assertIn("AWS CLI", body["error"])
+
+    def test_mitigate_without_rca_404(self):
+        code, body = self.api("POST", "/api/mitigate",
+                              {"slug": "no-rca-here"})
+        self.assertEqual(code, 404)
+        self.assertIn("error", body)
+
+    def test_mitigate_from_stored_rca(self):
+        code, resp = self.api("POST", "/api/rca",
+                              {"report": "cross-AZ transfer spike"})
+        poll_job(self.base, resp["job"])
+        code, resp = self.api("POST", "/api/mitigate", {})
+        self.assertEqual(code, 200)
+        job = poll_job(self.base, resp["job"])
+        self.assertEqual(job["status"], "done", job)
+        plan = job["result"]["mitigation"]
+        self.assertEqual(plan["schema"], "nr2grafana/mitigation/v1")
+        self.assertTrue(plan["mitigations"])
+        # the gated NLB mitigation loudly keeps_availability=false
+        nlb = next(mm for mm in plan["mitigations"]
+                   if "NLB" in mm["title"])
+        self.assertFalse(nlb["keeps_availability"])
+        self.assertTrue(nlb["reliability_guardrails"])
+        self.assertIsNotNone(
+            self.store.get_artifact(websrv._INSTANCE_SLUG, "mitigation"))
+
+    def test_mitigate_from_inline_rca(self):
+        code, resp = self.api(
+            "POST", "/api/mitigate",
+            {"rca": {"schema": "nr2grafana/rca/v1", "cause": {}},
+             "slug": "inline-rca-dash"})
+        self.assertEqual(code, 200)
+        job = poll_job(self.base, resp["job"])
+        self.assertEqual(job["status"], "done", job)
+        self.assertTrue(STUBS["nr2grafana.mitigate"].plan_calls)
+
+    def test_download_mitigation_configs_zip(self):
+        code, resp = self.api("POST", "/api/rca",
+                              {"report": "cross-AZ"})
+        poll_job(self.base, resp["job"])
+        code, resp = self.api("POST", "/api/mitigate", {})
+        poll_job(self.base, resp["job"])
+        code, headers, raw = http_bin(
+            self.base, "/download/mitigation-configs.zip")
+        self.assertEqual(code, 200)
+        self.assertIn("attachment",
+                      headers.get("Content-Disposition", ""))
+        self.assertIn("mitigation-configs.zip",
+                      headers.get("Content-Disposition", ""))
+        zf = zipfile.ZipFile(io.BytesIO(raw))
+        names = zf.namelist()
+        self.assertIn("README.md", names)
+        yaml_files = [n for n in names if n.endswith(".yaml")]
+        self.assertTrue(yaml_files)
+        blob = "".join(zf.read(n).decode("utf-8") for n in yaml_files)
+        self.assertIn("zone_awareness_enabled", blob)
+        self.assertIn("cross_zone.enabled=false", blob)
+        # no customer-specific values, only generic config
+        self.assertNotIn("AKIA", blob)
+
+    def test_download_mitigation_configs_404_before_run(self):
+        code, headers, raw = http_bin(
+            self.base,
+            "/download/mitigation-configs.zip?slug=never-mit")
+        self.assertEqual(code, 404)
+        self.assertIn("error", json.loads(raw.decode("utf-8")))
+
+    def test_aws_profiles(self):
+        code, body = self.api("GET", "/api/aws/profiles")
+        self.assertEqual(code, 200)
+        self.assertIn("default", body["profiles"])
+        self.assertTrue(body["read_only"])
+
+    def test_aws_anomalies(self):
+        code, body = self.api("GET", "/api/aws/anomalies")
+        self.assertEqual(code, 200)
+        self.assertTrue(body["anomalies"])
+        self.assertEqual(body["anomalies"][0]["AnomalyId"], "anom-1")
+        self.assertTrue(body["read_only"])
+        # no secret leaks
+        self.assertNotIn("AKIA", json.dumps(body))
+
+    def test_aws_anomalies_unavailable_400(self):
+        STUBS["nr2grafana.awscost"].available = False
+        code, body = self.api("GET", "/api/aws/anomalies")
+        self.assertEqual(code, 400)
+        self.assertIn("AWS CLI", body["error"])
+
+    def test_rca_analyze_requires_ai(self):
+        websrv.SESSION.anthropic_api_key = ""
+        code, body = self.api("POST", "/api/rca/analyze", {})
+        self.assertEqual(code, 400)
+        self.assertIn("error", body)
+
+    def test_rca_analyze_job(self):
+        websrv.SESSION.anthropic_api_key = "sk-test"
+        try:
+            code, resp = self.api("POST", "/api/rca/analyze", {})
+            self.assertEqual(code, 200)
+            job = poll_job(self.base, resp["job"])
+            self.assertEqual(job["status"], "done", job)
+            self.assertEqual(job["result"]["mode"], "rca")
+            self.assertIn("root_cause", job["result"])
+        finally:
+            websrv.SESSION.anthropic_api_key = ""
 
 
 def _raw_request(base, method, path, headers, body=None):

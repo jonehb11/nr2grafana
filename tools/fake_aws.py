@@ -19,10 +19,28 @@ one cost anomaly.
 **Read-only refusal.** This tool is the honest mirror of the awscost
 guard: it recognises only read verbs
 (``get-``/``list-``/``describe-``/``head-``/``lookup-``/``search-``/
-``batch-get-``). Any other subcommand -- anything that would *change* AWS
-state -- makes it print an error to stderr and exit non-zero, so a test
-(or the guard) can prove that a mutating command is refused even at the
-CLI boundary.
+``batch-get-``) plus the two hand-audited read-of-data exceptions
+(``logs start-query`` / ``logs stop-query``, which only initiate/cancel a
+CloudWatch Logs Insights query over EXISTING log data -- see
+ARCHITECTURE-1.9 section 0.8). Any other subcommand -- anything that would
+*change* AWS state -- makes it print an error to stderr and exit non-zero,
+so a test (or the guard) can prove that a mutating command is refused even
+at the CLI boundary.
+
+**RCA (1.9) cross-AZ scenario.** Beyond the TCO bill, this fake also
+serves a deterministic reproduction of the ARCHITECTURE-1.9 reference
+worked example: a ``*-DataTransfer-Regional-Bytes`` cost anomaly whose
+real cause is a NON-zone-aware Mimir/Loki hash-ring (RF=3 replication +
+query fan-out on gRPC port 9095) confined to 2 imbalanced AZs, with a
+cross-zone NLB secondary and EBS storage ruled out. It answers
+``ce get-anomalies``, ``cloudtrail lookup-events``, ``logs start-query /
+get-query-results / stop-query`` (VPC Flow Logs), ``eks describe-*`` /
+``list-*``, ``ec2 describe-subnets/network-interfaces/availability-zones/
+volumes/snapshots``, and ``elbv2 describe-*`` (one AZ with a single
+healthy target, so the NLB black-hole guardrail is exercised). Every
+number is index-seeded and byte-stable: 91% of cross-AZ bytes on port
+9095, a step-change on 2026-08-31, ~16,470 GiB/day two-way (which at
+$0.02 per round-tripped GB reproduces the ~$164/day headline).
 
 Invoked the way the real CLI is::
 
@@ -42,10 +60,22 @@ import sys
 READONLY_VERBS = ("get-", "list-", "describe-", "head-", "lookup-",
                   "search-", "batch-get-")
 
+# Justified read-only EXCEPTIONS to the verb-prefix rule -- the honest
+# mirror of awscost.READONLY_EXCEPTIONS. ``logs start-query`` only INITIATES
+# a CloudWatch Logs Insights query over log DATA that already exists (VPC
+# Flow Logs); ``logs stop-query`` only CANCELS one. Neither creates a log
+# group/stream nor writes anything. See ARCHITECTURE-1.9 section 0.8. This
+# set is intentionally tiny; nothing else bypasses the prefix gate.
+READONLY_EXCEPTIONS = frozenset([
+    ("logs", "start-query"),
+    ("logs", "stop-query"),
+])
+
 # Known AWS service names we might be asked about. Used only to locate the
 # SERVICE positional past any leading global flags/values.
 KNOWN_SERVICES = ("ce", "sts", "cloudwatch", "s3api", "ec2", "pricing",
-                  "organizations", "iam", "logs", "resourcegroupstaggingapi")
+                  "organizations", "iam", "logs", "resourcegroupstaggingapi",
+                  "cloudtrail", "eks", "elbv2")
 
 # Per-SERVICE monthly baseline (month index 0) and month-over-month growth
 # factor. Every growth factor is > 1 so the total bill climbs no matter
@@ -79,6 +109,33 @@ FORECAST_BASE = 13200.0
 FORECAST_GROWTH = 1.060
 
 DAY = "-01"
+
+# --- RCA (1.9) cross-AZ scenario ------------------------------------------
+# Deterministic reproduction of the ARCHITECTURE-1.9 reference worked
+# example (sections 0.1, 0.5-0.9). Every value is a fixed constant so the
+# whole RCA -> mitigation flow is byte-stable across runs.
+RCA_REGION = "us-east-1"
+AZ_A, AZ_B, AZ_C = "us-east-1a", "us-east-1b", "us-east-1c"
+RCA_CLUSTER = "obs-eks"
+RCA_STEP_CHANGE = "2026-08-31"     # true cost step-change date
+RCA_ANOMALY_END = "2026-09-03"     # 4-day interval -> $164/day headline
+
+GRPC_PORT = 9095    # Mimir/Loki inter-component gRPC: ring + query fan-out
+NLB_PORT = 443      # cross-zone Mimir gateway NLB (secondary driver)
+MISC_PORT = 53      # small residual (DNS), the "everything else" bucket
+GIB = 1073741824    # 2 ** 30, the Logs Insights query byte divisor
+
+# Per-day cross-AZ GiB by destination port -- a 91% / 8% / 1% split. Summed
+# over RCA_WINDOW_DAYS this is what the flows/ports queries report; the daily
+# query straddles the step-change. 14,988 + 1,318 + 164 == 16,470 GiB/day.
+RCA_WINDOW_DAYS = 14
+DAILY_CROSS_GIB = ((GRPC_PORT, 14988), (NLB_PORT, 1318), (MISC_PORT, 164))
+
+# ELBv2 fixture ARNs (account 123456789012, matching get-caller-identity).
+_ELB_ARN = ("arn:aws:elasticloadbalancing:us-east-1:123456789012:"
+            "loadbalancer/net/mimir-nlb/0a1b2c3d4e5f6789")
+_TG_ARN = ("arn:aws:elasticloadbalancing:us-east-1:123456789012:"
+           "targetgroup/mimir-tg/1122334455667788")
 
 
 def _err(msg):
@@ -261,34 +318,47 @@ def _cmd_get_cost_forecast(flags):
     }
 
 
-def _cmd_get_anomalies(flags):
-    di = _kv(_first(flags, "date-interval", ""))
-    end = di.get("EndDate", "2026-09-01")
-    # Anchor the single anomaly a few days before the interval end.
-    ey, em = int(end[0:4]), int(end[5:7])
-    a_start = "%04d-%02d-12" % (ey, em)
-    a_end = "%04d-%02d-16" % (ey, em)
+def _cmd_get_anomalies(_flags):
+    """One EBS ``DataTransfer-Regional-Bytes`` anomaly (0.7 field shape).
+
+    Anchored to the reference step-change with a 4-day interval so
+    ``TotalImpact / days == $164/day`` -- self-consistent with 0.1: at
+    $0.02 per round-tripped GB that is ~8,200 GB/day one-way, i.e. the
+    ~16,470 GiB/day two-way cross-AZ transfer the flow logs measure. The
+    ``RootCauses[].UsageType`` uses the literal ``<Region>-DataTransfer-
+    Regional-Bytes`` usage-type code; the EBS service tag is a CUR
+    classification artifact (the dollars are cross-AZ network, not
+    storage).
+    """
     anomaly = {
-        "AnomalyId": "fake-anomaly-0001",
-        "AnomalyStartDate": a_start,
-        "AnomalyEndDate": a_end,
-        "DimensionValue": "Amazon Elastic Compute Cloud - Compute",
-        "AnomalyScore": {"MaxScore": 0.98, "CurrentScore": 0.91},
+        "AnomalyId": "fake-anomaly-xaz-0001",
+        "AnomalyStartDate": RCA_STEP_CHANGE,
+        "AnomalyEndDate": RCA_ANOMALY_END,
+        "DimensionValue": "EBS",
+        "AnomalyScore": {"MaxScore": 0.92, "CurrentScore": 0.88},
         "Impact": {
-            "MaxImpact": 320.5,
-            "TotalImpact": 812.75,
-            "TotalActualSpend": 2412.75,
-            "TotalExpectedSpend": 1600.0,
-            "TotalImpactPercentage": 50.8,
+            "MaxImpact": 180.0,
+            "TotalImpact": 656.0,          # 656 / 4 days == $164/day
+            "TotalActualSpend": 800.0,
+            "TotalExpectedSpend": 144.0,
+            "TotalImpactPercentage": 455.6,
         },
         "MonitorArn": ("arn:aws:ce::123456789012:anomalymonitor/"
-                       "fake-monitor-0001"),
+                       "fake-monitor-xaz"),
         "Feedback": "",
         "RootCauses": [{
-            "Service": "Amazon Elastic Compute Cloud - Compute",
-            "Region": "us-east-1",
-            "UsageType": "USE1-BoxUsage:m5.2xlarge",
+            "Service": "EBS",
+            "Region": RCA_REGION,
             "LinkedAccount": "123456789012",
+            "LinkedAccountName": "prod",
+            "UsageType": "USE1-DataTransfer-Regional-Bytes",
+            "Impact": {"Contribution": 150.0},
+        }, {
+            "Service": "EC2",
+            "Region": RCA_REGION,
+            "LinkedAccount": "123456789012",
+            "UsageType": "USE1-DataTransfer-Regional-Bytes",
+            "Impact": {"Contribution": 14.0},
         }],
     }
     return {"Anomalies": [anomaly], "NextPageToken": None}
@@ -340,6 +410,307 @@ def _cmd_get_metric_statistics(flags):
     }
 
 
+# --------------------------------------------------------------------------
+# RCA (1.9) cross-AZ scenario handlers.
+# --------------------------------------------------------------------------
+
+def _row(pairs):
+    """A CloudWatch Logs Insights result row: a list of field/value cells."""
+    return [{"field": k, "value": v} for k, v in pairs]
+
+
+def _query_kind(query):
+    """Classify a Logs Insights query string into flows/ports/daily.
+
+    Mirrors the templates :mod:`nr2grafana.flowlogs` builds: the daily
+    query buckets ``by bin(1d)``, the ports query groups ``by dstPort``,
+    and the flows query groups ``by srcAddr``. Deterministic substring
+    match -- no state, no RNG.
+    """
+    q = (query or "").lower()
+    if "bin(1d)" in q:
+        return "daily"
+    if "by dstport" in q:
+        return "ports"
+    return "flows"
+
+
+def _flows_rows():
+    """Top cross-AZ talker flows (private-IP 10.x, AZ_A<->AZ_B) + one
+    same-AZ flow, one row per destination port. Byte totals are the daily
+    GiB share times the window, so cross-AZ GB/day rebuilds to 16,470."""
+    rows = []
+    endpoints = {
+        GRPC_PORT: ("10.0.1.10", "10.0.2.20"),
+        NLB_PORT: ("10.0.1.30", "10.0.2.40"),
+        MISC_PORT: ("10.0.1.50", "10.0.2.60"),
+    }
+    for port, gib_day in DAILY_CROSS_GIB:
+        s_addr, d_addr = endpoints[port]
+        total_bytes = gib_day * RCA_WINDOW_DAYS * GIB
+        rows.append(_row([
+            ("srcAddr", s_addr), ("dstAddr", d_addr),
+            ("dstPort", str(port)),
+            ("srcAz", AZ_A), ("dstAz", AZ_B),
+            ("bytes", str(total_bytes))]))
+    # A same-AZ private-IP flow (AZ_A<->AZ_A): keeps cross_az_pct_of_total
+    # < 100 and anchors the private-IP-only rule-out (not NAT/egress/EIP).
+    rows.append(_row([
+        ("srcAddr", "10.0.1.10"), ("dstAddr", "10.0.1.11"),
+        ("dstPort", str(GRPC_PORT)),
+        ("srcAz", AZ_A), ("dstAz", AZ_A),
+        ("bytes", str(200 * GIB))]))
+    return rows
+
+
+def _ports_rows():
+    """Cross-AZ bytes by destination port (pre-divided GiB). Shares come
+    out 91% / 8% / 1%; port 9095 dominates."""
+    rows = []
+    for port, gib_day in DAILY_CROSS_GIB:
+        gib = gib_day * RCA_WINDOW_DAYS
+        rows.append(_row([
+            ("dstPort", str(port)),
+            ("srcAz", AZ_A), ("dstAz", AZ_B),
+            ("gb", str(gib))]))
+    return rows
+
+
+def _daily_rows():
+    """Daily cross-AZ GiB straddling the step-change: low before, high on
+    and after 2026-08-31 (so step-change detection lands on that date)."""
+    total_high = sum(g for _p, g in DAILY_CROSS_GIB)   # 16,470
+    series = [
+        ("2026-08-25", 500), ("2026-08-26", 480), ("2026-08-27", 520),
+        ("2026-08-28", 495), ("2026-08-29", 510), ("2026-08-30", 505),
+        (RCA_STEP_CHANGE, total_high), ("2026-09-01", total_high),
+        ("2026-09-02", total_high), ("2026-09-03", total_high),
+    ]
+    rows = []
+    for day, gib in series:
+        rows.append(_row([
+            ("day", day), ("srcAz", AZ_A), ("dstAz", AZ_B),
+            ("gb", str(gib))]))
+    return rows
+
+
+def _cmd_lookup_events(_flags):
+    """CloudTrail: a Karpenter scale-up correlated to the step-change."""
+    return {"Events": [{
+        "EventId": "fake-ct-0001",
+        "EventName": "CreateFleet",
+        "EventTime": RCA_STEP_CHANGE + "T02:14:00Z",
+        "Username": "karpenter",
+        "EventSource": "ec2.amazonaws.com",
+        "ReadOnly": "false",
+        "Resources": [{
+            "ResourceType": "AWS::EC2::Instance",
+            "ResourceName": "i-0fakescaleup01"}],
+    }], "NextToken": None}
+
+
+def _cmd_start_query(flags):
+    """Logs Insights start-query: return a queryId encoding the query
+    kind so the paired get-query-results serves matching rows."""
+    query = _first(flags, "query-string", "") or ""
+    return {"queryId": "fake-%s" % _query_kind(query)}
+
+
+def _cmd_get_query_results(flags):
+    """Logs Insights get-query-results: rows keyed off the fake queryId."""
+    qid = _first(flags, "query-id", "") or ""
+    if qid.endswith("ports"):
+        rows = _ports_rows()
+    elif qid.endswith("daily"):
+        rows = _daily_rows()
+    else:
+        rows = _flows_rows()
+    return {
+        "status": "Complete",
+        "results": rows,
+        "statistics": {
+            "recordsMatched": float(len(rows)),
+            "recordsScanned": float(len(rows) * 10),
+            "bytesScanned": float(len(rows) * 4096)},
+    }
+
+
+def _cmd_stop_query(_flags):
+    return {}
+
+
+def _cmd_list_clusters(_flags):
+    return {"clusters": [RCA_CLUSTER]}
+
+
+def _cmd_describe_cluster(flags):
+    return {"cluster": {
+        "name": _first(flags, "name", RCA_CLUSTER),
+        "status": "ACTIVE",
+        "version": "1.31",
+        "arn": ("arn:aws:eks:us-east-1:123456789012:cluster/%s"
+                % RCA_CLUSTER),
+        "resourcesVpcConfig": {
+            # Cluster subnets live in AZ_A/AZ_B only (no AZ_C).
+            "subnetIds": ["subnet-a1", "subnet-b1"]},
+    }}
+
+
+def _cmd_list_nodegroups(_flags):
+    return {"nodegroups": ["ng-observability"]}
+
+
+def _cmd_describe_nodegroup(flags):
+    return {"nodegroup": {
+        "nodegroupName": _first(flags, "nodegroup-name",
+                                "ng-observability"),
+        "clusterName": _first(flags, "cluster-name", RCA_CLUSTER),
+        "status": "ACTIVE",
+        "capacityType": "ON_DEMAND",
+        # Nodes land only in AZ_A/AZ_B -- the imbalance the ring inherits.
+        "subnets": ["subnet-a1", "subnet-b1"],
+    }}
+
+
+def _discovery_tag():
+    return [{"Key": "karpenter.sh/discovery", "Value": RCA_CLUSTER}]
+
+
+def _cmd_describe_subnets(_flags):
+    """Karpenter discovery subnets tagged in AZ_A and AZ_B ONLY (none in
+    AZ_C) -- the discovery-subnet gap that forces the ring into 2 AZs
+    (ARCHITECTURE-1.9 section 0.5)."""
+    return {"Subnets": [
+        {"SubnetId": "subnet-a1", "AvailabilityZone": AZ_A,
+         "CidrBlock": "10.0.1.0/24", "Tags": _discovery_tag()},
+        {"SubnetId": "subnet-b1", "AvailabilityZone": AZ_B,
+         "CidrBlock": "10.0.2.0/24", "Tags": _discovery_tag()},
+    ]}
+
+
+def _cmd_describe_availability_zones(_flags):
+    """The region offers three AZs -- more than the discovery subnets
+    cover, which is what makes the layout imbalanced."""
+    return {"AvailabilityZones": [
+        {"ZoneName": AZ_A, "ZoneId": "use1-az1", "State": "available",
+         "RegionName": RCA_REGION},
+        {"ZoneName": AZ_B, "ZoneId": "use1-az2", "State": "available",
+         "RegionName": RCA_REGION},
+        {"ZoneName": AZ_C, "ZoneId": "use1-az4", "State": "available",
+         "RegionName": RCA_REGION},
+    ]}
+
+
+def _cmd_describe_network_interfaces(_flags):
+    """ENI -> pod IP -> workload map for the dominant flows (0.9). The VPC
+    CNI attaches pod IPs to node ENIs; Description names the workload."""
+    def eni(eid, ip, az, desc):
+        return {
+            "NetworkInterfaceId": eid,
+            "AvailabilityZone": az,
+            "Description": desc,
+            "PrivateIpAddresses": [{"PrivateIpAddress": ip}],
+            "Attachment": {"InstanceId": "i-node-" + az[-2:]},
+        }
+    return {"NetworkInterfaces": [
+        eni("eni-a1", "10.0.1.10", AZ_A, "mimir-ingester-zone-a-0"),
+        eni("eni-a2", "10.0.1.30", AZ_A, "mimir-gateway-a-0"),
+        eni("eni-a3", "10.0.1.50", AZ_A, "coredns-a-0"),
+        eni("eni-b1", "10.0.2.20", AZ_B, "mimir-ingester-zone-b-0"),
+        eni("eni-b2", "10.0.2.40", AZ_B, "mimir-gateway-b-0"),
+        eni("eni-b3", "10.0.2.60", AZ_B, "coredns-b-0"),
+    ]}
+
+
+def _cmd_describe_route_tables(_flags):
+    return {"RouteTables": []}
+
+
+def _cmd_describe_nat_gateways(_flags):
+    # No NAT in the dominant flows -> intra-VPC, not internet egress.
+    return {"NatGateways": []}
+
+
+def _cmd_describe_volumes(_flags):
+    """Small, pre-existing EBS volumes (CreateTime well before the step-
+    change) -> the storage-growth rule-out: the Regional-Bytes dollars are
+    cross-AZ network, not volume growth (Step E)."""
+    return {"Volumes": [
+        {"VolumeId": "vol-0aaa", "Size": 100, "State": "in-use",
+         "AvailabilityZone": AZ_A, "VolumeType": "gp3",
+         "CreateTime": "2026-01-05T00:00:00Z"},
+        {"VolumeId": "vol-0bbb", "Size": 100, "State": "in-use",
+         "AvailabilityZone": AZ_B, "VolumeType": "gp3",
+         "CreateTime": "2026-01-05T00:00:00Z"},
+    ]}
+
+
+def _cmd_describe_snapshots(_flags):
+    return {"Snapshots": [
+        {"SnapshotId": "snap-0aaa", "VolumeSize": 100, "State": "completed",
+         "StartTime": "2026-01-06T00:00:00Z"},
+    ]}
+
+
+def _cmd_describe_load_balancers(_flags):
+    return {"LoadBalancers": [{
+        "LoadBalancerArn": _ELB_ARN,
+        "LoadBalancerName": "mimir-nlb",
+        "Type": "network",
+        "Scheme": "internal",
+        "AvailabilityZones": [
+            {"ZoneName": AZ_A, "SubnetId": "subnet-a1"},
+            {"ZoneName": AZ_B, "SubnetId": "subnet-b1"}],
+    }]}
+
+
+def _cmd_describe_target_groups(_flags):
+    return {"TargetGroups": [{
+        "TargetGroupArn": _TG_ARN,
+        "TargetGroupName": "mimir-tg",
+        "Protocol": "TCP",
+        "Port": NLB_PORT,
+        "TargetType": "ip",
+        "LoadBalancerArns": [_ELB_ARN],
+    }]}
+
+
+def _cmd_describe_target_health(_flags):
+    """AZ_A has TWO healthy targets; AZ_B has ONLY ONE. Disabling NLB
+    cross-zone would black-hole AZ_B -- this is what the NLB guardrail
+    (keeps_availability=false unless gated) must catch (0.6)."""
+    def t(ip, az, state):
+        return {
+            "Target": {"Id": ip, "Port": NLB_PORT,
+                       "AvailabilityZone": az},
+            "TargetHealth": {"State": state},
+        }
+    return {"TargetHealthDescriptions": [
+        t("10.0.1.30", AZ_A, "healthy"),
+        t("10.0.1.31", AZ_A, "healthy"),
+        t("10.0.2.40", AZ_B, "healthy"),
+    ]}
+
+
+def _cmd_describe_target_group_attributes(_flags):
+    return {"Attributes": [
+        {"Key": "load_balancing.cross_zone.enabled", "Value": "true"},
+        {"Key": ("target_group_health.dns_failover."
+                 "minimum_healthy_targets.count"), "Value": "1"},
+        {"Key": ("target_group_health.unhealthy_state_routing."
+                 "minimum_healthy_targets.count"), "Value": "1"},
+    ]}
+
+
+def _cmd_describe_listeners(_flags):
+    return {"Listeners": [{
+        "ListenerArn": _ELB_ARN + "/listener/0abc",
+        "LoadBalancerArn": _ELB_ARN,
+        "Port": NLB_PORT,
+        "Protocol": "TCP",
+    }]}
+
+
 # (service, subcommand) -> emitter. Only read-only commands appear here.
 HANDLERS = {
     ("ce", "get-cost-and-usage"): _cmd_get_cost_and_usage,
@@ -349,6 +720,28 @@ HANDLERS = {
     ("ce", "get-anomalies"): _cmd_get_anomalies,
     ("sts", "get-caller-identity"): _cmd_get_caller_identity,
     ("cloudwatch", "get-metric-statistics"): _cmd_get_metric_statistics,
+    # --- RCA (1.9) cross-AZ scenario ---
+    ("cloudtrail", "lookup-events"): _cmd_lookup_events,
+    ("logs", "start-query"): _cmd_start_query,
+    ("logs", "get-query-results"): _cmd_get_query_results,
+    ("logs", "stop-query"): _cmd_stop_query,
+    ("eks", "list-clusters"): _cmd_list_clusters,
+    ("eks", "describe-cluster"): _cmd_describe_cluster,
+    ("eks", "list-nodegroups"): _cmd_list_nodegroups,
+    ("eks", "describe-nodegroup"): _cmd_describe_nodegroup,
+    ("ec2", "describe-subnets"): _cmd_describe_subnets,
+    ("ec2", "describe-availability-zones"): _cmd_describe_availability_zones,
+    ("ec2", "describe-network-interfaces"): _cmd_describe_network_interfaces,
+    ("ec2", "describe-route-tables"): _cmd_describe_route_tables,
+    ("ec2", "describe-nat-gateways"): _cmd_describe_nat_gateways,
+    ("ec2", "describe-volumes"): _cmd_describe_volumes,
+    ("ec2", "describe-snapshots"): _cmd_describe_snapshots,
+    ("elbv2", "describe-load-balancers"): _cmd_describe_load_balancers,
+    ("elbv2", "describe-target-groups"): _cmd_describe_target_groups,
+    ("elbv2", "describe-target-health"): _cmd_describe_target_health,
+    ("elbv2", "describe-target-group-attributes"):
+        _cmd_describe_target_group_attributes,
+    ("elbv2", "describe-listeners"): _cmd_describe_listeners,
 }
 
 
@@ -387,12 +780,15 @@ def main(argv=None):
              % " ".join(tokens))
         return 252
 
-    # --- READ-ONLY REFUSAL: a mutating verb never runs. ---
-    if not subcommand.startswith(READONLY_VERBS):
+    # --- READ-ONLY REFUSAL: a mutating verb never runs. The only non-prefix
+    # verbs permitted are the hand-audited READONLY_EXCEPTIONS (logs
+    # start-query / stop-query), which read log DATA and mutate nothing.
+    if (not subcommand.startswith(READONLY_VERBS)
+            and (service, subcommand) not in READONLY_EXCEPTIONS):
         _err("refusing non-read-only subcommand %r on service %r -- this "
              "fake aws only serves read verbs "
-             "(get-/list-/describe-/head-/lookup-/search-/batch-get-)."
-             % (subcommand, service))
+             "(get-/list-/describe-/head-/lookup-/search-/batch-get-) plus "
+             "logs start-query/stop-query." % (subcommand, service))
         return 254
 
     handler = HANDLERS.get((service, subcommand))

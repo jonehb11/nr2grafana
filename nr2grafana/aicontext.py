@@ -29,18 +29,26 @@ Public surface::
     to_prompt(context, question="") -> str # ready single-string prompt
     troubleshoot(assistant, context, question="") -> dict
         # {"answer", "backend"} ; never raises
+    analyze_cost(assistant, context, question="") -> dict
+        # RCA/mitigation AI flow over the bundle;
+        # {"answer", "backend"[, "plan"]} ; never raises
 """
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any, Dict, List, Optional
 
 SCHEMA = "nr2grafana/ai-context/v1"
 
 # Artifact kinds folded into the bundle, in a fixed presentation order.
+# The cost-anomaly trio (flowlogs -> rca -> mitigation) trails the stack
+# analyses: flow-log evidence, then the root-cause diagnosis it feeds, then
+# the reliability-safe mitigation plan derived from that diagnosis.
 ARTIFACT_ORDER = ("requirements", "diagnosis", "parity", "samples",
-                  "cost", "optimize", "deepdive", "packing")
+                  "cost", "optimize", "deepdive", "packing",
+                  "flowlogs", "rca", "mitigation")
 
 # Compactness knobs: at most this many rows per list, strings capped.
 TOP = 8
@@ -142,6 +150,22 @@ LEGEND = {
                     "(exact/approximate/needs-review/untranslatable) and "
                     "the translation_notes explaining what needs review "
                     "or a from-scratch conversion.",
+    "flowlogs": "VPC Flow Logs cross-AZ byte attribution: the dominant "
+                "destination port (e.g. 9095 = Mimir/Loki gRPC), GB/day, "
+                "per-driver %-of-cross-AZ share, top talker flows and the "
+                "step-change date. A DataTransfer-Regional-Bytes usage "
+                "type means cross-AZ NETWORK, not storage.",
+    "rca": "Cost-anomaly root-cause analysis: the incident (usage_type, "
+           "service, account, region, $/day, GB/day, onset/step-change), "
+           "the dominant driver with its % share + evidence, ranked "
+           "secondary drivers, an explicit ruled-out list, which "
+           "independent evidence sources converged, and a confidence.",
+    "mitigation": "Reliability-safe mitigation plan: ranked proposals "
+                  "(PROPOSAL only, GitOps/IaC-owned, never executed) with "
+                  "expected saving, reliability_guardrails (preconditions "
+                  "that MUST hold), keeps_availability/durability/"
+                  "performance + handles_current_traffic flags, and the "
+                  "generated paste-ready config targets.",
 }
 
 
@@ -209,6 +233,41 @@ def _keeps(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         if k in row:
             out[k] = bool(row[k])
     return out or None
+
+
+def _pick(src: Dict[str, Any], keys, strlimit: int = 120) -> Dict[str, Any]:
+    """Copy the present, non-empty ``keys`` from ``src``, truncating
+    string values. Tolerant of missing keys and non-dict input."""
+    out: Dict[str, Any] = {}
+    src = _as_dict(src)
+    for k in keys:
+        if k in src:
+            v = src[k]
+            if v in (None, "", [], {}):
+                continue
+            out[k] = _trunc(v, strlimit) if isinstance(v, str) else v
+    return out
+
+
+# Numeric-ish saving fields, spanning the monthly (optimize/deepdive) and
+# per-day (RCA/mitigation) vocabularies plus percentage shares.
+_SAVINGS_KEYS = ("monthly_usd", "usd_per_day", "dollars_per_day",
+                 "per_day_usd", "gb_per_day", "series", "streams",
+                 "bytes_per_day", "compute", "nodes", "pct_saved",
+                 "percent_saved", "pct", "share")
+
+
+def _mitigation_savings(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Compact a mitigation's expected saving; tolerant of it living
+    under est_savings/savings or directly on the mitigation row."""
+    src = _as_dict(row.get("est_savings")) or _as_dict(row.get("savings"))
+    out: Dict[str, Any] = {}
+    for k in _SAVINGS_KEYS:
+        if k in src and src[k] is not None:
+            out[k] = src[k]
+    if out:
+        return out
+    return _pick(row, _SAVINGS_KEYS, 40) or None
 
 
 def _config_targets(row: Dict[str, Any]) -> List[str]:
@@ -505,6 +564,147 @@ def _sum_packing(art: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def _sum_flowlogs(art: Dict[str, Any]) -> Dict[str, Any]:
+    """Flow-log cross-AZ attribution: dominant port, GB/day, per-driver
+    %-share, top talker flows, step-change date. Degrades to a note when
+    no flow logs are configured; tolerant of evolving field names."""
+    out: Dict[str, Any] = {}
+    note = art.get("note")
+    if note:
+        out["note"] = _trunc(str(note), 240)
+    out.update(_pick(art, (
+        "dominant_port", "gb_per_day", "cross_az_gb_per_day",
+        "cross_az_pct", "step_change_date", "step_change", "onset",
+        "window"), strlimit=120))
+    drivers = []
+    for d in _as_list(art.get("drivers"))[:TOP]:
+        if isinstance(d, dict):
+            drivers.append(_pick(d, (
+                "driver", "workload", "port", "dstport", "dstPort",
+                "gb_per_day", "gb", "pct_of_cross_az", "pct", "share"),
+                80))
+    if drivers:
+        out["drivers"] = [d for d in drivers if d]
+    flows = []
+    src_flows = _as_list(art.get("top_flows")) or _as_list(art.get("flows"))
+    for f in src_flows[:TOP]:
+        if isinstance(f, dict):
+            flows.append(_pick(f, (
+                "src", "dst", "srcaddr", "dstaddr", "srcAddr", "dstAddr",
+                "az_pair", "dstport", "dstPort", "port", "workload",
+                "gb", "gb_per_day", "bytes"), 60))
+    if flows:
+        out["top_flows"] = [f for f in flows if f]
+    if not out:
+        out["keys"] = sorted(k for k in art.keys() if k != "schema")
+    return out
+
+
+def _sum_rca(art: Dict[str, Any]) -> Dict[str, Any]:
+    """Root-cause analysis: incident frame, dominant driver (+share and
+    evidence), ranked secondaries, ruled-out list, which evidence sources
+    converged, and confidence. Defensive against key-name drift."""
+    out: Dict[str, Any] = {}
+    inc = _pick(_as_dict(art.get("incident")), (
+        "usage_type", "service", "account", "region", "hypothesis_class",
+        "class", "usd_per_day", "dollars_per_day", "$/day", "per_day_usd",
+        "gb_per_day", "GB/day", "onset", "onset_date", "step_change_date",
+        "step_change", "score"), strlimit=160)
+    if inc:
+        out["incident"] = inc
+    cause = _as_dict(art.get("cause"))
+    dom = _as_dict(cause.get("dominant"))
+    if dom:
+        d = _pick(dom, ("share", "pct", "driver", "port", "summary"),
+                  strlimit=_MAX_STR)
+        ev = dom.get("evidence")
+        if isinstance(ev, list):
+            evl = [_trunc(str(e), 160) for e in ev[:TOP] if e]
+            if evl:
+                d["evidence"] = evl
+        elif isinstance(ev, dict):
+            de = _pick(ev, sorted(ev.keys())[:6], 120)
+            if de:
+                d["evidence"] = de
+        elif isinstance(ev, str) and ev:
+            d["evidence"] = _trunc(ev, _MAX_STR)
+        out["dominant"] = d
+    sec = []
+    for s in _as_list(cause.get("secondary"))[:TOP]:
+        if isinstance(s, dict):
+            sec.append(_pick(s, ("share", "pct", "driver", "port",
+                                 "summary"), _MAX_STR))
+        elif s:
+            sec.append(_trunc(str(s), _MAX_STR))
+    sec = [s for s in sec if s]
+    if sec:
+        out["secondary"] = sec
+    ruled = []
+    for r in _as_list(cause.get("ruled_out"))[:_MAX_LIST]:
+        if isinstance(r, dict):
+            ruled.append(_pick(r, ("hypothesis", "cause", "reason",
+                                   "evidence", "summary"), 240))
+        elif r:
+            ruled.append(_trunc(str(r), 240))
+    ruled = [r for r in ruled if r]
+    if ruled:
+        out["ruled_out"] = ruled
+    conv = art.get("evidence_convergence")
+    if isinstance(conv, list):
+        cl = [str(c) for c in conv if c][:_MAX_LIST]
+        if cl:
+            out["evidence_convergence"] = cl
+    elif isinstance(conv, dict):
+        cd = _pick(conv, sorted(conv.keys())[:_MAX_LIST], 80)
+        if cd:
+            out["evidence_convergence"] = cd
+    if art.get("confidence") not in (None, ""):
+        out["confidence"] = art.get("confidence")
+    if not out:
+        out["keys"] = sorted(k for k in art.keys() if k != "schema")
+    return out
+
+
+def _sum_mitigation(art: Dict[str, Any]) -> Dict[str, Any]:
+    """Mitigation plan: keep the planner's ranking, cap to top-N, and per
+    proposal carry title/change/owner, compact saving, keeps_* +
+    handles_current_traffic risk flags, reliability guardrails and the
+    config TARGET labels only (never the full paste-ready snippet)."""
+    rows = []
+    for m in _as_list(art.get("mitigations"))[:TOP]:
+        if not isinstance(m, dict):
+            continue
+        entry = _pick(m, ("title", "change", "owner"), _MAX_STR)
+        sav = _mitigation_savings(m)
+        if sav:
+            entry["est_savings"] = sav
+        keeps = _keeps(m)
+        if keeps:
+            entry["risk"] = keeps
+        if "handles_current_traffic" in m:
+            entry["handles_current_traffic"] = \
+                bool(m["handles_current_traffic"])
+        guards = m.get("reliability_guardrails") or m.get("guardrails")
+        if isinstance(guards, list):
+            g = [_trunc(str(x), 200) for x in guards[:TOP] if x]
+            if g:
+                entry["reliability_guardrails"] = g
+        elif isinstance(guards, str) and guards:
+            entry["reliability_guardrails"] = [_trunc(guards, _MAX_STR)]
+        targets = _config_targets(m)
+        if targets:
+            entry["config_targets"] = targets
+        rows.append(entry)
+    out: Dict[str, Any] = {"mitigations": rows}
+    if isinstance(art.get("summary"), dict):
+        out["summary"] = art["summary"]
+    for k in ("total_savings", "total_est_savings"):
+        if art.get(k) not in (None, "", [], {}):
+            out[k] = art[k]
+            break
+    return out
+
+
 _SUMMARIZERS = {
     "requirements": _sum_requirements,
     "diagnosis": _sum_diagnosis,
@@ -514,6 +714,9 @@ _SUMMARIZERS = {
     "optimize": _sum_optimize,
     "deepdive": _sum_findings_generic,
     "packing": _sum_packing,
+    "flowlogs": _sum_flowlogs,
+    "rca": _sum_rca,
+    "mitigation": _sum_mitigation,
 }
 
 
@@ -844,6 +1047,39 @@ def _md_artifact(kind: str, summary: Dict[str, Any]) -> List[str]:
         return lines
     if kind == "packing":
         return _kv_lines("", summary)
+    if kind == "flowlogs":
+        for k in summary:
+            if k in ("drivers", "top_flows"):
+                continue
+            v = summary[k]
+            if v not in (None, "", [], {}):
+                lines.append("- %s: %s" % (k, _fmt_scalar(v)))
+        for d in _as_list(summary.get("drivers")):
+            lines.append("- driver: %s" % _fmt_scalar(d))
+        for f in _as_list(summary.get("top_flows")):
+            lines.append("- flow: %s" % _fmt_scalar(f))
+        return lines
+    if kind == "rca":
+        for k in ("incident", "confidence", "evidence_convergence"):
+            if summary.get(k) not in (None, "", [], {}):
+                lines.append("- %s: %s" % (k, _fmt_scalar(summary[k])))
+        dom = _as_dict(summary.get("dominant"))
+        if dom:
+            lines.append("- dominant cause: %s" % _fmt_scalar(dom))
+        for s in _as_list(summary.get("secondary")):
+            lines.append("- secondary: %s" % _fmt_scalar(s))
+        for r in _as_list(summary.get("ruled_out")):
+            lines.append("- ruled_out: %s" % _fmt_scalar(r))
+        return lines
+    if kind == "mitigation":
+        if isinstance(summary.get("summary"), dict) and summary["summary"]:
+            lines.append("- summary: %s" % _fmt_scalar(summary["summary"]))
+        for k in ("total_savings", "total_est_savings"):
+            if summary.get(k) not in (None, "", [], {}):
+                lines.append("- %s: %s" % (k, _fmt_scalar(summary[k])))
+        for m in _as_list(summary.get("mitigations")):
+            lines.append("- mitigation: %s" % _fmt_scalar(m))
+        return lines
     # requirements + any generic summary: flat bullets.
     return _kv_lines("", summary)
 
@@ -994,3 +1230,132 @@ def troubleshoot(assistant: Any, context: Dict[str, Any],
             "backend": backend,
         }
     return {"answer": text, "backend": backend}
+
+
+# ---------------------------------------------------------------------------
+# cost-anomaly RCA + mitigation AI flow
+# ---------------------------------------------------------------------------
+
+_RCA_SYSTEM = (
+    "You are an SRE + FinOps engineer performing ROOT-CAUSE ANALYSIS of an "
+    "AWS cost anomaly and proposing a RELIABILITY-SAFE mitigation, using the "
+    "converged read-only evidence in the bundle (cost-explorer, VPC flow "
+    "logs, EKS control plane, LGTM self-metrics, CloudTrail). Rules you MUST "
+    "honor: treat a *DataTransfer-Regional-Bytes (or *InterZone*) usage type "
+    "as CROSS-AZ NETWORK transfer, NOT storage, regardless of the service "
+    "tag (EBS/EC2/...). Converge multiple independent sources before "
+    "asserting a cause; give the dominant driver a % share and list "
+    "secondaries and an explicit ruled-out set. Every mitigation must CUT "
+    "cost WITHOUT reducing availability, durability, performance or the "
+    "ability to serve the CURRENT traffic rate; state its reliability "
+    "PRECONDITIONS (what must hold or it breaks something) and set keeps_* "
+    "false with a loud caveat when it cannot. Never propose dropping the "
+    "replication factor or retention, never CPU-limit Mimir/Loki ingesters, "
+    "and never blind-disable NLB cross-zone (confirm >=1 healthy target in "
+    "EVERY enabled AZ first). Keep all generated configs GENERIC and "
+    "paste-ready (placeholders, no customer values); you PROPOSE changes, "
+    "you never execute them (GitOps/IaC-owned). AWS access is strictly "
+    "read-only. Respond with STRICT JSON only -- a single object, no prose "
+    "and no markdown fences -- with exactly these keys: "
+    "\"root_cause\": string, \"mitigations\": array of objects "
+    "{\"title\", \"saving\", \"change\", \"preconditions\", "
+    "\"keeps_availability\", \"keeps_durability\", \"keeps_performance\"}, "
+    "\"config_notes\": string.")
+
+_RCA_QUESTION = (
+    "Analyze this AWS cost anomaly and the converged evidence: identify the "
+    "dominant driver with its % share, the ranked secondary drivers and the "
+    "ruled-out hypotheses, then propose a ranked, reliability-safe "
+    "mitigation plan that cuts the cost WITHOUT reducing availability, "
+    "durability, performance or the ability to serve the current traffic "
+    "rate. State each mitigation's reliability preconditions and its "
+    "keeps_availability/durability/performance flags.")
+
+
+def _parse_rca_reply(text: str) -> Optional[Dict[str, Any]]:
+    """Best-effort extraction of the strict-JSON RCA plan from a reply.
+
+    Strips a surrounding markdown fence, then retries on the outermost
+    ``{...}`` slice. Returns the parsed object only when it carries a
+    ``root_cause`` or ``mitigations`` field; otherwise None. Never raises.
+    """
+    for candidate in _json_candidates(text):
+        try:
+            data = json.loads(candidate)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(data, dict) and (
+                "root_cause" in data or "mitigations" in data):
+            return data
+    return None
+
+
+def _json_candidates(text: str) -> List[str]:
+    """Yield parse candidates for a possibly-fenced JSON reply."""
+    out: List[str] = []
+    s = (text or "").strip()
+    if not s:
+        return out
+    if s.startswith("```"):
+        lines = s.splitlines()[1:]
+        while lines and not lines[-1].strip():
+            lines.pop()
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        s = "\n".join(lines).strip()
+    out.append(s)
+    start = s.find("{")
+    end = s.rfind("}")
+    if 0 <= start < end:
+        inner = s[start:end + 1]
+        if inner != s:
+            out.append(inner)
+    return out
+
+
+def analyze_cost(assistant: Any, context: Dict[str, Any],
+                 question: str = "") -> Dict[str, Any]:
+    """Run the RCA/mitigation AI flow over the context bundle.
+
+    Frames the bundle for cost-anomaly root-cause analysis and a
+    reliability-safe mitigation proposal (``_RCA_SYSTEM``) and sends it to
+    a duck-typed backend (AIAssist / LocalAgent, exposing ``.chat`` and
+    ``.available``). Returns ``{"answer", "backend"}`` -- plus ``"plan"``
+    when the reply parses as the strict-JSON RCA object -- and NEVER
+    raises: a missing or failing backend becomes actionable text.
+    """
+    backend = _backend_name(assistant)
+    if assistant is None or not getattr(assistant, "available", False):
+        return {
+            "answer": ("No AI backend is configured for cost RCA. Set "
+                       "ANTHROPIC_API_KEY for the Claude API, or configure "
+                       "a local console agent command (e.g. "
+                       "\"claude -p {prompt}\"), then retry. The RCA "
+                       "context bundle is ready to paste into any AI "
+                       "manually in the meantime."),
+            "backend": "none",
+        }
+    prompt = to_prompt(context, question or _RCA_QUESTION)
+    try:
+        reply = assistant.chat([{"role": "user", "content": prompt}],
+                               system=_RCA_SYSTEM)
+    except Exception as e:  # noqa: BLE001 - AI errors -> actionable text
+        return {
+            "answer": ("The AI backend (%s) could not analyze the cost "
+                       "anomaly: %s. The RCA context bundle is intact -- "
+                       "retry, switch backend, or paste it into an AI "
+                       "manually." % (backend, e)),
+            "backend": backend,
+        }
+    text = (reply or "").strip()
+    if not text:
+        return {
+            "answer": ("The AI backend (%s) returned an empty reply; "
+                       "retry or switch backend." % backend),
+            "backend": backend,
+        }
+    out: Dict[str, Any] = {"answer": text, "backend": backend}
+    plan = _parse_rca_reply(text)
+    if plan is not None:
+        out["plan"] = plan
+    return out

@@ -261,6 +261,205 @@ def _awscost():
     return aws
 
 
+def _optional_awscost(profile="", region=""):
+    """The awscost module (or a profile/region-bound wrapper) when the
+    aws CLI is present and read-only access is configured, else None. RCA
+    is designed to DEGRADE cleanly when AWS is absent -- a pasted anomaly
+    report still yields a (lower-confidence) analysis without any live
+    AWS calls, so callers must tolerate a None here rather than error."""
+    try:
+        aws = _lazy("awscost")
+    except Exception:
+        return None
+    try:
+        if not aws.aws_available():
+            return None
+    except Exception:
+        return None
+    if profile or region:
+        return _BoundAWS(aws, profile, region)
+    return aws
+
+
+def _rca_mod():
+    """The rca engine, or an actionable ApiError when it is not yet
+    importable (the module is developed alongside this one)."""
+    try:
+        return _lazy("rca")
+    except Exception:
+        raise ApiError("cost-anomaly RCA is unavailable "
+                       "(nr2grafana.rca not importable)", 400)
+
+
+def _mitigate_mod():
+    """The mitigation planner, or an actionable ApiError."""
+    try:
+        return _lazy("mitigate")
+    except Exception:
+        raise ApiError("mitigation planning is unavailable "
+                       "(nr2grafana.mitigate not importable)", 400)
+
+
+def _flowlogs_mod():
+    """The flow-logs attribution module, or None. RCA runs (degraded)
+    without it, so its absence is never fatal."""
+    try:
+        return _lazy("flowlogs")
+    except Exception:
+        return None
+
+
+def _call_filtered(fn, *args, **kwargs):
+    """Call ``fn`` passing ``args`` positionally and only the ``kwargs``
+    its signature actually accepts, so these routes stay robust against
+    sibling API drift (RCA/flowlogs/mitigate evolve concurrently). A
+    ``**kwargs`` function receives everything unchanged."""
+    import inspect
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return fn(*args, **kwargs)
+    if any(p.kind == p.VAR_KEYWORD for p in params.values()):
+        return fn(*args, **kwargs)
+    filtered = {k: v for k, v in kwargs.items() if k in params}
+    return fn(*args, **filtered)
+
+
+def _default_anomaly_window(days=90):
+    """(start, end) ISO dates spanning the last ``days`` days -- the
+    default Cost Explorer date interval for anomaly discovery."""
+    import datetime as _dt
+    end = _dt.date.today()
+    start = end - _dt.timedelta(days=max(1, int(days)))
+    return start.isoformat(), end.isoformat()
+
+
+def _anomaly_window(body):
+    """The caller's {start,end} date interval, else the last 90 days."""
+    start = str((body or {}).get("start") or "")
+    end = str((body or {}).get("end") or "")
+    if start and end:
+        return start, end
+    return _default_anomaly_window()
+
+
+def _rca_report_input(body):
+    """The pasted anomaly report from a request body, accepting a few
+    friendly key aliases (report / anomaly / text). Returns the raw
+    value (str or dict) or None when none is present/non-empty."""
+    for key in ("report", "anomaly", "text"):
+        val = (body or {}).get(key)
+        if isinstance(val, dict) and val:
+            return val
+        if isinstance(val, str) and val.strip():
+            return val
+    return None
+
+
+# Generated mitigation-config filenames must be safe basenames -- a
+# planner-supplied name can never escape the download zip.
+_CONFIG_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _safe_config_filename(name, default):
+    base = os.path.basename(str(name or "").strip())
+    base = _CONFIG_NAME_RE.sub("-", base).strip("-.")
+    if not base:
+        return default
+    if "." not in base:
+        base += ".yaml"
+    return base
+
+
+def _config_text(cfg):
+    """The paste-ready config body out of a mitigation config entry,
+    tolerating the several key names the planner might use."""
+    for k in ("content", "snippet", "yaml", "text", "config", "body"):
+        v = cfg.get(k)
+        if isinstance(v, str) and v.strip():
+            return v
+    return ""
+
+
+def _iter_mitigation_configs(mit):
+    """Normalize one mitigation's generated configs to a list of dicts,
+    tolerating a list of config dicts, a {filename: text} mapping, a
+    single config dict, or a bare string."""
+    raw = mit.get("configs")
+    if raw is None:
+        raw = mit.get("config")
+    items: List[Dict[str, Any]] = []
+    if isinstance(raw, list):
+        for c in raw:
+            if isinstance(c, dict):
+                items.append(c)
+            elif isinstance(c, str) and c.strip():
+                items.append({"content": c})
+    elif isinstance(raw, dict):
+        text_keys = ("content", "snippet", "yaml", "text", "config",
+                     "body", "filename", "name", "target")
+        if any(k in raw for k in text_keys):
+            items.append(raw)
+        else:  # a {filename: text|dict} mapping
+            for k, v in raw.items():
+                if isinstance(v, str):
+                    items.append({"filename": k, "content": v})
+                elif isinstance(v, dict):
+                    d = dict(v)
+                    d.setdefault("filename", k)
+                    items.append(d)
+    elif isinstance(raw, str) and raw.strip():
+        items.append({"content": raw})
+    return items
+
+
+_MIT_KEEP_FLAGS = ("keeps_availability", "keeps_durability",
+                   "keeps_performance", "handles_current_traffic")
+
+
+def _mitigation_config_files(mitigation):
+    """Group every mitigation's generated config into paste-ready
+    (filename, text) pairs plus a README index. All configs are GENERIC
+    (placeholder) values the planner emitted; this only files them."""
+    buckets: Dict[str, List[str]] = {}
+    readme = ["# nr2grafana reliability-safe mitigation configs",
+              "",
+              "Generated, paste-ready configs to cut AWS cost WITHOUT",
+              "reducing availability, durability, performance or the",
+              "ability to serve current traffic. Values are GENERIC",
+              "placeholders (<ANGLE_BRACKETS>) -- fill them from your own",
+              "GitOps/IaC. The tool PROPOSES; it never applies changes.",
+              ""]
+    mits = (mitigation or {}).get("mitigations") or []
+    for i, mit in enumerate(mits, 1):
+        if not isinstance(mit, dict):
+            continue
+        title = mit.get("title") or mit.get("id") or ("mitigation-%d" % i)
+        keeps = [k.replace("keeps_", "").replace("handles_", "")
+                 for k in _MIT_KEEP_FLAGS if mit.get(k)]
+        line = "- %s" % title
+        if keeps:
+            line += "  (keeps: %s)" % ", ".join(keeps)
+        readme.append(line)
+        for cfg in _iter_mitigation_configs(mit):
+            text = _config_text(cfg)
+            if not text.strip():
+                continue
+            fname = _safe_config_filename(
+                cfg.get("filename") or cfg.get("name")
+                or cfg.get("target"), "mitigation-%d.yaml" % i)
+            note = cfg.get("note") or cfg.get("description") or ""
+            header = "# --- %s ---" % title
+            if note:
+                header += "\n# %s" % note
+            buckets.setdefault(fname, []).append(
+                header + "\n" + text.rstrip() + "\n")
+    files = [(fname, "\n".join(parts))
+             for fname, parts in sorted(buckets.items())]
+    files.append(("README.md", "\n".join(readme) + "\n"))
+    return files
+
+
 def _call_tco_analyze(tco, aws, **kwargs):
     """Call tco.analyze passing only the kwargs its signature accepts,
     so the route stays robust against sibling API drift (e.g. group_by
@@ -1676,6 +1875,170 @@ def _job_tco(job: _Job, body: Dict[str, Any], store) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# cost-anomaly RCA / mitigation job bodies (section 9)
+# ---------------------------------------------------------------------------
+
+def _job_rca(job: _Job, body: Dict[str, Any], store) -> Dict[str, Any]:
+    """Frame a cost anomaly (a pasted report OR a Cost Explorer anomaly
+    by id), converge read-only evidence (discovery + VPC flow logs) and
+    run the root-cause engine. Persists "rca" (and "flowlogs" when flow
+    logs were attributed). AWS access is OPTIONAL and strictly read-only;
+    without it the analysis degrades to a lower-confidence hypothesis."""
+    rca = _rca_mod()
+    profile = str(body.get("profile") or "")
+    region = str(body.get("region") or "")
+    slug = body.get("slug") or ""
+    store_slug = _cost_slug(slug)
+    aws = _optional_awscost(profile, region)
+
+    # -- Step A: frame the incident -------------------------------------
+    anomaly_id = str(body.get("anomaly_id") or "")
+    if anomaly_id:
+        if aws is None:
+            raise ApiError("AWS is required to fetch anomaly %r from "
+                           "Cost Explorer -- configure read-only aws "
+                           "credentials, or paste the anomaly report "
+                           "instead" % anomaly_id, 400)
+        start, end = _anomaly_window(body)
+        job.add("Fetching anomaly %s from Cost Explorer (read-only, "
+                "%s..%s)..." % (anomaly_id, start, end))
+        anomalies = aws.get_anomalies(start, end)
+        match = None
+        for a in anomalies or []:
+            if str(a.get("AnomalyId")) == anomaly_id:
+                match = a
+                break
+        if match is None:
+            raise ApiError("no anomaly with id %r in Cost Explorer for "
+                           "%s..%s" % (anomaly_id, start, end), 404)
+        anomaly = rca.parse_anomaly_report(match)
+    else:
+        report = _rca_report_input(body)
+        if report is None:
+            raise ApiError("provide a pasted anomaly 'report' (text or "
+                           "JSON) or an 'anomaly_id'", 400)
+        job.add("Parsing the pasted anomaly report...")
+        anomaly = rca.parse_anomaly_report(report)
+
+    # -- Step B: localize the bytes (VPC flow logs) ---------------------
+    flowlogs_res = None
+    flow_group = (body.get("flow_logs_group")
+                  or body.get("flow_log_group")
+                  or body.get("flow_logs") or "")
+    if flow_group and aws is None:
+        job.add("note: a flow-logs group was given but AWS is not "
+                "available (read-only) -- skipping flow-log attribution; "
+                "the RCA will be a lower-confidence hypothesis")
+    elif flow_group:
+        fl = _flowlogs_mod()
+        if fl is not None and hasattr(fl, "analyze"):
+            start, end = _anomaly_window(body)
+            job.add("Attributing cross-AZ bytes from VPC Flow Logs "
+                    "group %r..." % flow_group)
+            try:
+                flowlogs_res = _call_filtered(
+                    fl.analyze, aws, log_group=flow_group,
+                    region=region, profile=profile, start=start,
+                    end=end,
+                    onset=anomaly.get("step_change") or anomaly.get(
+                        "onset"),
+                    cfg=_load_cfg(), log=job.add)
+                if isinstance(flowlogs_res, dict) and flowlogs_res:
+                    store.save_artifact(store_slug, "flowlogs",
+                                        flowlogs_res)
+            except Exception as e:
+                flowlogs_res = None
+                job.add("note: VPC Flow Logs attribution unavailable "
+                        "(%s) -- the RCA will degrade to a lower-"
+                        "confidence hypothesis" % _errmsg(e))
+
+    # -- Steps C-F: converge evidence into a root cause -----------------
+    deepdive = _artifact(store, store_slug, "deepdive")
+    packing = _artifact(store, store_slug, "packing")
+    tco = _artifact(store, store_slug, "tco")
+    job.add("Converging evidence into a root-cause analysis...")
+    rca_res = _call_filtered(
+        rca.analyze, anomaly, aws=aws, flowlogs=flowlogs_res,
+        deepdive=deepdive, packing=packing, tco=tco,
+        cfg=_load_cfg(), log=job.add)
+    store.save_artifact(store_slug, "rca", rca_res)
+    dominant = ((rca_res.get("cause") or {}).get("dominant") or {}) \
+        if isinstance(rca_res, dict) else {}
+    job.add("RCA complete (confidence: %s; dominant driver: %s)"
+            % (rca_res.get("confidence", "n/a")
+               if isinstance(rca_res, dict) else "n/a",
+               dominant.get("summary") or dominant.get("share")
+               or "see report"))
+    return {"slug": slug, "rca": rca_res, "flowlogs": flowlogs_res,
+            "anomaly": anomaly}
+
+
+def _job_mitigate(job: _Job, body: Dict[str, Any], store) \
+        -> Dict[str, Any]:
+    """Turn a stored (or supplied) RCA into a ranked, reliability-safe
+    mitigation plan and persist "mitigation". Every mitigation carries
+    its reliability preconditions and keeps_* flags; the tool PROPOSES
+    only -- nothing is ever executed against AWS/K8s."""
+    mitigate = _mitigate_mod()
+    slug = body.get("slug") or ""
+    store_slug = _cost_slug(slug)
+    rca_res = body.get("rca")
+    if not (isinstance(rca_res, dict) and rca_res):
+        rca_res = _artifact(store, store_slug, "rca")
+    if not rca_res:
+        raise ApiError("no RCA available -- run an RCA first or pass an "
+                       "'rca' object", 404)
+    deepdive = _artifact(store, store_slug, "deepdive")
+    packing = _artifact(store, store_slug, "packing")
+    job.add("Planning reliability-safe mitigations...")
+    plan = _call_filtered(
+        mitigate.plan, rca_res, deepdive=deepdive, packing=packing,
+        cfg=_load_cfg(), log=job.add)
+    store.save_artifact(store_slug, "mitigation", plan)
+    mits = (plan.get("mitigations") or []) if isinstance(plan, dict) \
+        else []
+    job.add("Planned %d mitigation(s) -- proposals only, review the "
+            "reliability preconditions before applying" % len(mits))
+    return {"slug": slug, "mitigation": plan}
+
+
+def _job_rca_analyze(job: _Job, body: Dict[str, Any], store,
+                     assistant) -> Dict[str, Any]:
+    """Assemble the AI context bundle (which includes the rca / mitigation
+    / flowlogs artifacts) and ask the configured AI backend to analyze
+    the anomaly and propose reliability-safe mitigations. Never raises:
+    AI errors are returned as actionable text by aicontext."""
+    slug = body.get("slug") or ""
+    grafana = _optional_grafana_live()
+    store_slug = _cost_slug(slug)
+    deepdive = _artifact(store, store_slug, "deepdive")
+    aicontext = _lazy("aicontext")
+    job.add("Assembling the RCA / mitigation AI context bundle...")
+    context = aicontext.build_context(
+        store, slug=slug, grafana=grafana, deepdive=deepdive,
+        redact=True)
+    if isinstance(context, dict):
+        context["mode"] = "rca"
+    job.add("Asking the %s AI backend to analyze the anomaly..."
+            % SESSION.ai_backend())
+    fn = getattr(aicontext, "analyze_cost", None)
+    if callable(fn):
+        result = _call_filtered(fn, assistant, context)
+    else:  # aicontext mid-build: fall back to the generic Q&A flow
+        question = body.get("question") or (
+            "Analyze this AWS cost anomaly and the converged evidence, "
+            "then propose how to cut the cost WITHOUT reducing "
+            "availability, durability, performance or the ability to "
+            "serve the current traffic rate.")
+        result = aicontext.troubleshoot(assistant, context, question)
+    SESSION.status["ai"] = "ok"
+    job.add("Analysis received (%s backend)"
+            % (result.get("backend", SESSION.ai_backend())
+               if isinstance(result, dict) else SESSION.ai_backend()))
+    return result
+
+
+# ---------------------------------------------------------------------------
 # request handler
 # ---------------------------------------------------------------------------
 
@@ -1890,6 +2253,10 @@ class Handler(BaseHTTPRequestHandler):
             self._get_tco(slug)
         elif path == "/api/aws/identity":
             self._get_aws_identity(q)
+        elif path == "/api/aws/profiles":
+            self._get_aws_profiles()
+        elif path == "/api/aws/anomalies":
+            self._get_aws_anomalies(q)
         elif path.startswith("/download/"):
             self._get_download(path)
         else:
@@ -1970,6 +2337,9 @@ class Handler(BaseHTTPRequestHandler):
             "/api/mcp/config": self._post_mcp_config,
             "/api/mcp/probe": self._post_mcp_probe,
             "/api/tco": self._post_tco,
+            "/api/rca": self._post_rca,
+            "/api/rca/analyze": self._post_rca_analyze,
+            "/api/mitigate": self._post_mitigate,
         }
         fn = routes.get(path)
         if not fn:
@@ -2048,6 +2418,16 @@ class Handler(BaseHTTPRequestHandler):
             features["aws"] = bool(_lazy("awscost").aws_available())
         except Exception:
             features["aws"] = False
+        # 1.9 cost-anomaly RCA + reliability-safe mitigation. "rca" is on
+        # once the whole engine (rca + mitigate + reliability + flowlogs)
+        # is importable; the routes still degrade cleanly when AWS is
+        # absent (a pasted report yields a lower-confidence analysis).
+        try:
+            for name in ("rca", "mitigate", "reliability", "flowlogs"):
+                _lazy(name)
+            features["rca"] = True
+        except Exception:
+            features["rca"] = False
         self._json({"app": "nr2grafana",
                     "version": ver,
                     "session": SESSION.public(),
@@ -2323,6 +2703,54 @@ class Handler(BaseHTTPRequestHandler):
         self._json({"identity": identity, "read_only": True,
                     "profile": profile, "region": region})
 
+    def _get_aws_profiles(self) -> None:
+        """List named AWS profiles from ~/.aws/config (aws-vault / SSO
+        friendly) so the UI can offer a profile picker. Never needs the
+        aws CLI itself (profiles are read from config), never reads or
+        returns any credential material."""
+        try:
+            aws = _lazy("awscost")
+        except Exception:
+            raise ApiError("AWS support is unavailable "
+                           "(nr2grafana.awscost not importable)", 400)
+        profiles: List[Any] = []
+        fn = getattr(aws, "list_profiles", None)
+        if callable(fn):
+            try:
+                profiles = list(fn() or [])
+            except Exception as e:
+                raise ApiError("could not read AWS profiles: %s"
+                               % _errmsg(e), 400)
+        try:
+            available = bool(aws.aws_available())
+        except Exception:
+            available = False
+        self._json({"profiles": profiles, "aws_available": available,
+                    "read_only": True})
+
+    def _get_aws_anomalies(self, q: Dict[str, List[str]]) -> None:
+        """Cost Explorer anomalies over a date interval (read-only) so
+        the UI can offer an anomaly picker to feed the RCA. Defaults to
+        the last 90 days when no interval is given."""
+        aws = _awscost()  # actionable 400 when the aws CLI is absent
+        profile = (q.get("profile") or [""])[0]
+        region = (q.get("region") or [""])[0]
+        start = (q.get("start") or [""])[0]
+        end = (q.get("end") or [""])[0]
+        if not (start and end):
+            start, end = _default_anomaly_window()
+        client = _aws_client(profile, region) if (profile or region) \
+            else aws
+        try:
+            anomalies = client.get_anomalies(start, end)
+        except Exception as e:
+            raise ApiError("could not read cost anomalies: %s -- check "
+                           "your aws credentials (read-only)"
+                           % _errmsg(e), 502)
+        self._json({"anomalies": anomalies or [], "start": start,
+                    "end": end, "read_only": True, "profile": profile,
+                    "region": region})
+
     def _ai_context(self, slug: str) -> Dict[str, Any]:
         """Build the AI context bundle for ``slug`` (empty = the whole
         workspace), threading in a live Grafana client and the stored
@@ -2428,6 +2856,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/download/tco-report.json":
             q = parse_qs(urlsplit(self.path).query)
             return self._download_tco_report((q.get("slug") or [""])[0])
+        if path == "/download/mitigation-configs.zip":
+            q = parse_qs(urlsplit(self.path).query)
+            return self._download_mitigation_configs(
+                (q.get("slug") or [""])[0])
         m = re.match(r"^/download/dashboard/([^/]+)\.json$", path)
         if m:
             return self._download_dashboard(m.group(1))
@@ -2868,6 +3300,28 @@ class Handler(BaseHTTPRequestHandler):
                 zf.writestr(name, text)
         self._bytes(buf.getvalue(), "application/zip",
                     "cost-config.zip")
+
+    def _download_mitigation_configs(self, slug: str) -> None:
+        """Zip every generated mitigation config as paste-ready files
+        (Mimir/Loki zone-aware, Service trafficDistribution, Karpenter
+        3-AZ discovery, gated NLB cross-zone) plus a README index. slug
+        picks a per-dashboard run; omitted = the instance-wide run. All
+        configs are GENERIC placeholders; filenames are sanitized to safe
+        basenames so nothing can escape the archive."""
+        if slug:
+            self._known_slug(slug)
+        store_slug = _cost_slug(slug)
+        mitigation = _artifact(self.store, store_slug, "mitigation")
+        if not mitigation:
+            raise ApiError("no mitigation plan yet -- run a mitigation "
+                           "first", 404)
+        files = _mitigation_config_files(mitigation)
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for name, text in files:
+                zf.writestr(name, text)
+        self._bytes(buf.getvalue(), "application/zip",
+                    "mitigation-configs.zip")
 
     def _post_samples(self) -> None:
         body = self._body()
@@ -3358,6 +3812,52 @@ class Handler(BaseHTTPRequestHandler):
         store = self.store
         self._json({"job": _start_job(
             "tco", lambda job: _job_tco(job, body, store))})
+
+    # -- cost-anomaly RCA / mitigation (1.9) -----------------------------
+
+    def _post_rca(self) -> None:
+        """Root-cause a cost anomaly as a job: accept a pasted anomaly
+        report OR a Cost Explorer {anomaly_id}, converge read-only
+        evidence (discovery + VPC flow logs) and persist "rca" (+
+        "flowlogs"). AWS is optional and strictly read-only."""
+        body = self._body()
+        anomaly_id = str(body.get("anomaly_id") or "")
+        if not anomaly_id and _rca_report_input(body) is None:
+            raise ApiError("provide a pasted anomaly 'report' (text or "
+                           "JSON) or an 'anomaly_id' from Cost Explorer",
+                           400)
+        _rca_mod()  # fail fast (400) when the RCA engine isn't available
+        if anomaly_id:
+            _awscost()  # need the aws CLI to fetch the anomaly by id
+        store = self.store
+        self._json({"job": _start_job(
+            "rca", lambda job: _job_rca(job, body, store))})
+
+    def _post_mitigate(self) -> None:
+        """Plan reliability-safe mitigations from a stored (or supplied)
+        RCA as a job; persists "mitigation". Proposal only -- nothing is
+        executed against AWS/K8s."""
+        body = self._body()
+        _mitigate_mod()  # fail fast (400) when the planner isn't ready
+        slug = body.get("slug") or ""
+        rca_res = body.get("rca")
+        if not (isinstance(rca_res, dict) and rca_res) \
+                and not _artifact(self.store, _cost_slug(slug), "rca"):
+            raise ApiError("no RCA available -- run an RCA first or pass "
+                           "an 'rca' object", 404)
+        store = self.store
+        self._json({"job": _start_job(
+            "mitigate", lambda job: _job_mitigate(job, body, store))})
+
+    def _post_rca_analyze(self) -> None:
+        """Ask the AI backend to analyze the anomaly bundle and propose
+        reliability-safe mitigations (job)."""
+        body = self._body()
+        ai = _ai()  # 400 fast when no AI backend is configured
+        store = self.store
+        self._json({"job": _start_job(
+            "rca-analyze",
+            lambda job: _job_rca_analyze(job, body, store, ai))})
 
 
 # ---------------------------------------------------------------------------

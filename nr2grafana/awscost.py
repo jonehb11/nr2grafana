@@ -24,8 +24,10 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import shlex
 import shutil
 import subprocess
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 # Read-only verb prefixes. A subcommand must begin with one of these AND
@@ -34,6 +36,25 @@ from typing import Any, Dict, List, Optional, Tuple
 # prefix too means a typo in ALLOWED can never smuggle in a write verb.
 READONLY_VERBS = ("get-", "list-", "describe-", "head-", "lookup-",
                   "search-", "batch-get-")
+
+# Justified read-only EXCEPTIONS to the verb-prefix rule. These are the
+# ONLY (service, subcommand) pairs allowed even though the subcommand does
+# not begin with a READONLY_VERBS prefix. Each was audited to READ existing
+# data only -- it creates no infrastructure, writes nothing to S3, and
+# mutates no AWS state:
+#   - logs start-query : merely INITIATES a CloudWatch Logs Insights query
+#     over log DATA that already exists (VPC Flow Logs). It creates no log
+#     group/stream. IAM: logs:StartQuery.
+#   - logs stop-query  : only CANCELS a running query. IAM: logs:StopQuery.
+# (logs get-query-results is already prefix-covered by "get-"; cloudtrail
+# lookup-events by "lookup-" -- both live in ALLOWED below, not here.)
+# See ARCHITECTURE-1.9 section 0.8 (docs.aws.amazon.com API_StartQuery /
+# API_StopQuery). This set is intentionally tiny and hand-audited; nothing
+# else may ever bypass the prefix gate.
+READONLY_EXCEPTIONS = frozenset([
+    ("logs", "start-query"),
+    ("logs", "stop-query"),
+])
 
 # Explicit allow-list: service -> set of permitted subcommands. This is an
 # allow-set, never a deny-set. If a (service, subcommand) pair is not in
@@ -69,6 +90,14 @@ ALLOWED = {
         "describe-instances",
         "describe-instance-types",
         "describe-regions",
+        # RCA 1.9: cross-AZ topology + storage rule-out (all read-only).
+        "describe-network-interfaces",
+        "describe-subnets",
+        "describe-route-tables",
+        "describe-nat-gateways",
+        "describe-availability-zones",
+        "describe-volumes",
+        "describe-snapshots",
     },
     "pricing": {
         "get-products",
@@ -78,6 +107,36 @@ ALLOWED = {
     "organizations": {
         "list-accounts",
         "describe-organization",
+    },
+    # RCA 1.9: CloudTrail correlates the cost step-change to a config
+    # action (e.g. a Karpenter scale-up). lookup-events reads management
+    # events only. lookup- is a READONLY_VERBS prefix.
+    "cloudtrail": {
+        "lookup-events",
+    },
+    # RCA 1.9: CloudWatch Logs Insights over VPC Flow Logs. start-query /
+    # stop-query are the sole non-prefix verbs, whitelisted via
+    # READONLY_EXCEPTIONS (see 0.8); the rest are prefix-covered reads.
+    "logs": {
+        "get-query-results",
+        "describe-log-groups",
+        "describe-queries",
+    },
+    # RCA 1.9: EKS control plane -> name the workload behind the flows.
+    "eks": {
+        "describe-cluster",
+        "list-clusters",
+        "list-nodegroups",
+        "describe-nodegroup",
+        "list-fargate-profiles",
+    },
+    # RCA 1.9: NLB cross-zone + per-AZ target health (never blind-disable).
+    "elbv2": {
+        "describe-load-balancers",
+        "describe-target-groups",
+        "describe-target-health",
+        "describe-listeners",
+        "describe-target-group-attributes",
     },
 }
 
@@ -111,6 +170,105 @@ def aws_available() -> bool:
     return _aws_bin() is not None
 
 
+def aws_vault_available() -> bool:
+    """True when the ``aws-vault`` helper is resolvable on PATH.
+
+    Purely informational (lets the UI/CLI offer aws-vault). Enabling the
+    wrapper is opt-in via :envvar:`N2G_AWS_WRAP` -- discovery is never
+    silently re-routed through aws-vault just because it is installed.
+    """
+    return shutil.which("aws-vault") is not None
+
+
+def _aws_wrap_prefix(profile: str = "") -> List[str]:
+    """Return the credential-wrapper argv prefix, or ``[]`` for none.
+
+    Controlled by :envvar:`N2G_AWS_WRAP`. Two forms:
+
+    * The exact value ``aws-vault`` (with a ``profile`` given) expands to
+      ``["aws-vault", "exec", <profile>, "--"]`` -- the common ergonomic.
+    * Any other value is treated as a full command prefix, split with
+      :func:`shlex.split`; the literal token ``{profile}`` is replaced by
+      the profile value. This lets a user front the ``aws`` call with SSO
+      helpers, ``aws-vault exec {profile} --``, etc.
+
+    The wrapper only injects credentials around the already-vetted,
+    allow-listed read-only ``aws`` command; it cannot change what runs.
+    Control characters in any token are refused (defense in depth).
+    """
+    raw = os.environ.get("N2G_AWS_WRAP", "").strip()
+    if not raw:
+        return []
+    if raw == "aws-vault" and profile:
+        prefix = ["aws-vault", "exec", profile, "--"]
+    else:
+        try:
+            parts = shlex.split(raw)
+        except ValueError as e:
+            raise AWSError(
+                "N2G_AWS_WRAP is not a valid command prefix: %s" % e)
+        prefix = [p.replace("{profile}", profile or "") for p in parts]
+    for tok in prefix:
+        _reject_control(tok, "wrap token")
+    return prefix
+
+
+def list_profiles() -> List[str]:
+    """List AWS profile names from the local config (read-only).
+
+    Parses ``~/.aws/config`` and ``~/.aws/credentials`` (honoring
+    :envvar:`AWS_CONFIG_FILE` / :envvar:`AWS_SHARED_CREDENTIALS_FILE`) for
+    profile section headers. In ``config`` these look like ``[default]`` or
+    ``[profile NAME]``; ``sso-session``/``services`` sections are skipped.
+    In ``credentials`` the section name IS the profile. No credential
+    VALUES are ever read -- only the section names. Returns a sorted, de-
+    duplicated list; a missing/unreadable file contributes nothing.
+    """
+    names = set()  # type: set
+    config = (os.environ.get("AWS_CONFIG_FILE")
+              or os.path.expanduser(os.path.join("~", ".aws", "config")))
+    creds = (os.environ.get("AWS_SHARED_CREDENTIALS_FILE")
+             or os.path.expanduser(
+                 os.path.join("~", ".aws", "credentials")))
+    for name in _profiles_from_file(config, is_config=True):
+        names.add(name)
+    for name in _profiles_from_file(creds, is_config=False):
+        names.add(name)
+    return sorted(names)
+
+
+def _profiles_from_file(path: str, is_config: bool) -> List[str]:
+    """Scan an INI-ish AWS config file for profile section names.
+
+    A hand-rolled header scan (not :mod:`configparser`) because AWS config
+    files use nested/indented subsections (``s3 =`` blocks, ``sso_*``) that
+    make a strict INI parser raise. We only need the ``[...]`` headers.
+    """
+    out = []  # type: List[str]
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line.startswith("[") or not line.endswith("]"):
+                    continue
+                section = line[1:-1].strip()
+                if not section:
+                    continue
+                if is_config:
+                    if section == "default":
+                        out.append("default")
+                    elif section.startswith("profile "):
+                        name = section[len("profile "):].strip()
+                        if name:
+                            out.append(name)
+                    # sso-session / services / etc. are not profiles.
+                else:
+                    out.append(section)
+    except OSError:
+        pass
+    return out
+
+
 def _reject_control(value: str, what: str) -> None:
     """Refuse a NUL/newline in a value we place on the argv.
 
@@ -126,9 +284,17 @@ def _reject_control(value: str, what: str) -> None:
 
 
 def _is_allowed(service: str, subcommand: str) -> bool:
-    """True iff (service, subcommand) is allow-listed AND read-only."""
+    """True iff (service, subcommand) is a permitted read-only command.
+
+    Two ways in, both closed sets: either the pair is one of the tiny,
+    hand-audited :data:`READONLY_EXCEPTIONS` (read-of-data verbs that do
+    not match a prefix), or it is in :data:`ALLOWED` AND its subcommand
+    begins with a :data:`READONLY_VERBS` prefix. Anything else is refused.
+    """
     if not isinstance(service, str) or not isinstance(subcommand, str):
         return False
+    if (service, subcommand) in READONLY_EXCEPTIONS:
+        return True
     subs = ALLOWED.get(service)
     if not subs or subcommand not in subs:
         return False
@@ -182,8 +348,16 @@ def run_aws(service: str, subcommand: str,
             "discovery is optional; the rest of nr2grafana works "
             "without it.")
 
-    argv = [aws, "--output", "json", "--region", region]
-    if profile:
+    # Optional aws-vault / SSO wrapper (e.g. `aws-vault exec <profile> --`).
+    # When a wrapper is active it OWNS credential resolution, so we do NOT
+    # also pass --profile to the inner aws (that would fight the wrapper).
+    # The wrapper is still read-only: it only injects creds around the same
+    # allow-listed aws command already vetted above.
+    wrap = _aws_wrap_prefix(profile)
+
+    argv = list(wrap)
+    argv += [aws, "--output", "json", "--region", region]
+    if profile and not wrap:
         argv += ["--profile", profile]
     argv += [service, subcommand] + argv_args
 
@@ -195,8 +369,8 @@ def run_aws(service: str, subcommand: str,
             shell=False, timeout=timeout)
     except FileNotFoundError:
         raise AWSError(
-            "could not execute the 'aws' CLI at %r -- check the "
-            "installation (or N2G_AWS_BIN)." % aws)
+            "could not execute %r -- check the installation (or "
+            "N2G_AWS_BIN / N2G_AWS_WRAP)." % (argv[0] if argv else aws))
     except subprocess.TimeoutExpired:
         raise AWSError(
             "the 'aws %s %s' command timed out after %d seconds; try a "
@@ -433,3 +607,264 @@ def s3_bucket_sizes(buckets: List[str], region: str = "us-east-1",
             entry["error"] = str(e)
         out[bucket] = entry
     return out
+
+
+def cloudtrail_lookup(attribute_key: str = "", attribute_value: str = "",
+                      start: str = "", end: str = "", max_results: int = 0,
+                      region: str = "us-east-1",
+                      profile: str = "") -> List[Dict[str, Any]]:
+    """CloudTrail ``lookup-events`` (read management events).
+
+    Used by the RCA engine to correlate the cost step-change to a config
+    action (e.g. a Karpenter scale-up / EC2NodeClass change). Optionally
+    filter by a single lookup attribute (``EventName``, ``Username``,
+    ``ResourceType``, ...) and a time window (``start``/``end`` are
+    ISO-8601 or epoch strings passed straight to the CLI). Returns the
+    ``Events`` list (possibly empty).
+    """
+    args = []  # type: List[str]
+    if attribute_key and attribute_value:
+        args += ["--lookup-attributes",
+                 "AttributeKey=%s,AttributeValue=%s"
+                 % (attribute_key, attribute_value)]
+    if start:
+        args += ["--start-time", start]
+    if end:
+        args += ["--end-time", end]
+    if max_results:
+        args += ["--max-results", str(int(max_results))]
+    data = run_aws("cloudtrail", "lookup-events", args, region=region,
+                   profile=profile)
+    if not isinstance(data, dict):
+        return []
+    events = data.get("Events")
+    return events if isinstance(events, list) else []
+
+
+def logs_insights_query(log_group: Any, query: str,
+                        start_epoch: int, end_epoch: int,
+                        limit: int = 1000, poll_interval: float = 1.0,
+                        max_polls: int = 60, region: str = "us-east-1",
+                        profile: str = "") -> Dict[str, Any]:
+    """Run a CloudWatch Logs Insights query, bounded (read-only).
+
+    Flow (all read-of-data verbs; see ARCHITECTURE-1.9 0.8): ``start-query``
+    to initiate, then a BOUNDED poll of ``get-query-results`` until the
+    query is ``Complete`` (or a terminal failure), and ``stop-query`` to
+    cancel if the poll budget is exhausted. Nothing is written or created.
+
+    ``log_group`` may be a single name (``--log-group-name``) or a
+    list/tuple (``--log-group-names``). ``start_epoch``/``end_epoch`` are
+    UNIX seconds. Returns ``{"status", "results", "statistics",
+    "query_id", "polls"}`` where ``results`` is the raw Logs Insights list
+    of rows (each a list of ``{"field","value"}`` dicts). Raises
+    :class:`AWSError` on a failed/timed-out query -- callers that must not
+    fail (flowlogs.py) catch it and degrade.
+    """
+    if isinstance(log_group, (list, tuple)):
+        lg_args = ["--log-group-names"] + [str(g) for g in log_group]
+    else:
+        lg_args = ["--log-group-name", str(log_group)]
+    start_args = lg_args + [
+        "--start-time", str(int(start_epoch)),
+        "--end-time", str(int(end_epoch)),
+        "--query-string", str(query),
+        "--limit", str(int(limit))]
+    started = run_aws("logs", "start-query", start_args, region=region,
+                      profile=profile)
+    query_id = ""
+    if isinstance(started, dict):
+        query_id = str(started.get("queryId") or "")
+    if not query_id:
+        raise AWSError(
+            "CloudWatch Logs start-query returned no queryId; cannot "
+            "retrieve results. Check the log group name and time window.")
+
+    max_polls = max(1, int(max_polls))
+    polls = 0
+    while polls < max_polls:
+        polls += 1
+        res = run_aws("logs", "get-query-results", ["--query-id", query_id],
+                      region=region, profile=profile)
+        status = ""
+        results = []  # type: List[Any]
+        stats = {}  # type: Any
+        if isinstance(res, dict):
+            status = str(res.get("status") or "")
+            r = res.get("results")
+            if isinstance(r, list):
+                results = r
+            stats = res.get("statistics") or {}
+        if status == "Complete":
+            return {"status": status, "results": results,
+                    "statistics": stats, "query_id": query_id,
+                    "polls": polls}
+        if status in ("Failed", "Cancelled", "Timeout"):
+            raise AWSError(
+                "CloudWatch Logs Insights query %s ended with status "
+                "%s." % (query_id, status))
+        if polls < max_polls:
+            time.sleep(max(0.0, float(poll_interval)))
+
+    # Poll budget exhausted while still Running/Scheduled -> cancel it and
+    # report actionably (best effort; a failed cancel must not mask this).
+    try:
+        run_aws("logs", "stop-query", ["--query-id", query_id],
+                region=region, profile=profile)
+    except AWSError:
+        pass
+    raise AWSError(
+        "CloudWatch Logs Insights query %s did not complete within %d "
+        "polls; narrow the time window or raise max_polls."
+        % (query_id, max_polls))
+
+
+def eks_describe(cluster: str = "", region: str = "us-east-1",
+                 profile: str = "") -> Dict[str, Any]:
+    """Read EKS control-plane facts (read-only).
+
+    With no ``cluster`` name, returns ``{"clusters": [...]}`` from
+    ``list-clusters``. With a name, returns ``{"cluster": {...},
+    "nodegroups": [{...}, ...]}`` combining ``describe-cluster`` with
+    ``list-nodegroups`` + ``describe-nodegroup`` for each. Used to map the
+    dominant cross-AZ ENIs/IPs back to the workload (Mimir/Loki/Tempo).
+    """
+    if not cluster:
+        data = run_aws("eks", "list-clusters", region=region,
+                       profile=profile)
+        clusters = data.get("clusters") if isinstance(data, dict) else None
+        return {"clusters": clusters if isinstance(clusters, list) else []}
+
+    out = {}  # type: Dict[str, Any]
+    cl = run_aws("eks", "describe-cluster", ["--name", cluster],
+                 region=region, profile=profile)
+    out["cluster"] = cl.get("cluster", {}) if isinstance(cl, dict) else {}
+    ng = run_aws("eks", "list-nodegroups", ["--cluster-name", cluster],
+                 region=region, profile=profile)
+    names = ng.get("nodegroups") if isinstance(ng, dict) else None
+    names = names if isinstance(names, list) else []
+    groups = []  # type: List[Any]
+    for name in names:
+        d = run_aws("eks", "describe-nodegroup",
+                    ["--cluster-name", cluster, "--nodegroup-name",
+                     str(name)], region=region, profile=profile)
+        groups.append(d.get("nodegroup", {}) if isinstance(d, dict) else {})
+    out["nodegroups"] = groups
+    return out
+
+
+def _ec2_list(subcommand: str, key: str, extra: Optional[List[str]] = None,
+              region: str = "us-east-1", profile: str = "") -> List[Any]:
+    """Run an allow-listed ec2 describe-* and return its top-level list."""
+    data = run_aws("ec2", subcommand, extra or [], region=region,
+                   profile=profile)
+    if not isinstance(data, dict):
+        return []
+    val = data.get(key)
+    return val if isinstance(val, list) else []
+
+
+def ec2_network_topology(region: str = "us-east-1", profile: str = "",
+                         interface_ids: Optional[List[str]] = None,
+                         subnet_ids: Optional[List[str]] = None
+                         ) -> Dict[str, Any]:
+    """Read the EC2 network topology needed for cross-AZ attribution.
+
+    Returns ``{"network_interfaces", "subnets", "route_tables",
+    "nat_gateways", "availability_zones"}`` -- the raw describe-* lists.
+    ENIs map srcAddr/dstAddr -> node/pod and subnet -> AZ, so the RCA can
+    prove a flow is cross-AZ (and rule out NAT/cross-region). Optionally
+    narrow to specific ``interface_ids`` / ``subnet_ids``. All read-only.
+    """
+    eni_args = []  # type: List[str]
+    if interface_ids:
+        eni_args = ["--network-interface-ids"] + [
+            str(i) for i in interface_ids]
+    subnet_args = []  # type: List[str]
+    if subnet_ids:
+        subnet_args = ["--subnet-ids"] + [str(s) for s in subnet_ids]
+    return {
+        "network_interfaces": _ec2_list(
+            "describe-network-interfaces", "NetworkInterfaces", eni_args,
+            region=region, profile=profile),
+        "subnets": _ec2_list(
+            "describe-subnets", "Subnets", subnet_args,
+            region=region, profile=profile),
+        "route_tables": _ec2_list(
+            "describe-route-tables", "RouteTables",
+            region=region, profile=profile),
+        "nat_gateways": _ec2_list(
+            "describe-nat-gateways", "NatGateways",
+            region=region, profile=profile),
+        "availability_zones": _ec2_list(
+            "describe-availability-zones", "AvailabilityZones",
+            region=region, profile=profile),
+    }
+
+
+def elbv2_describe(region: str = "us-east-1", profile: str = "",
+                   load_balancer_arns: Optional[List[str]] = None
+                   ) -> Dict[str, Any]:
+    """Read NLB/ALB facts for the cross-zone / per-AZ health analysis.
+
+    Returns ``{"load_balancers", "target_groups", "target_health",
+    "attributes", "listeners"}``. ``target_health`` and ``attributes`` are
+    keyed by target-group ARN; ``listeners`` by load-balancer ARN. The
+    per-AZ target health is what gates a "disable NLB cross-zone"
+    mitigation -- an AZ with a single healthy target must NOT be black-
+    holed (see 0.6). Optionally narrow to specific
+    ``load_balancer_arns``. All read-only.
+    """
+    lb_args = []  # type: List[str]
+    if load_balancer_arns:
+        lb_args = ["--load-balancer-arns"] + [
+            str(a) for a in load_balancer_arns]
+    lbs = _elbv2_list("describe-load-balancers", "LoadBalancers", lb_args,
+                      region=region, profile=profile)
+    # describe-target-groups takes a SINGLE --load-balancer-arn, not the
+    # plural filter; discover all target groups instead of misapplying it.
+    tgs = _elbv2_list("describe-target-groups", "TargetGroups", None,
+                      region=region, profile=profile)
+
+    out = {"load_balancers": lbs, "target_groups": tgs,
+           "target_health": {}, "attributes": {},
+           "listeners": {}}  # type: Dict[str, Any]
+
+    for tg in tgs:
+        if not isinstance(tg, dict):
+            continue
+        arn = tg.get("TargetGroupArn")
+        if not arn:
+            continue
+        out["target_health"][arn] = _elbv2_list(
+            "describe-target-health", "TargetHealthDescriptions",
+            ["--target-group-arn", str(arn)], region=region,
+            profile=profile)
+        out["attributes"][arn] = _elbv2_list(
+            "describe-target-group-attributes", "Attributes",
+            ["--target-group-arn", str(arn)], region=region,
+            profile=profile)
+
+    for lb in lbs:
+        if not isinstance(lb, dict):
+            continue
+        arn = lb.get("LoadBalancerArn")
+        if not arn:
+            continue
+        out["listeners"][arn] = _elbv2_list(
+            "describe-listeners", "Listeners",
+            ["--load-balancer-arn", str(arn)], region=region,
+            profile=profile)
+    return out
+
+
+def _elbv2_list(subcommand: str, key: str,
+                extra: Optional[List[str]] = None,
+                region: str = "us-east-1", profile: str = "") -> List[Any]:
+    """Run an allow-listed elbv2 describe-* and return its top-level list."""
+    data = run_aws("elbv2", subcommand, extra or [], region=region,
+                   profile=profile)
+    if not isinstance(data, dict):
+        return []
+    val = data.get(key)
+    return val if isinstance(val, list) else []
