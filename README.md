@@ -109,6 +109,17 @@ What it does:
   recorded** — did our changes move the bill? Optional **AWS Cost Explorer
   MCP** wiring for natural-language cost discovery. Credentials are never
   read, logged, or embedded. See [docs/tco.md](docs/tco.md).
+- **AWS cost-anomaly RCA + reliability-safe mitigation** (`cost rca` /
+  `cost mitigate` / web UI **Cost RCA**): investigate a cost spike
+  (from AWS Cost Anomaly Detection or a pasted report) by converging
+  read-only evidence (Cost Explorer, CloudTrail, VPC Flow Logs, EKS,
+  LGTM self-metrics) to a root cause, then propose fixes with estimated
+  $/day saved and reliability preconditions — zone-aware replication,
+  topology-aware routing, Karpenter subnet balancing, gated NLB cross-zone
+  — that never trade away availability/durability/performance or the
+  ability to serve current traffic. Read-only AWS via your local aws-vault
+  /SSO profile; the tool proposes, never executes. See
+  [docs/cost-rca.md](docs/cost-rca.md).
 - **Change tracking**: every fix is logged locally and can be codified
   back into the mapping config.
 - **Optional AI assistance**: Claude diagnoses and fixes failing panels

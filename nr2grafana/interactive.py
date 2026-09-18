@@ -262,6 +262,7 @@ class Wizard:
                     "🤖  Export AI context",
                     "🔌  Set up Grafana MCP",
                     "💵  Analyze AWS TCO trends",
+                    "🕵️   Investigate a cost anomaly (RCA + mitigation)",
                     "🌐  Launch web UI",
                     "⚙️   Choose / create a mapping config",
                     "👋  Quit",
@@ -304,8 +305,10 @@ class Wizard:
                 elif choice == 16:
                     self.flow_tco()
                 elif choice == 17:
-                    self.flow_web()
+                    self.flow_cost_rca()
                 elif choice == 18:
+                    self.flow_web()
+                elif choice == 19:
                     self.flow_config()
                 else:
                     print(dim("bye!"))
@@ -844,6 +847,94 @@ class Wizard:
             print(yellow("TCO analysis unavailable or hit problems "
                          "(see above) -- the aws CLI must be installed "
                          "and configured (read-only)"))
+        return rc
+
+    # -- cost-anomaly RCA + mitigation (1.9) --------------------------------
+
+    def _aws_profile(self) -> str:
+        """Prompt for an AWS profile, offering the local ~/.aws profiles
+        as a menu when any are found. Blank = default credential chain."""
+        profs: List[str] = []
+        try:
+            from .awscost import list_profiles
+            profs = list_profiles()
+        except Exception:
+            profs = []
+        if profs:
+            options = ["(default credential chain)"] + profs
+            last = self.recall("aws_profile", "")
+            default = profs.index(last) + 1 if last in profs else 0
+            idx = menu("AWS profile?", options, default=default)
+            profile = "" if idx == 0 else profs[idx - 1]
+        else:
+            profile = prompt(
+                "AWS profile (blank = default credential chain)",
+                self.recall("aws_profile", ""))
+        if profile:
+            self.remember("aws_profile", profile)
+        return profile
+
+    def flow_cost_rca(self) -> int:
+        header("Investigate a cost anomaly (RCA + mitigation)")
+        print(dim("Root-causes an AWS cost spike (e.g. a cross-AZ "
+                  "DataTransfer-Regional-Bytes jump) by converging "
+                  "READ-ONLY evidence (Cost Explorer, VPC Flow Logs, "
+                  "EKS/NLB topology, LGTM self-metrics), then proposes "
+                  "reliability-safe mitigations with paste-ready configs. "
+                  "nr2grafana only ever issues read-only AWS calls and "
+                  "PROPOSES changes -- it never applies them. All figures "
+                  "are ESTIMATES."))
+        src = menu("Anomaly source?", [
+            "Paste an anomaly report",
+            "Load from a file (Cost Explorer JSON or pasted report)",
+            "Fetch by AnomalyId from AWS Cost Anomaly Detection",
+        ])
+        profile = self._aws_profile()
+        region = prompt("AWS region",
+                        self.recall("aws_region", "us-east-1"))
+        self.remember("aws_region", region)
+        flow_group = prompt("VPC Flow Logs CloudWatch group (blank to skip "
+                            "flow-log evidence)",
+                            self.recall("flow_logs_group", ""))
+        if flow_group:
+            self.remember("flow_logs_group", flow_group)
+        out = prompt("Write rca.json + mitigation config to",
+                     self.recall("rca_out", "./cost-rca"))
+        self.remember("rca_out", out)
+
+        ns = argparse.Namespace(
+            anomaly_file="", anomaly_id="", paste=False, profile=profile,
+            region=region, flow_logs_group=flow_group, days=60,
+            config=self.recall("config", ""), out=out)
+        if src == 0:
+            ns.paste = True
+        elif src == 1:
+            ns.anomaly_file = prompt(
+                "Anomaly report file",
+                validator=lambda v: "" if os.path.exists(v)
+                else "no such file")
+        else:
+            ns.anomaly_id = prompt("AnomalyId",
+                                   validator=_require_nonempty)
+
+        from .cli import cmd_cost_rca
+        rc = cmd_cost_rca(ns)
+        if rc != 0:
+            print(red("✗ RCA did not complete (see above)"))
+            return rc
+        print(green("✓ RCA complete → %s"
+                    % os.path.join(out, "rca.json")))
+        if confirm("Generate the reliability-safe mitigation plan now?"):
+            from .cli import cmd_cost_mitigate
+            mrc = cmd_cost_mitigate(argparse.Namespace(
+                rca=os.path.join(out, "rca.json"),
+                config=self.recall("config", ""), out=out))
+            if mrc == 0:
+                print(green("✓ mitigation plan → %s"
+                            % os.path.join(out, "mitigation.json")))
+            else:
+                print(red("✗ mitigation planning had problems (see "
+                          "above)"))
         return rc
 
     # -- datasources --------------------------------------------------------

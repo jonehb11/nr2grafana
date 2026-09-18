@@ -1278,6 +1278,19 @@ _COST_CONFIG_FILES = {
     "mimir-limits": "mimir-limits.yaml",
 }
 
+# mitigate.plan config target -> file name written under config/. Each
+# reliability-safe mitigation carries GENERIC, paste-ready snippets
+# (Mimir/Loki zone-aware, Service trafficDistribution, Karpenter, NLB).
+_MITIGATION_CONFIG_FILES = {
+    "mimir": "mimir-zone-aware.yaml",
+    "loki": "loki-zone-aware.yaml",
+    "k8s-service": "service-trafficdistribution.yaml",
+    "service": "service-trafficdistribution.yaml",
+    "trafficdistribution": "service-trafficdistribution.yaml",
+    "karpenter": "karpenter-nodepool.yaml",
+    "nlb": "nlb-crosszone.yaml",
+}
+
 
 def _cost_ds_list(client: GrafanaLive) -> List[Dict[str, Any]]:
     """[{"family","uid","type"}] for every prometheus/loki/tempo
@@ -1520,6 +1533,472 @@ def cmd_cost_pricing(args: argparse.Namespace) -> int:
     print(dim_note(), file=sys.stderr)
     if store is not None:
         store.close()
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# cost-anomaly root-cause analysis + reliability-safe mitigation (1.9)
+# ---------------------------------------------------------------------------
+# ALL AWS access here is strictly READ-ONLY (awscost allow-list). The tool
+# PROPOSES mitigations only -- it never applies AWS/K8s changes.
+
+def _call_filtered(fn, *args, **kwargs):
+    """Call ``fn`` passing only the kwargs its signature accepts (so a
+    sibling module built in parallel with a slightly narrower signature
+    still works). A **kwargs sink means everything is forwarded."""
+    import inspect
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return fn(*args, **kwargs)
+    if any(p.kind == p.VAR_KEYWORD for p in params.values()):
+        return fn(*args, **kwargs)
+    filtered = {k: v for k, v in kwargs.items() if k in params}
+    return fn(*args, **filtered)
+
+
+def _pct(value: Any) -> str:
+    """Format a share as a percentage. Accepts 0..1 fractions or 0..100
+    percentages (a value <= 1 is treated as a fraction)."""
+    if not isinstance(value, (int, float)):
+        return "-"
+    pct = value * 100.0 if 0 < value <= 1 else float(value)
+    return "%.0f%%" % pct
+
+
+def _num(d: Dict[str, Any], *keys: str) -> Optional[float]:
+    """First numeric value among ``keys`` in ``d`` (nested est_savings
+    dicts are searched too when a key is given as 'est_savings.usd')."""
+    for key in keys:
+        cur: Any = d
+        ok = True
+        for part in key.split("."):
+            if isinstance(cur, dict) and part in cur:
+                cur = cur[part]
+            else:
+                ok = False
+                break
+        if ok and isinstance(cur, (int, float)):
+            return float(cur)
+    return None
+
+
+def _parse_report(rca_mod, raw: Any) -> Dict[str, Any]:
+    """rca.parse_anomaly_report accepts a CE GetAnomalies dict OR a pasted
+    human report string. Parse JSON when the raw text is JSON, else pass
+    the string through."""
+    parse = getattr(rca_mod, "parse_anomaly_report", None)
+    payload: Any = raw
+    if isinstance(raw, str):
+        try:
+            payload = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            payload = raw
+    if parse is None:
+        return payload if isinstance(payload, dict) else {"raw": raw}
+    return parse(payload)
+
+
+def _rca_anomaly(args: argparse.Namespace, rca_mod, aws) \
+        -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Resolve the anomaly to analyze from exactly one source: an
+    anomaly file, a pasted report (stdin), or an AWS Cost Anomaly
+    Detection AnomalyId (read-only ce get-anomalies). Returns
+    (anomaly, error_message)."""
+    chosen = [bool(getattr(args, "anomaly_file", "")),
+              bool(getattr(args, "anomaly_id", "")),
+              bool(getattr(args, "paste", False))]
+    if sum(chosen) == 0:
+        return None, ("choose an anomaly source: --anomaly-file F, "
+                      "--anomaly-id ID, or --paste")
+    if getattr(args, "anomaly_file", ""):
+        try:
+            with open(args.anomaly_file, encoding="utf-8") as f:
+                raw = f.read()
+        except OSError as e:
+            return None, "cannot read anomaly file: %s" % e
+        return _parse_report(rca_mod, raw), None
+    if getattr(args, "paste", False):
+        if sys.stdin.isatty():
+            print("Paste the anomaly report, then press Ctrl-D:",
+                  file=sys.stderr)
+        raw = sys.stdin.read()
+        if not raw.strip():
+            return None, "no anomaly report provided on stdin"
+        return _parse_report(rca_mod, raw), None
+    # --anomaly-id: needs read-only AWS access
+    if aws is None:
+        return None, ("--anomaly-id needs AWS access (ce get-anomalies) "
+                      "but the aws CLI is not available -- use "
+                      "--anomaly-file or --paste instead")
+    import datetime
+    days = max(1, int(getattr(args, "days", 60) or 60))
+    end = datetime.date.today()
+    start = end - datetime.timedelta(days=days)
+    try:
+        anomalies = aws.get_anomalies(start.isoformat(), end.isoformat())
+    except Exception as e:
+        return None, ("ce get-anomalies failed: %s -- check your read-only "
+                      "AWS credentials" % e)
+    for a in anomalies or []:
+        if str(a.get("AnomalyId")) == str(args.anomaly_id):
+            return _parse_report(rca_mod, a), None
+    return None, ("anomaly id %r not found in the last %d day(s) of Cost "
+                  "Anomaly Detection results" % (args.anomaly_id, days))
+
+
+def _print_rca(rca: Dict[str, Any]) -> None:
+    """Terminal breakdown of an rca.json: incident, dominant/secondary
+    cause with %, evidence, ruled-out, evidence convergence, confidence."""
+    inc = rca.get("incident") or {}
+    cause = rca.get("cause") or {}
+    dom = cause.get("dominant") or {}
+    print()
+    print("== Cost anomaly root-cause analysis ==")
+    loc = []
+    if inc.get("account"):
+        loc.append("account %s" % inc["account"])
+    if inc.get("region"):
+        loc.append(str(inc["region"]))
+    print("incident: %s on %s%s"
+          % (inc.get("usage_type") or "?", inc.get("service") or "?",
+             (" (" + " / ".join(loc) + ")") if loc else ""))
+    usd = _num(inc, "usd_per_day", "dollars_per_day", "per_day_usd")
+    gb = _num(inc, "gb_per_day", "gb_day")
+    metrics = []
+    if usd is not None:
+        metrics.append("$%.2f/day" % usd)
+    if gb is not None:
+        metrics.append("~%.0f GB/day cross-AZ" % gb)
+    onset = inc.get("onset") or inc.get("onset_date")
+    step = inc.get("step_change") or inc.get("step_change_date")
+    if onset:
+        metrics.append("onset %s" % onset)
+    if step and step != onset:
+        metrics.append("step-change %s" % step)
+    elif step:
+        metrics.append("step-change %s" % step)
+    if metrics:
+        print("  " + "   ".join(metrics))
+
+    print()
+    print("dominant cause (%s): %s"
+          % (_pct(dom.get("share")), dom.get("summary") or "?"))
+    for ev in dom.get("evidence") or []:
+        print("  evidence: %s" % ev)
+    secondary = cause.get("secondary") or []
+    if secondary:
+        print()
+        print("secondary cause(s):")
+        for s in secondary:
+            print("  - (%s) %s"
+                  % (_pct(s.get("share")), s.get("summary") or "?"))
+            for ev in s.get("evidence") or []:
+                print("      evidence: %s" % ev)
+    ruled = cause.get("ruled_out") or []
+    if ruled:
+        print()
+        print("ruled out:")
+        for r in ruled:
+            if isinstance(r, dict):
+                label = r.get("cause") or r.get("title") or "?"
+                why = r.get("evidence") or r.get("why") or ""
+                print("  - %s%s" % (label, (": " + why) if why else ""))
+            else:
+                print("  - %s" % r)
+
+    conv = rca.get("evidence_convergence")
+    if isinstance(conv, dict):
+        agreed = [k for k, v in conv.items() if v]
+    elif isinstance(conv, list):
+        agreed = [str(x) for x in conv]
+    else:
+        agreed = []
+    print()
+    print("evidence convergence: %s"
+          % (", ".join(agreed) if agreed else "(single source)"))
+    print("confidence: %s" % (rca.get("confidence") or "?"))
+
+
+def cmd_cost_rca(args: argparse.Namespace) -> int:
+    """Root-cause an AWS cost anomaly by converging READ-ONLY evidence
+    (Cost Explorer + VPC Flow Logs + EKS/NLB topology + LGTM self-
+    metrics). Prints the breakdown and writes rca.json. Degrades cleanly
+    without AWS: it still runs from a pasted/file anomaly report, but the
+    live evidence is unavailable and confidence drops to LOW."""
+    rca_mod = _import_soft("rca")
+    if rca_mod is None or not hasattr(rca_mod, "analyze"):
+        _err("cost RCA is unavailable (nr2grafana.rca not importable)")
+        return 2
+    awscost = _import_soft("awscost")
+    profile = getattr(args, "profile", "") or ""
+    region = getattr(args, "region", "") or "us-east-1"
+    aws = None
+    if awscost is not None and hasattr(awscost, "aws_available"):
+        if awscost.aws_available():
+            aws = _bound_aws(awscost, profile, region)
+        else:
+            print("note: AWS CLI not found / not configured -- RCA will "
+                  "run from the anomaly report alone; live evidence (VPC "
+                  "flow logs, EKS/NLB topology) is unavailable and "
+                  "confidence will be LOW", file=sys.stderr)
+    anomaly, err = _rca_anomaly(args, rca_mod, aws)
+    if err is not None:
+        _err(err)
+        # usage-style errors (no/invalid source) -> 2; runtime -> 1
+        usage = ("choose an anomaly source" in err
+                 or "needs AWS access" in err)
+        return 2 if usage else 1
+    try:
+        cfg = load_config(getattr(args, "config", "") or "")
+    except (FileNotFoundError, json.JSONDecodeError) as e:
+        _err(str(e))
+        return 2
+    cfg = dict(cfg)
+    if getattr(args, "flow_logs_group", ""):
+        cfg["flow_logs_group"] = args.flow_logs_group
+    if profile:
+        cfg["aws_profile"] = profile
+    if region:
+        cfg["aws_region"] = region
+    flowlogs_mod = _import_soft("flowlogs")
+    deepdive_mod = _import_soft("deepdive")
+    packing_mod = _import_soft("packing")
+    tco_mod = _import_soft("tco")
+    log = lambda m: print(m, file=sys.stderr)
+    print("converging read-only evidence for the anomaly...",
+          file=sys.stderr)
+    try:
+        rca = _call_filtered(
+            rca_mod.analyze, anomaly, aws=aws, flowlogs=flowlogs_mod,
+            deepdive=deepdive_mod, packing=packing_mod, tco=tco_mod,
+            cfg=cfg, log=log)
+    except Exception as e:
+        _err("RCA failed: %s" % e)
+        return 1
+    if not isinstance(rca, dict):
+        _err("RCA produced no result")
+        return 1
+    _print_rca(rca)
+
+    out_dir = getattr(args, "out", "") or "."
+    os.makedirs(out_dir, exist_ok=True)
+    rca_path = os.path.join(out_dir, "rca.json")
+    _write_json(rca_path, rca)
+    print("report -> %s" % rca_path, file=sys.stderr)
+    store = _open_store_soft()
+    if store is not None:
+        try:
+            store.save_artifact(_INSTANCE_SLUG, "rca", rca)
+        except Exception as e:
+            print("note: could not record RCA in the local store (%s)"
+                  % e, file=sys.stderr)
+        store.close()
+    print("next: nr2grafana cost mitigate %s" % rca_path, file=sys.stderr)
+    return 0
+
+
+def _write_mitigation_config(out_dir: str,
+                             plan: Dict[str, Any]) -> str:
+    """Write each mitigation's paste-ready config snippets into
+    out_dir/config/ grouped by target, plus a README that carries the
+    reliability preconditions. Returns the config dir path ('' when
+    there is nothing to write). All snippets are GENERIC (placeholders,
+    no customer values) and GitOps/IaC-owned -- proposals only."""
+    buckets: Dict[str, List[str]] = {}
+    readme = ["# nr2grafana reliability-safe cost mitigation configs", "",
+              "GENERIC, paste-ready snippets that cut cross-AZ / cost "
+              "WITHOUT",
+              "reducing availability, durability, performance or the "
+              "ability to",
+              "serve current traffic. The tool PROPOSES these; it never "
+              "applies",
+              "them (GitOps/IaC-owned). Read each mitigation's "
+              "preconditions",
+              "before applying -- some break something if a precondition "
+              "does not",
+              "hold (e.g. never blind-disable NLB cross-zone).", ""]
+    for mit in plan.get("mitigations") or []:
+        title = mit.get("title") or "mitigation"
+        keeps = []
+        for key, label in (("keeps_availability", "availability"),
+                           ("keeps_durability", "durability"),
+                           ("keeps_performance", "performance")):
+            if mit.get(key) is False:
+                keeps.append("MAY REDUCE " + label)
+        flag = (" [" + "; ".join(keeps) + "]") if keeps else " [safe]"
+        readme.append("## %s%s" % (title, flag))
+        for pc in mit.get("reliability_guardrails") \
+                or mit.get("preconditions") or []:
+            readme.append("- precondition: %s" % pc)
+        readme.append("")
+        cfgs = mit.get("configs") or mit.get("config") or []
+        for cfg in cfgs:
+            snippet = cfg.get("snippet") or ""
+            if not snippet.strip():
+                continue
+            target = (cfg.get("target") or "other").lower()
+            fname = _MITIGATION_CONFIG_FILES.get(target, "%s.yaml" % target)
+            header = "# --- %s ---" % title
+            if cfg.get("note"):
+                header += "\n# %s" % cfg["note"]
+            for pc in mit.get("reliability_guardrails") \
+                    or mit.get("preconditions") or []:
+                header += "\n# PRECONDITION: %s" % pc
+            buckets.setdefault(fname, []).append(
+                header + "\n" + snippet.rstrip() + "\n")
+    if not buckets:
+        return ""
+    cfg_dir = os.path.join(out_dir, "config")
+    os.makedirs(cfg_dir, exist_ok=True)
+    for fname, parts in sorted(buckets.items()):
+        with open(os.path.join(cfg_dir, fname), "w",
+                  encoding="utf-8") as fh:
+            fh.write("\n".join(parts))
+    with open(os.path.join(cfg_dir, "README.md"), "w",
+              encoding="utf-8") as fh:
+        fh.write("\n".join(readme) + "\n")
+    return cfg_dir
+
+
+def _print_mitigation(plan: Dict[str, Any]) -> None:
+    """Ranked mitigations with estimated $/day saved, keeps_* flags,
+    handles-current-traffic, reliability preconditions and loud caveats
+    for anything that could reduce reliability."""
+    mits = plan.get("mitigations") or []
+    print()
+    print("== Reliability-safe mitigation plan ==")
+    if not mits:
+        print("  (no mitigations proposed)")
+        return
+    print("%-3s %-40s %-14s %-11s %s"
+          % ("#", "MITIGATION", "EST $/DAY SAVED", "KEEPS A/D/P",
+             "TRAFFIC"))
+    safe_usd = 0.0
+    for i, mit in enumerate(mits, 1):
+        usd = _num(mit, "usd_per_day_saved", "est_savings.usd_per_day",
+                   "est_savings.daily_usd", "saved_usd_per_day")
+        usd_str = ("$%.2f" % usd) if usd is not None else "-"
+        adp = "".join(
+            "y" if mit.get(k) is not False else "n"
+            for k in ("keeps_availability", "keeps_durability",
+                      "keeps_performance"))
+        adp = "/".join(list(adp))
+        traffic = "yes" if mit.get("handles_current_traffic") \
+            is not False else "NO"
+        title = (mit.get("title") or "")[:40]
+        print("%-3d %-40s %-14s %-11s %s"
+              % (i, title, usd_str, adp, traffic))
+        reduces = [label for k, label in (
+            ("keeps_availability", "availability"),
+            ("keeps_durability", "durability"),
+            ("keeps_performance", "performance"))
+            if mit.get(k) is False]
+        if reduces or mit.get("handles_current_traffic") is False:
+            extra = list(reduces)
+            if mit.get("handles_current_traffic") is False:
+                extra.append("cannot serve current traffic")
+            print("    CAUTION: may reduce %s -- demoted; apply only if the "
+                  "preconditions below are met" % "/".join(extra))
+        elif usd is not None:
+            safe_usd += usd
+        for pc in mit.get("reliability_guardrails") \
+                or mit.get("preconditions") or []:
+            print("    precondition: %s" % pc)
+        owner = mit.get("owner")
+        if owner:
+            print("    owner: %s" % owner)
+    if safe_usd:
+        print()
+        print("estimated $%.2f/day saveable without reducing availability, "
+              "durability or performance" % safe_usd)
+    print(dim_note())
+
+
+def cmd_cost_mitigate(args: argparse.Namespace) -> int:
+    """Turn an rca.json into a ranked, reliability-safe mitigation plan
+    with paste-ready GENERIC configs. Prints the ranked mitigations (with
+    $ saved, reliability preconditions and keeps_* flags) and writes
+    mitigation.json + a config/ dir. The tool PROPOSES only -- it never
+    applies AWS/K8s changes."""
+    mitigate_mod = _import_soft("mitigate")
+    if mitigate_mod is None or not hasattr(mitigate_mod, "plan"):
+        _err("mitigation planning is unavailable (nr2grafana.mitigate not "
+             "importable)")
+        return 2
+    rca_path = getattr(args, "rca", "") or "rca.json"
+    rca = _load_json_soft(rca_path)
+    if not isinstance(rca, dict):
+        _err("could not read RCA file %r -- run 'cost rca' first (it "
+             "writes rca.json)" % rca_path)
+        return 1
+    try:
+        cfg = load_config(getattr(args, "config", "") or "")
+    except (FileNotFoundError, json.JSONDecodeError) as e:
+        _err(str(e))
+        return 2
+    store = _open_store_soft()
+    deepdive = packing = None
+    if store is not None:
+        try:
+            deepdive = store.get_artifact(_INSTANCE_SLUG, "deepdive")
+            packing = store.get_artifact(_INSTANCE_SLUG, "packing")
+        except Exception:
+            deepdive = packing = None
+    try:
+        plan = _call_filtered(mitigate_mod.plan, rca, deepdive=deepdive,
+                              packing=packing, capacity=None, cfg=cfg)
+    except Exception as e:
+        _err("mitigation planning failed: %s" % e)
+        if store is not None:
+            store.close()
+        return 1
+    if not isinstance(plan, dict):
+        _err("mitigation planning produced no result")
+        if store is not None:
+            store.close()
+        return 1
+    _print_mitigation(plan)
+
+    out_dir = getattr(args, "out", "") or "."
+    os.makedirs(out_dir, exist_ok=True)
+    plan_path = os.path.join(out_dir, "mitigation.json")
+    _write_json(plan_path, plan)
+    cfg_dir = _write_mitigation_config(out_dir, plan)
+    print("plan -> %s" % plan_path, file=sys.stderr)
+    if cfg_dir:
+        print("config -> %s" % cfg_dir, file=sys.stderr)
+    if store is not None:
+        try:
+            store.save_artifact(_INSTANCE_SLUG, "mitigation", plan)
+        except Exception as e:
+            print("note: could not record the mitigation plan in the "
+                  "local store (%s)" % e, file=sys.stderr)
+        store.close()
+    return 0
+
+
+def cmd_aws_profiles(args: argparse.Namespace) -> int:
+    """List AWS profile names from the local ~/.aws config (names only;
+    credentials are never read). Read-only."""
+    awscost = _import_soft("awscost")
+    if awscost is None or not hasattr(awscost, "list_profiles"):
+        _err("AWS profile listing is unavailable (nr2grafana.awscost not "
+             "importable)")
+        return 2
+    try:
+        profiles = awscost.list_profiles()
+    except Exception as e:
+        _err("could not list AWS profiles: %s" % e)
+        return 1
+    if not profiles:
+        print("no AWS profiles found in ~/.aws/config or "
+              "~/.aws/credentials", file=sys.stderr)
+        return 0
+    for name in profiles:
+        print(name)
+    print("\n%d profile(s); only section names are read, never credential "
+          "values" % len(profiles), file=sys.stderr)
     return 0
 
 
@@ -2489,6 +2968,58 @@ def main(argv: List[str] = None) -> int:
                        help="override a pricing assumption (repeatable)")
     co_pr.set_defaults(func=cmd_cost_pricing)
 
+    co_rca = costsub.add_parser(
+        "rca",
+        help="root-cause a specific AWS cost anomaly (e.g. a cross-AZ "
+             "DataTransfer-Regional-Bytes spike) by converging READ-ONLY "
+             "evidence (Cost Explorer + VPC Flow Logs + EKS/NLB topology); "
+             "prints the dominant/secondary cause with %% share, evidence "
+             "convergence and ruled-out list, and writes rca.json")
+    rca_src = co_rca.add_mutually_exclusive_group()
+    rca_src.add_argument("--anomaly-file", dest="anomaly_file", default="",
+                         help="path to a CE GetAnomalies JSON or a pasted "
+                              "human anomaly report")
+    rca_src.add_argument("--anomaly-id", dest="anomaly_id", default="",
+                         help="AWS Cost Anomaly Detection AnomalyId to "
+                              "fetch via ce get-anomalies (read-only)")
+    rca_src.add_argument("--paste", action="store_true",
+                         help="read the anomaly report from stdin")
+    co_rca.add_argument("--profile", default="",
+                        help="aws CLI profile (blank = default credential "
+                             "chain; keys are never read or written)")
+    co_rca.add_argument("--region", default="us-east-1",
+                        help="AWS region (default: %(default)s)")
+    co_rca.add_argument("--flow-logs-group", dest="flow_logs_group",
+                        default="",
+                        help="CloudWatch Logs group holding VPC Flow Logs "
+                             "(enables cross-AZ byte attribution via "
+                             "read-only Logs Insights)")
+    co_rca.add_argument("--days", type=int, default=60,
+                        help="lookback window in days for --anomaly-id "
+                             "(default: %(default)s)")
+    co_rca.add_argument("--config", "-c", default="",
+                        help="mapping config JSON")
+    co_rca.add_argument("--out", "-o", default=".",
+                        help="output dir for rca.json (default: current "
+                             "directory)")
+    co_rca.set_defaults(func=cmd_cost_rca)
+
+    co_mit = costsub.add_parser(
+        "mitigate",
+        help="turn an rca.json into a ranked, reliability-safe mitigation "
+             "plan with paste-ready GENERIC configs (Mimir/Loki zone-aware, "
+             "Service trafficDistribution, Karpenter, NLB); prints $ saved "
+             "+ reliability preconditions + keeps_* flags and writes "
+             "mitigation.json + config/. PROPOSES only -- never applied")
+    co_mit.add_argument("rca", nargs="?", default="",
+                        help="path to rca.json (default: ./rca.json)")
+    co_mit.add_argument("--config", "-c", default="",
+                        help="mapping config JSON")
+    co_mit.add_argument("--out", "-o", default=".",
+                        help="output dir for mitigation.json + config/ "
+                             "(default: current directory)")
+    co_mit.set_defaults(func=cmd_cost_mitigate)
+
     # -- deep-dive / AI context / Grafana MCP (1.6) ---------------------
 
     p_dd = sub.add_parser(
@@ -2635,6 +3166,17 @@ def main(argv: List[str] = None) -> int:
         "trend",
         help="diff the dated TCO snapshots recorded over time")
     t_tr.set_defaults(func=cmd_tco_trend)
+
+    p_aws = sub.add_parser(
+        "aws",
+        help="AWS helpers (strictly READ-ONLY): list local aws profiles")
+    p_aws.set_defaults(func=_need_sub(p_aws))
+    awssub = p_aws.add_subparsers(dest="aws_command")
+    a_pr = awssub.add_parser(
+        "profiles",
+        help="list AWS profile names from your local ~/.aws config (names "
+             "only; no credential values are ever read)")
+    a_pr.set_defaults(func=cmd_aws_profiles)
 
     p_web = sub.add_parser(
         "web", help="launch the localhost web UI")

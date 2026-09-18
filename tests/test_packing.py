@@ -525,5 +525,58 @@ class CollectTopologyTest(unittest.TestCase):
         self.assertIn("could not be read", topo["note"])
 
 
+class KubectlReadOnlyGuardTest(unittest.TestCase):
+    """_kget is a hard read-only gate: kubectl may only READ, never mutate.
+
+    nr2grafana proposes changes; GitOps/IaC applies them. Even though every
+    in-tree caller passes ``get``, the guard must refuse a mutating verb
+    BEFORE exec so no future caller (or bug) can run a cluster change.
+    """
+
+    MUTATING = [
+        ["apply", "-f", "x.yaml"],
+        ["create", "namespace", "x"],
+        ["delete", "pod", "x"],
+        ["patch", "deploy", "x"],
+        ["scale", "deploy/x", "--replicas=0"],
+        ["edit", "svc", "x"],
+        ["replace", "-f", "x.yaml"],
+        ["annotate", "pod", "x", "k=v"],
+        ["label", "node", "x", "k=v"],
+        ["cordon", "node-x"],
+        ["drain", "node-x"],
+        ["rollout", "restart", "deploy/x"],
+        ["exec", "pod-x", "--", "sh"],
+    ]
+
+    def test_mutating_kubectl_verbs_refused_before_exec(self):
+        for args in self.MUTATING:
+            with mock.patch.object(packing.subprocess, "run") as run:
+                out = packing._kget(args)
+                self.assertIsNone(
+                    out, "%s must be refused" % (args,))
+                run.assert_not_called()
+
+    def test_empty_args_refused_before_exec(self):
+        with mock.patch.object(packing.subprocess, "run") as run:
+            self.assertIsNone(packing._kget([]))
+            run.assert_not_called()
+
+    def test_read_verb_get_reaches_exec(self):
+        def fake_run(cmd, **kw):
+            self.assertEqual(cmd[0], "kubectl")
+            self.assertEqual(cmd[1], "get")
+            self.assertEqual(cmd[-2:], ["-o", "json"])
+            return _Completed(json.dumps({"items": []}))
+
+        with mock.patch.object(packing.subprocess, "run", fake_run):
+            out = packing._kget(["get", "pods", "-A"])
+        self.assertEqual(out, {"items": []})
+
+    def test_only_get_is_a_read_verb(self):
+        # The allow-set is exactly {"get"} -- no describe/logs/etc. sneak in.
+        self.assertEqual(packing._KUBECTL_READ_VERBS, frozenset(["get"]))
+
+
 if __name__ == "__main__":
     unittest.main()

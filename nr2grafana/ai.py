@@ -94,6 +94,46 @@ fences -- with exactly these keys:
   "actions": array of strings: manual steps the user must take (may be [])
 """
 
+_RCA_SYSTEM = """\
+You are an SRE/FinOps assistant investigating an AWS cost anomaly for an
+observability stack (Grafana LGTM -- Loki, Grafana, Tempo, Mimir/Prometheus)
+running on EKS. You are given the anomaly, the converged read-only evidence
+(cost-explorer, cloudtrail, vpc-flow-logs, eks-control-plane, lgtm-self-
+metrics), any flow-log byte attribution, and a candidate mitigation plan with
+its reliability guardrails.
+
+Analyze the anomaly and the evidence, then propose how to CUT the cost without
+reducing availability, durability, performance, or the ability to serve the
+CURRENT traffic rate. Respect every reliability guardrail in the context.
+
+Domain rules you MUST follow:
+  * A "*DataTransfer-Regional-Bytes" (or *InterZone*) usage type is cross-AZ
+    NETWORK transfer within one region, NOT storage -- treat it as cross-AZ
+    network even when the service tag is EBS/EC2. "Regional-Bytes" == cross-AZ.
+  * NEVER propose a change that lowers the replication factor (RF) or shortens
+    retention, and NEVER CPU-limit ingesters (throttling breaks ingest).
+  * Zone-aware ring migration is done one zone at a time; deploy across a
+    number of zones >= RF; never blind-disable NLB cross-zone (confirm >=1
+    healthy target per enabled AZ first, or an AZ black-holes).
+  * Keep every generated config GENERIC and paste-ready -- placeholders in
+    <ANGLE_BRACKETS>, no customer-specific ids, account numbers, or values.
+  * If a mitigation cannot preserve availability/durability/performance or
+    current traffic, say so loudly and set its keeps_* flags to false.
+
+Respond with STRICT JSON only -- a single object, no prose and no markdown
+fences -- with exactly these keys:
+  "root_cause": short string: the dominant driver and why, with its % share
+  "mitigations": array of objects, each with:
+      "title": short name of the mitigation
+      "saving": expected $/day or %% saved (string)
+      "change": what to change (references a generic config)
+      "preconditions": array of strings: what MUST hold or it breaks something
+      "keeps_availability": boolean
+      "keeps_durability": boolean
+      "keeps_performance": boolean
+  "config_notes": array of strings: notes on the generic paste-ready configs
+"""
+
 
 class AIError(Exception):
     """Raised when the Claude API cannot be used or returns an error."""
@@ -170,13 +210,103 @@ def _parse_fix_loose(raw_text: str) -> Dict[str, Any]:
     return out
 
 
+def _norm_str_list(value: Any) -> List[str]:
+    """Coerce a value into a list of strings (dropping Nones)."""
+    if isinstance(value, list):
+        return [str(v) for v in value if v is not None]
+    if isinstance(value, str) and value.strip():
+        return [value]
+    return []
+
+
+def _norm_mitigation(item: Any) -> Dict[str, Any]:
+    """Normalize one RCA mitigation into the result shape.
+
+    Guarantees title/saving/change strings, a preconditions list, and
+    the three baseline ``keeps_*`` booleans (defaulting to false); any
+    extra ``keeps_*`` keys the model returns are coerced and kept.
+    """
+    if not isinstance(item, dict):
+        out = {"title": str(item), "saving": "", "change": "",
+               "preconditions": []}
+    else:
+        out = {
+            "title": str(item.get("title") or ""),
+            "saving": str(item.get("saving") or ""),
+            "change": str(item.get("change") or ""),
+            "preconditions": _norm_str_list(item.get("preconditions")),
+        }
+        for key, val in item.items():
+            if isinstance(key, str) and key.startswith("keeps_"):
+                out[key] = bool(val)
+    for key in ("keeps_availability", "keeps_durability",
+                "keeps_performance"):
+        out.setdefault(key, False)
+    return out
+
+
+def _rca_fallback(raw_text: str) -> Dict[str, Any]:
+    return {"root_cause": raw_text, "mitigations": [], "config_notes": []}
+
+
+def _parse_rca(raw_text: str) -> Dict[str, Any]:
+    """Parse the model's reply into the RCA result shape.
+
+    Defensive like :func:`_parse_fix`: strips markdown fences and falls
+    back to a root_cause-only result when the reply is not the expected
+    ``{root_cause, mitigations, config_notes}`` JSON object.
+    """
+    candidate = _strip_fences(raw_text)
+    try:
+        data = json.loads(candidate)
+    except (ValueError, TypeError):
+        return _rca_fallback(raw_text)
+    if not isinstance(data, dict):
+        return _rca_fallback(raw_text)
+    root = data.get("root_cause")
+    if not isinstance(root, str):
+        root = raw_text if root is None else json.dumps(root, default=str)
+    mits_in = data.get("mitigations")
+    mitigations: List[Dict[str, Any]] = []
+    if isinstance(mits_in, list):
+        mitigations = [_norm_mitigation(m) for m in mits_in]
+    return {"root_cause": root, "mitigations": mitigations,
+            "config_notes": _norm_str_list(data.get("config_notes"))}
+
+
+def _parse_rca_loose(raw_text: str) -> Dict[str, Any]:
+    """_parse_rca, retrying on the outermost ``{...}`` block.
+
+    Console agents wrap the JSON in prose; a second attempt on the brace
+    slice recovers it before giving up on the fallback shape.
+    """
+    out = _parse_rca(raw_text)
+    if out != _rca_fallback(raw_text):
+        return out
+    start = raw_text.find("{")
+    end = raw_text.rfind("}")
+    if 0 <= start < end:
+        inner = raw_text[start:end + 1]
+        parsed = _parse_rca(inner)
+        if parsed != _rca_fallback(inner):
+            return parsed
+    return out
+
+
 def _is_convert(context: Dict[str, Any]) -> bool:
     """True when the caller asked for conversion-mode framing."""
     return str(context.get("mode") or "").strip().lower() == "convert"
 
 
+def _is_rca(context: Dict[str, Any]) -> bool:
+    """True when the caller asked for cost-anomaly RCA framing."""
+    return str(context.get("mode") or "").strip().lower() == "rca"
+
+
 def _system_for(context: Dict[str, Any]) -> str:
     """Pick the system framing by ``context["mode"]`` (default fix)."""
+    if _is_rca(context):
+        return _RCA_SYSTEM
     return _CONVERT_SYSTEM if _is_convert(context) else _FIX_SYSTEM
 
 
@@ -214,6 +344,33 @@ def _fix_prompt(context: Dict[str, Any]) -> str:
         return ("Translate this auto-migrated New Relic panel into a "
                 "higher-fidelity Grafana/LGTM query. Context:\n" + body)
     return "Fix this failing Grafana panel query. Context:\n" + body
+
+
+def _rca_prompt(context: Dict[str, Any]) -> str:
+    """Render the cost-anomaly RCA user prompt from a context.
+
+    Folds in whatever RCA artifacts are present -- the framed incident,
+    the converged cause/evidence, flow-log byte attribution, a candidate
+    mitigation plan and its reliability guardrails -- plus the same
+    instance metric/label samples the fix prompt carries.
+    """
+    instance = context.get("instance") or {}
+    detail: Dict[str, Any] = {}
+    for key in ("incident", "anomaly", "cause", "evidence_convergence",
+                "confidence", "flowlogs", "mitigations", "mitigation",
+                "reliability", "guardrails", "rca"):
+        if context.get(key):
+            detail[key] = context[key]
+    if context.get("requirements"):
+        detail["requirements_excerpt"] = context["requirements"]
+    if instance.get("datasources"):
+        detail["instance_datasources"] = instance["datasources"]
+    if instance.get("metrics_sample"):
+        detail["sample_metric_names"] = instance["metrics_sample"]
+    body = json.dumps(detail, indent=2, default=str, sort_keys=True)
+    return ("Analyze this AWS cost anomaly and the converged evidence, "
+            "then propose reliability-safe cost mitigations. Context:\n"
+            + body)
 
 
 def _strip_ansi(text: str) -> str:
@@ -292,6 +449,24 @@ class AIAssist:
         raw = self.chat([{"role": "user", "content": user}],
                         system=_system_for(context))
         return _parse_fix(raw)
+
+    def analyze(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        """Ask Claude to analyze an AWS cost anomaly (RCA mode).
+
+        Uses the RCA system framing (picked by ``context["mode"] ==
+        "rca"``) and folds in the converged evidence, flow-log byte
+        attribution and candidate mitigation plan present in ``context``.
+
+        Returns {"root_cause", "mitigations", "config_notes"} where each
+        mitigation carries title/saving/change/preconditions and the
+        keeps_availability/keeps_durability/keeps_performance flags.
+        """
+        ctx = dict(context)
+        ctx["mode"] = "rca"
+        user = _rca_prompt(ctx)
+        raw = self.chat([{"role": "user", "content": user}],
+                        system=_system_for(ctx))
+        return _parse_rca(raw)
 
     def chat(self, messages: List[Dict[str, str]],
              system: str = "") -> str:
@@ -413,6 +588,19 @@ class LocalAgent:
         raw = self.chat([{"role": "user", "content": user}],
                         system=_system_for(context))
         return _parse_fix_loose(raw)
+
+    def analyze(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        """Ask the local agent to analyze a cost anomaly (RCA mode).
+
+        Same context and return shape as AIAssist.analyze; the loose
+        parse recovers the RCA JSON from any surrounding prose.
+        """
+        ctx = dict(context)
+        ctx["mode"] = "rca"
+        user = _rca_prompt(ctx)
+        raw = self.chat([{"role": "user", "content": user}],
+                        system=_system_for(ctx))
+        return _parse_rca_loose(raw)
 
     def chat(self, messages: List[Dict[str, str]],
              system: str = "") -> str:

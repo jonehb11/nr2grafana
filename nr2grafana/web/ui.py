@@ -1187,6 +1187,48 @@ details.jd pre { margin: 0; border: 0;
 .attr-bar { display: flex; height: 14px; border-radius: 999px;
   overflow: hidden; background: var(--bg3); margin: var(--s2) 0; }
 .attr-bar span { display: block; height: 100%; }
+
+/* =================================================== Cost RCA (1.9) */
+.rca-head { display: flex; flex-wrap: wrap; align-items: baseline;
+  gap: 4px var(--s4); border: 1px solid var(--border-soft);
+  border-left: 3px solid var(--green); border-radius: var(--r-md);
+  background: var(--green-bg); padding: var(--s3) var(--s4);
+  margin: var(--s3) 0; }
+.rca-head .rh-money { font-size: 28px; font-weight: 750;
+  color: var(--green); letter-spacing: -.02em;
+  font-variant-numeric: tabular-nums; }
+.rca-head .rh-cap { flex-basis: 100%; color: var(--muted);
+  font-size: var(--fs-sm); margin-top: 2px; }
+.rca-dom { display: flex; gap: var(--s4); align-items: flex-start;
+  flex-wrap: wrap; }
+.rca-dom .rca-share { flex: 0 0 auto; text-align: center;
+  min-width: 96px; }
+.rca-dom .rca-share .rs-num { font-size: 40px; font-weight: 750;
+  color: var(--amber); letter-spacing: -.02em; line-height: 1.02;
+  font-variant-numeric: tabular-nums; }
+.rca-dom .rca-share .rs-lbl { font-size: 10px; color: var(--faint);
+  text-transform: uppercase; letter-spacing: .06em; }
+.rca-dom .rca-domain { flex: 1; min-width: 240px; }
+.rca-ev-list { list-style: none; margin: var(--s2) 0 0; padding: 0;
+  font-size: var(--fs-md); color: var(--muted); }
+.rca-ev-list li { position: relative; padding: 3px 0 3px var(--s4);
+  line-height: 1.5; }
+.rca-ev-list li::before { content: ""; position: absolute;
+  left: 4px; top: 11px; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent); }
+.rca-ruled { list-style: none; margin: 0; padding: 0; }
+.rca-ruled li { border: 1px solid var(--border-soft);
+  border-left: 3px solid var(--faint); border-radius: var(--r-sm);
+  background: var(--bg); padding: var(--s2) var(--s3);
+  margin-bottom: var(--s2); }
+.rca-ruled .rr-h { font-weight: 600; display: flex; gap: 6px;
+  align-items: center; flex-wrap: wrap; }
+.rca-ruled .rr-e { color: var(--muted); font-size: var(--fs-sm);
+  margin-top: 3px; }
+.rca-conv { display: flex; flex-wrap: wrap; gap: 3px;
+  margin: var(--s2) 0; }
+.precon-row { display: flex; flex-wrap: wrap; gap: 3px;
+  margin-top: var(--s2); }
 </style>
 </head>
 <body>
@@ -1289,6 +1331,15 @@ details.jd pre { margin: 0; border: 0;
           aria-hidden="true"><path d="M3 3v18h18"></path>
           <path d="M7 15l4-5 3 3 5-7"></path></svg></span>
         TCO trends</a>
+      <a href="#/rca" data-r="rca">
+        <span class="ico"><svg class="i" viewBox="0 0 24 24"
+          fill="none" stroke="currentColor" stroke-width="1.7"
+          stroke-linecap="round" stroke-linejoin="round"
+          aria-hidden="true"><circle cx="11" cy="11" r="7"></circle>
+          <line x1="21" y1="21" x2="16.2" y2="16.2"></line>
+          <line x1="11" y1="8" x2="11" y2="12"></line>
+          <line x1="11" y1="14.5" x2="11.01" y2="14.5"></line></svg>
+        </span> Cost RCA</a>
     </nav>
     <div class="sidebar-foot">
       Local only &mdash; API keys stay in server memory,
@@ -2769,7 +2820,7 @@ function renderPills() {
 var VIEWS = { overview: vOverview, connect: vConnect,
               convert: vConvert, datasources: vDatasources,
               import: vImport, changes: vChanges, ai: vAI,
-              cost: vCost, stack: vStack, tco: vTco };
+              cost: vCost, stack: vStack, tco: vTco, rca: vRca };
 var ALIASES = { setup: 'connect', dashboards: 'overview',
                 test: 'overview' };
 
@@ -6515,7 +6566,7 @@ function welcomeHtml() {
 var GKEYS = { o: '#/overview', c: '#/connect', f: '#/convert',
   d: '#/datasources', m: '#/compare', i: '#/import',
   h: '#/changes', a: '#/ai', e: '#/cost', s: '#/stack',
-  v: '#/tco' };
+  v: '#/tco', r: '#/rca' };
 var HELP_KEYS = [
   ['g then o', 'Overview'], ['g then c', 'Connect'],
   ['g then f', 'Fetch & Convert'], ['g then d', 'Datasources'],
@@ -6523,7 +6574,7 @@ var HELP_KEYS = [
   ['g then h', 'Changes (history)'], ['g then a', 'AI Assistant'],
   ['g then e', 'Cost & efficiency'],
   ['g then s', 'Stack deep-dive'],
-  ['g then v', 'TCO trends'],
+  ['g then v', 'TCO trends'], ['g then r', 'Cost RCA'],
   ['?', 'Show this help'], ['j', 'Toggle background jobs'],
   ['t', 'Cycle theme'], ['Esc', 'Close dialogs / drawers']];
 
@@ -8916,6 +8967,841 @@ function renderTcoMcpOut() {
     '<span class="mono">AWS_PROFILE</span> and ' +
     '<span class="mono">AWS_REGION</span> in your environment; no ' +
     'AWS keys are written into this file.</div></div>';
+}
+
+/* ================================================ Cost RCA (1.9) */
+/* Root-cause an AWS cost anomaly by CONVERGING read-only evidence
+   (Cost Explorer + VPC Flow Logs + EKS + LGTM self-metrics +
+   CloudTrail), then propose RELIABILITY-SAFE mitigations. AWS access
+   is strictly read-only via the local credential chain -- no keys are
+   ever read, logged or written. The tool PROPOSES generated configs;
+   it never executes any AWS/K8s change. */
+
+/* Plain-language tooltips for the domain terms this view surfaces. */
+var RCA_TERMS = {
+  'cross-AZ': 'traffic between two Availability Zones in the SAME ' +
+    'region. AWS bills it at $0.01/GB in EACH direction, so a ' +
+    'round-tripped GB costs ~$0.02. Same-AZ traffic over private IPs ' +
+    'is free.',
+  'Regional-Bytes': 'the CUR usage-type *DataTransfer-Regional-Bytes ' +
+    'means cross-AZ transfer WITHIN one region -- not cross-region. ' +
+    'The service tag (EBS, EC2...) is a billing-attribution artifact; ' +
+    'the dollars are network transfer, not storage.',
+  'zone-aware': 'zone-aware replication places each of the 3 replicas ' +
+    'of a series/stream in a different failure zone, so the RF=3 ' +
+    'quorum keeps copies IN-zone instead of crossing AZ boundaries -- ' +
+    'that is what removes the cross-AZ replication bill without ' +
+    'reducing durability. Never disable it to save nodes.',
+  trafficDistribution: 'a Kubernetes Service field ' +
+    '(trafficDistribution: PreferClose) that prefers topologically ' +
+    'close, same-zone endpoints for query fan-out. It is a HINT, not a ' +
+    'guarantee, and has NO overload safeguard: only safe when every ' +
+    'serving zone has enough replicas to carry its own traffic.',
+  'cross-zone NLB': 'an NLB with cross-zone load balancing ENABLED ' +
+    'routes each zonal node to targets in ALL AZs, incurring cross-AZ ' +
+    'charges. Disabling it saves money but each node then serves only ' +
+    'same-AZ targets -- a thin AZ (0/1 healthy target) black-holes, so ' +
+    'never blind-disable; confirm per-AZ target health first.'
+};
+function rcaTerm(term) {
+  var t = RCA_TERMS[term];
+  if (!t) return '';
+  return stackTermRaw(term + ': ' + t);
+}
+
+/* evidence_convergence source -> friendly label. */
+var RCA_SRC_LBL = { 'cost-explorer': 'Cost Explorer',
+  cloudtrail: 'CloudTrail', 'vpc-flow-logs': 'VPC Flow Logs',
+  'eks-control-plane': 'EKS control plane',
+  'lgtm-self-metrics': 'LGTM self-metrics' };
+var RCA_CONF_CLS = { HIGH: 'ok', MEDIUM: 'info', LOW: 'warn' };
+var RCA_CFG_LBL = { mimir_zone_aware: 'Mimir (zone-aware)',
+  loki_zone_aware: 'Loki (zone-aware)',
+  prefer_close: 'Service (PreferClose)',
+  karpenter_3az: 'Karpenter (3-AZ discovery)',
+  nlb_cross_zone: 'NLB (cross-zone, gated)' };
+
+function ensureRca() {
+  if (!App.rca) {
+    App.rca = { mode: 'paste', report: '', profile: '', region: '',
+      flowGroup: '', anomalyId: '', anomalies: null, anomErr: null,
+      anomLoading: false, profiles: null, awsAvailable: false,
+      rca: null, flowlogs: null, anomaly: null, loading: false,
+      err: null, mitigation: null, mitLoading: false, mitErr: null,
+      ai: null, aiLoading: false, aiErr: null };
+  }
+  return App.rca;
+}
+
+async function vRca(view) {
+  crumb('Cost RCA');
+  var s = App.state || await api('/api/state');
+  App.state = s;
+  var r = ensureRca();
+  if (r.profiles === null) loadRcaProfiles();
+  view.innerHTML =
+    '<h1>Cost RCA</h1>' +
+    '<p class="lead">Point nr2grafana at an AWS <b>cost anomaly</b> ' +
+    '(paste an anomaly report or pick one from Cost Explorer) and it ' +
+    'runs a <b>root-cause analysis</b> by converging read-only ' +
+    'evidence across AWS and your LGTM stack, then proposes a ' +
+    '<b>reliability-safe mitigation plan</b> with paste-ready configs ' +
+    'that cut cost <b>without reducing availability, durability, ' +
+    'performance or the ability to serve current traffic</b>. AWS is ' +
+    '<b>strictly read-only</b>; every config is a proposal you apply ' +
+    'via GitOps &mdash; nothing is ever executed for you.</p>' +
+    '<div id="rca-identity"></div>' +
+    '<div class="card">' + rcaFormHtml() + '</div>' +
+    consoleHtml('rca-console', 'RCA log') +
+    '<section id="rca-breakdown"></section>' +
+    '<section id="rca-mitigation"></section>' +
+    '<section id="rca-ai"></section>';
+  renderRcaIdentity();
+  wireRcaForm();
+  renderRcaResults();
+  renderRcaAi();
+}
+
+/* ---- AWS profiles / availability ---- */
+async function loadRcaProfiles() {
+  var r = ensureRca();
+  try {
+    var res = await api('/api/aws/profiles');
+    r.profiles = res.profiles || [];
+    r.awsAvailable = !!res.aws_available;
+  } catch (e) { r.profiles = []; r.awsAvailable = false; }
+  var sel = $('#rca-profile');
+  if (sel) sel.innerHTML = rcaProfileOptions();
+  renderRcaIdentity();
+}
+
+function rcaProfileName(p) {
+  if (typeof p === 'string') return p;
+  return (p && (p.name || p.profile)) || '';
+}
+
+function rcaProfileOptions() {
+  var r = App.rca;
+  var opts = '<option value="">default credentials</option>';
+  (r.profiles || []).forEach(function (p) {
+    var name = rcaProfileName(p);
+    if (!name) return;
+    opts += '<option value="' + esc(name) + '"' +
+      (name === r.profile ? ' selected' : '') + '>' + esc(name) +
+      '</option>';
+  });
+  return opts;
+}
+
+function renderRcaIdentity() {
+  var el = $('#rca-identity'); if (!el) return;
+  var r = App.rca;
+  if (r.profiles === null) { el.innerHTML = ''; return; }
+  if (r.awsAvailable) {
+    el.innerHTML = '<div class="aws-banner"><span class="awb-ico">' +
+      ico('checkcircle', 18) + '</span><div class="awb-main">' +
+      '<div class="awb-acct">AWS credentials detected ' +
+      '(read-only)</div><div class="awb-arn">Cost Explorer anomalies ' +
+      'and VPC Flow Logs attribution are available.</div></div>' +
+      '<span class="grow"></span>' + tcoRoBadge() + '</div>';
+  } else {
+    el.innerHTML = '<div class="aws-banner warn"><span ' +
+      'class="awb-ico">' + ico('alert', 18) + '</span>' +
+      '<div class="awb-main"><div class="awb-acct">AWS CLI not ' +
+      'configured</div><div class="awb-arn">You can still <b>paste ' +
+      'an anomaly report</b> below to run the RCA. Configure a ' +
+      'read-only aws profile to pick anomalies from Cost Explorer and ' +
+      'attribute VPC Flow Logs.</div></div><span class="grow"></span>' +
+      tcoRoBadge() + '</div>';
+  }
+}
+
+/* ---- run form ---- */
+function rcaFormHtml() {
+  var r = App.rca;
+  var paste = r.mode !== 'pick';
+  return '<div class="seg" role="group" aria-label="Anomaly source" ' +
+    'style="margin-bottom:var(--s3)">' +
+    '<button type="button" data-rcamode="paste"' +
+    (paste ? ' class="on"' : '') + '>Paste cost-anomaly report' +
+    '</button>' +
+    '<button type="button" data-rcamode="pick"' +
+    (!paste ? ' class="on"' : '') + '>Pick from AWS anomalies</button>' +
+    '</div>' +
+    '<div id="rca-source">' + rcaSourceHtml() + '</div>' +
+    '<div class="cost-actions" style="margin-top:var(--s3)">' +
+    '<div class="fld"><label>AWS profile <span class="field-help" ' +
+    'style="display:inline">(aws-vault / SSO)</span></label>' +
+    '<select id="rca-profile">' + rcaProfileOptions() + '</select>' +
+    '</div>' +
+    '<div class="fld"><label>Region <span class="field-help" ' +
+    'style="display:inline">(optional)</span></label>' +
+    '<input id="rca-region" value="' + esc(r.region) +
+    '" placeholder="us-east-1" autocomplete="off" spellcheck="false" ' +
+    'style="width:130px"></div>' +
+    '<div class="fld"><label>VPC Flow Logs group ' +
+    rcaTerm('cross-AZ') + '</label>' +
+    '<input id="rca-flowgroup" value="' + esc(r.flowGroup) +
+    '" placeholder="/aws/vpc/flowlogs (optional)" autocomplete="off" ' +
+    'spellcheck="false"></div>' +
+    '<div class="grow"></div>' +
+    '<button class="btn primary" id="rca-run" type="button">' +
+    ico('search', 14) + ' Run RCA</button></div>' +
+    '<p class="kv" style="margin-top:var(--s2)">A Flow Logs group ' +
+    'lets the RCA MEASURE the cross-AZ byte-share per driver (the ' +
+    'dominant %); without it the result is a clearly-flagged ' +
+    'hypothesis at lower confidence. Read-only throughout.</p>';
+}
+
+function rcaSourceHtml() {
+  var r = App.rca;
+  if (r.mode === 'pick') {
+    var opts = '<option value="">' +
+      (r.anomalies ? (r.anomalies.length ? 'Select an anomaly&hellip;'
+        : 'No anomalies found in the window') :
+        'Load anomalies first') + '</option>';
+    (r.anomalies || []).forEach(function (a) {
+      var id = String(a.AnomalyId || a.anomaly_id || '');
+      if (!id) return;
+      opts += '<option value="' + esc(id) + '"' +
+        (id === r.anomalyId ? ' selected' : '') + '>' +
+        esc(anomalyLabel(a)) + '</option>';
+    });
+    var picker = '<label>Cost Explorer anomaly</label>' +
+      '<div class="row" style="align-items:stretch">' +
+      '<select id="rca-anomaly" style="flex:1">' + opts + '</select>' +
+      '<button class="btn" id="rca-load-anom" type="button">' +
+      ico('refresh', 13) + ' Load anomalies</button></div>';
+    if (r.anomErr) {
+      picker += errorCard('Could not load Cost Explorer anomalies.',
+        r.anomErr);
+    } else if (!r.awsAvailable && r.profiles !== null) {
+      picker += '<div class="field-help">AWS is not configured &mdash; ' +
+        'switch to <b>Paste</b>, or set a read-only aws profile above ' +
+        'and reload.</div>';
+    }
+    return picker;
+  }
+  return '<label>Paste cost-anomaly report ' +
+    rcaTerm('Regional-Bytes') + '</label>' +
+    '<textarea id="rca-report" style="min-height:150px" ' +
+    'placeholder="Paste an AWS Cost Anomaly Detection report, a ' +
+    'GetAnomalies JSON payload, or a plain-text anomaly summary ' +
+    '(usage-type, $/day, step-change date)&hellip;">' +
+    esc(r.report || '') + '</textarea>' +
+    '<div class="field-help">Accepts the raw GetAnomalies JSON or a ' +
+    'human-written summary. A <span class="mono">' +
+    '*DataTransfer-Regional-Bytes</span> usage-type is treated as ' +
+    'cross-AZ network (not storage) regardless of the service tag.' +
+    '</div>';
+}
+
+function anomalyLabel(a) {
+  a = a || {};
+  var imp = a.Impact || a.impact || {};
+  var rc = (a.RootCauses || a.root_causes || [])[0] || {};
+  var ut = rc.UsageType || rc.usage_type || a.DimensionValue ||
+    a.dimension_value || '';
+  var dollars = imp.TotalImpact != null ? imp.TotalImpact :
+    (imp.MaxImpact != null ? imp.MaxImpact : null);
+  var when = a.AnomalyStartDate || a.anomaly_start_date || '';
+  var bits = [String(a.AnomalyId || a.anomaly_id || 'anomaly')];
+  if (ut) bits.push(ut);
+  if (dollars != null) bits.push('$' + fmtNumP(num(dollars)));
+  if (when) bits.push(String(when).slice(0, 10));
+  return bits.join('  ·  ');
+}
+
+function wireRcaForm() {
+  var r = App.rca;
+  $all('[data-rcamode]').forEach(function (b) {
+    b.onclick = function () {
+      r.mode = b.getAttribute('data-rcamode');
+      var src = $('#rca-source');
+      if (src) src.innerHTML = rcaSourceHtml();
+      $all('[data-rcamode]').forEach(function (x) {
+        x.classList.toggle('on',
+          x.getAttribute('data-rcamode') === r.mode);
+      });
+      wireRcaSource();
+    };
+  });
+  var pr = $('#rca-profile');
+  if (pr) pr.onchange = function () {
+    r.profile = pr.value; r.anomalies = null; r.anomErr = null;
+    var src = $('#rca-source');
+    if (src && r.mode === 'pick') src.innerHTML = rcaSourceHtml();
+    wireRcaSource();
+  };
+  var rg = $('#rca-region');
+  if (rg) rg.onchange = function () { r.region = rg.value.trim(); };
+  var fg = $('#rca-flowgroup');
+  if (fg) fg.onchange = function () { r.flowGroup = fg.value.trim(); };
+  var run = $('#rca-run');
+  if (run) run.onclick = function () { onRunRca(run); };
+  wireRcaSource();
+}
+
+function wireRcaSource() {
+  var r = App.rca;
+  var ta = $('#rca-report');
+  if (ta) ta.onchange = function () { r.report = ta.value; };
+  var an = $('#rca-anomaly');
+  if (an) an.onchange = function () { r.anomalyId = an.value; };
+  var la = $('#rca-load-anom');
+  if (la) la.onclick = function () { loadRcaAnomalies(la); };
+}
+
+async function loadRcaAnomalies(btn) {
+  var r = App.rca;
+  r.anomLoading = true; r.anomErr = null;
+  busy(btn, true);
+  try {
+    var q = [];
+    if (r.profile) q.push('profile=' + encodeURIComponent(r.profile));
+    if (r.region) q.push('region=' + encodeURIComponent(r.region));
+    var res = await api('/api/aws/anomalies' +
+      (q.length ? '?' + q.join('&') : ''));
+    r.anomalies = res.anomalies || [];
+    if (!r.anomalies.length) {
+      toast('No anomalies in the last 90 days', 'ok');
+    }
+  } catch (e) { r.anomErr = e.message; toast(e.message, 'err'); }
+  r.anomLoading = false; busy(btn, false);
+  var src = $('#rca-source');
+  if (src) src.innerHTML = rcaSourceHtml();
+  wireRcaSource();
+}
+
+async function onRunRca(btn) {
+  var r = App.rca;
+  var body = {};
+  if (r.profile) body.profile = r.profile;
+  if (r.region) body.region = r.region;
+  if (r.flowGroup) body.flow_logs_group = r.flowGroup;
+  if (r.mode === 'pick') {
+    var an = $('#rca-anomaly');
+    if (an) r.anomalyId = an.value;
+    if (!r.anomalyId) {
+      toast('Pick an anomaly first (or paste a report)', 'err');
+      return;
+    }
+    body.anomaly_id = r.anomalyId;
+  } else {
+    var ta = $('#rca-report');
+    if (ta) r.report = ta.value;
+    if (!(r.report || '').trim()) {
+      toast('Paste a cost-anomaly report first', 'err');
+      return;
+    }
+    body.report = r.report;
+  }
+  r.loading = true; r.err = null;
+  r.mitigation = null; r.mitErr = null; r.ai = null; r.aiErr = null;
+  busy(btn, true); renderRcaResults();
+  try {
+    var job = await startJob('rca', '/api/rca', body,
+      logInto($('#rca-console')));
+    var res = (job && job.result) || {};
+    r.rca = res.rca || null;
+    r.flowlogs = res.flowlogs || null;
+    r.anomaly = res.anomaly || null;
+    if (!r.rca) throw new Error('The RCA returned no report.');
+    toast('Root-cause analysis complete', 'ok');
+  } catch (e) { r.err = e.message; toast(e.message, 'err'); }
+  r.loading = false; busy(btn, false);
+  renderRcaResults(); renderRcaAi();
+  refreshState();
+}
+
+async function onRunMitigate(btn) {
+  var r = App.rca;
+  if (!r.rca) { toast('Run an RCA first', 'err'); return; }
+  r.mitLoading = true; r.mitErr = null;
+  busy(btn, true); renderRcaMitigation();
+  try {
+    var job = await startJob('mitigate', '/api/mitigate',
+      { rca: r.rca }, logInto($('#rca-console')));
+    var res = (job && job.result) || {};
+    r.mitigation = res.mitigation || null;
+    if (!r.mitigation) throw new Error('No mitigation plan returned.');
+    toast('Mitigation plan ready (proposals only)', 'ok');
+  } catch (e) { r.mitErr = e.message; toast(e.message, 'err'); }
+  r.mitLoading = false; busy(btn, false);
+  renderRcaMitigation();
+  refreshState();
+}
+
+async function onRcaAnalyze(btn) {
+  var r = App.rca;
+  r.aiLoading = true; r.aiErr = null; r.ai = null;
+  busy(btn, true); renderRcaAi();
+  try {
+    var job = await startJob('rca-analyze', '/api/rca/analyze', {},
+      logInto($('#rca-console')));
+    r.ai = (job && job.result) || {};
+  } catch (e) { r.aiErr = e.message; toast(e.message, 'err'); }
+  r.aiLoading = false; busy(btn, false); renderRcaAi();
+  refreshState();
+}
+
+function renderRcaResults() {
+  renderRcaBreakdown();
+  renderRcaMitigation();
+}
+
+/* ---- share % helper (share_pct, else share as a fraction) ---- */
+function rcaSharePct(d) {
+  d = d || {};
+  if (d.share_pct != null && isFinite(d.share_pct)) {
+    return Math.round(num(d.share_pct));
+  }
+  if (d.share != null && isFinite(d.share)) {
+    return Math.round(num(d.share) * 100);
+  }
+  return null;
+}
+
+/* ---- root-cause breakdown ---- */
+function renderRcaBreakdown() {
+  var el = $('#rca-breakdown'); if (!el) return;
+  var r = App.rca;
+  if (r.loading && !r.rca) {
+    el.innerHTML = '<h2>' + ico('search', 15) +
+      ' Root-cause analysis</h2><div class="card">' +
+      '<div class="skel" style="height:120px"></div></div>';
+    return;
+  }
+  if (r.err && !r.rca) {
+    el.innerHTML = '<h2>' + ico('search', 15) +
+      ' Root-cause analysis</h2>' +
+      errorCard('The root-cause analysis failed.', r.err);
+    return;
+  }
+  if (!r.rca) { el.innerHTML = ''; return; }
+  var rep = r.rca;
+  var inc = rep.incident || {};
+  var cause = rep.cause || {};
+  var dom = cause.dominant || {};
+  var conf = String(rep.confidence || '');
+
+  var stat = function (k, v, cls) {
+    if (v == null || v === '') return '';
+    return '<div class="st"><div class="v' + (cls ? ' ' + cls : '') +
+      '">' + v + '</div><div class="k">' + esc(k) + '</div></div>';
+  };
+  var money = inc.dollars_per_day != null ?
+    fmtMoney(num(inc.dollars_per_day)) + '/day' : null;
+  var gb = inc.gb_per_day != null ?
+    fmtNumP(num(inc.gb_per_day)) + ' GB/day' : null;
+  var strip = '<div class="statstrip">' +
+    stat('$ / day', money ? esc(money) : null, 'sh-money-inline') +
+    stat('GB / day', gb ? esc(gb) : null) +
+    stat('usage type', inc.usage_type ? esc(inc.usage_type) : null) +
+    stat('service', inc.service ? esc(inc.service) : null) +
+    stat('account', inc.account ? esc(inc.account) : null) +
+    stat('region', inc.region ? esc(inc.region) : null) +
+    stat('step-change', inc.step_change ?
+      esc(String(inc.step_change).slice(0, 10)) : null) +
+    stat('class', inc.hypothesis_class ?
+      esc(inc.hypothesis_class) : null) +
+    '</div>';
+
+  var domPct = rcaSharePct(dom);
+  var domEv = (dom.evidence || []).map(function (e) {
+    return '<li>' + esc(e) + '</li>';
+  }).join('');
+  var portChip = dom.port != null ?
+    chip('port ' + esc(String(dom.port)), 'purple',
+      'The destination port that carries most of the cross-AZ ' +
+      'bytes (e.g. 9095 = Mimir/Loki inter-component gRPC).') : '';
+  var domCard = '<div class="card"><div class="rca-dom">' +
+    (domPct != null ? '<div class="rca-share"><div class="rs-num">' +
+      domPct + '%</div><div class="rs-lbl">of cross-AZ bytes</div>' +
+      '</div>' : '') +
+    '<div class="rca-domain"><div class="rec-head">' +
+    '<span class="rec-title">' +
+    esc(dom.driver || 'Dominant driver') + '</span>' +
+    chip('dominant', 'err') + portChip + '</div>' +
+    (dom.summary ? '<div class="rec-rationale">' + esc(dom.summary) +
+      '</div>' : '') +
+    (domEv ? '<ul class="rca-ev-list">' + domEv + '</ul>' : '') +
+    '</div></div></div>';
+
+  /* evidence convergence chips */
+  var conv = rep.evidence_convergence || [];
+  var convChips = conv.map(function (srcKey) {
+    return chip(RCA_SRC_LBL[srcKey] || srcKey, 'ok',
+      'This independent read-only source agrees with the dominant ' +
+      'driver. Confidence rises with the number of agreeing sources.');
+  }).join('') || chip('single source', 'warn',
+    'Only one source framed the incident -- confidence is capped LOW ' +
+    'until an independent source agrees.');
+  var convCard = '<div class="card"><h3>Evidence convergence</h3>' +
+    '<div class="rca-conv">' + convChips + '</div>' +
+    '<p class="kv">These are the <b>independent, read-only</b> sources ' +
+    'that agree on the dominant driver. The dominant % is the ' +
+    'measured cross-AZ byte-share from VPC Flow Logs; the other ' +
+    'sources corroborate it.</p></div>';
+
+  /* secondary drivers */
+  var secs = cause.secondary || [];
+  var secHtml = '';
+  if (secs.length) {
+    secHtml = '<h3 style="margin-top:var(--s4)">Secondary drivers</h3>' +
+      secs.map(function (sc) {
+        var pct = rcaSharePct(sc);
+        var ev = (sc.evidence || []).map(function (e) {
+          return '<li>' + esc(e) + '</li>';
+        }).join('');
+        return '<div class="card"><div class="rec-head">' +
+          '<span class="rec-title">' +
+          esc(sc.driver || 'Secondary driver') + '</span>' +
+          (pct != null ? chip('~' + pct + '%', 'warn') : '') +
+          (sc.port != null ? chip('port ' + esc(String(sc.port)),
+            'purple') : '') + '</div>' +
+          (sc.summary ? '<div class="rec-rationale">' +
+            esc(sc.summary) + '</div>' : '') +
+          (ev ? '<ul class="rca-ev-list">' + ev + '</ul>' : '') +
+          '</div>';
+      }).join('');
+  }
+
+  /* ruled out */
+  var ruled = cause.ruled_out || [];
+  var ruledHtml = '';
+  if (ruled.length) {
+    ruledHtml = '<div class="card"><h3>Ruled out</h3><ul ' +
+      'class="rca-ruled">' + ruled.map(function (ro) {
+        return '<li><div class="rr-h">' + ico('xcircle', 13) +
+          esc(ro.hypothesis || ro.driver || 'hypothesis') +
+          chip('ruled out', 'dim') + '</div>' +
+          (ro.evidence ? '<div class="rr-e">' + esc(ro.evidence) +
+            '</div>' : '') + '</li>';
+      }).join('') + '</ul><p class="kv">Each is dismissed by its own ' +
+      'DISPROVING evidence &mdash; never by omission.</p></div>';
+  }
+
+  /* notes */
+  var notes = rep.notes || [];
+  var notesHtml = notes.length ? '<div class="sec-note">' +
+    notes.map(function (n) { return esc(n); }).join('<br>') +
+    '</div>' : '';
+
+  var confChipHtml = chip(conf + ' confidence',
+    RCA_CONF_CLS[conf] || 'dim',
+    'Confidence rises with the number of independent agreeing ' +
+    'sources; a single-source or share-less result is capped at LOW.');
+
+  var mitBtn = '<button class="btn primary" id="rca-mit-btn" ' +
+    'type="button">' + ico('wrench', 14) +
+    ' Run reliability-safe mitigation</button>';
+
+  el.innerHTML = '<div class="recs-head"><h2 style="margin:0">' +
+    ico('search', 15) + ' Root-cause analysis</h2>' + confChipHtml +
+    '<span class="grow"></span>' + mitBtn + '</div>' +
+    strip + domCard + convCard + secHtml + ruledHtml + notesHtml +
+    jsonDetails('Full RCA report (JSON)', rep, false);
+  var mb = $('#rca-mit-btn');
+  if (mb) mb.onclick = function () { onRunMitigate(mb); };
+}
+
+/* ---- mitigation plan ---- */
+function rcaKeepsChips(m) {
+  m = m || {};
+  var dims = [['keeps_availability', 'availability'],
+              ['keeps_durability', 'durability'],
+              ['keeps_performance', 'performance'],
+              ['handles_current_traffic', 'current traffic']];
+  var out = '';
+  dims.forEach(function (d) {
+    var v = m[d[0]];
+    if (v === true) {
+      out += chip('keeps ' + d[1], 'ok',
+        'Verified safe: this mitigation does not reduce ' + d[1] +
+        '.');
+    } else if (v === false) {
+      out += chip('may reduce ' + d[1] + ' — review', 'err',
+        'CAUTION: this could reduce ' + d[1] + '. It is DEMOTED and ' +
+        'nothing is applied automatically; satisfy the preconditions ' +
+        'first.');
+    }
+  });
+  return out;
+}
+
+function rcaPreconChips(m) {
+  m = m || {};
+  var g = m.reliability_guardrails || [];
+  if (!g.length) return '';
+  return '<div class="precon-row">' + g.map(function (p) {
+    return chip(String(p), 'warn',
+      'Reliability precondition: this MUST hold before applying, or ' +
+      'the change breaks something.');
+  }).join('') + '</div>';
+}
+
+function rcaExpectedChips(m) {
+  var e = (m && m.expected) || {};
+  var bits = '';
+  if (e.usd_per_day != null) {
+    bits += '<span class="save-money">~' +
+      esc(fmtMoney(num(e.usd_per_day))) + ' / day</span>';
+  }
+  if (e.usd_per_month != null) {
+    bits += chip('~' + fmtMoney(num(e.usd_per_month)) + ' / mo',
+      'info');
+  }
+  if (e.percent_of_anomaly != null) {
+    bits += chip('~' + fmtNumP(num(e.percent_of_anomaly)) +
+      '% of anomaly', 'info');
+  }
+  if (e.gb_per_day != null) {
+    bits += chip('-' + fmtNumP(num(e.gb_per_day)) + ' GB/day cross-AZ',
+      'info');
+  }
+  return bits;
+}
+
+function rcaMitCard(m) {
+  m = m || {};
+  var safe = m.safe === true;
+  var roleChip = m.role ? chip(m.role, 'purple') : '';
+  var idChip = m.id ? chip(m.id, 'dim') : '';
+  var safeChip = safe ?
+    chip('reliability-safe', 'ok',
+      'All reliability guardrails pass: keeps availability, ' +
+      'durability, performance and current-traffic capacity.') :
+    chip('DEMOTED — guardrails must pass', 'err',
+      'Not reliability-safe as-is. Do not apply until the amber ' +
+      'preconditions below are satisfied.');
+  var caveats = (m.caveats || []).map(function (c) {
+    return '<div class="sec-note" style="border-left-color:' +
+      'var(--amber);background:var(--amber-bg)">' + esc(c) + '</div>';
+  }).join('');
+  var cfg = m.config || {};
+  var cfgHtmlStr = '';
+  if (cfg.content) {
+    var cid = 'mcfg-' + uid();
+    cfgHtmlStr = '<div class="rec-cfg"><div class="cfg-bar">' +
+      '<label style="margin:0">' +
+      esc(cfg.filename || 'config') + '</label>' +
+      (cfg.format ? ' ' + chip(cfg.format, 'dim') : '') +
+      '<span style="margin-left:auto"></span>' +
+      copyBtn(cid, 'config') + '</div><pre id="' + cid + '">' +
+      esc(cfg.content) + '</pre>' +
+      '<div class="cfg-note">Generic, paste-ready &mdash; replace ' +
+      'every &lt;PLACEHOLDER&gt;. Apply via GitOps/IaC; the tool ' +
+      'never executes it.</div></div>';
+  }
+  return '<div class="rec-card sev-' + (safe ? 'low' : 'high') +
+    '"><div class="rec-head"><span class="rec-title">' +
+    esc(m.title || 'Mitigation') + '</span>' +
+    idChip + roleChip + safeChip + '</div>' +
+    (m.change ? '<div class="rec-rationale">' + esc(m.change) +
+      '</div>' : '') +
+    '<div class="rec-save">' + rcaExpectedChips(m) + '</div>' +
+    '<div class="risk-row">' + rcaKeepsChips(m) + '</div>' +
+    rcaPreconChips(m) + caveats +
+    (m.owner ? '<div class="kv" style="margin-top:var(--s2)">' +
+      'owner: ' + esc(m.owner) + '</div>' : '') +
+    cfgHtmlStr + '</div>';
+}
+
+/* consolidated "generated configs" target selector across the plan. */
+function rcaConfigEntries(plan) {
+  var mits = (plan && plan.mitigations) || [];
+  var out = [];
+  mits.forEach(function (m) {
+    var cfg = m.config || {};
+    if (!cfg.content) return;
+    out.push({
+      target: RCA_CFG_LBL[m.kind] || m.title || m.kind || 'config',
+      snippet: cfg.content,
+      language: cfg.format || 'yaml',
+      note: (cfg.filename || '') +
+        (m.safe === false ? ' — DEMOTED: satisfy the ' +
+          'reliability preconditions before applying' : '') });
+  });
+  return out;
+}
+
+function renderRcaMitigation() {
+  var el = $('#rca-mitigation'); if (!el) return;
+  var r = App.rca;
+  if (!r.rca) { el.innerHTML = ''; return; }
+  if (r.mitLoading && !r.mitigation) {
+    el.innerHTML = '<h2>' + ico('wrench', 15) +
+      ' Reliability-safe mitigation</h2><div class="card">' +
+      '<div class="skel" style="height:80px"></div></div>';
+    return;
+  }
+  if (r.mitErr && !r.mitigation) {
+    el.innerHTML = '<h2>' + ico('wrench', 15) +
+      ' Reliability-safe mitigation</h2>' +
+      errorCard('Mitigation planning failed.', r.mitErr);
+    return;
+  }
+  if (!r.mitigation) { el.innerHTML = ''; return; }
+  var plan = r.mitigation;
+  var mits = plan.mitigations || [];
+  var sum = plan.summary || {};
+  var headline = sum.headline ||
+    ('~' + fmtMoney(num(sum.total_est_usd_per_day_saved)) +
+     '/day saveable without reducing reliability');
+  var dl = '/download/mitigation-configs.zip';
+  var head = '<div class="recs-head"><h2 style="margin:0">' +
+    ico('wrench', 15) + ' Reliability-safe mitigation</h2>' +
+    (sum.safe_count != null ? chip(sum.safe_count + ' safe', 'ok') +
+      (sum.unsafe_count ? chip(sum.unsafe_count + ' demoted', 'err')
+        : '') : '') +
+    '<span class="grow"></span>' +
+    (mits.length ? '<a class="btn primary" href="' + esc(dl) + '">' +
+      ico('download', 14) + ' Download configs</a>' : '') + '</div>';
+
+  var headCard = '<div class="rca-head"><span class="rh-money">~' +
+    esc(fmtMoney(num(sum.total_est_usd_per_day_saved))) +
+    ' / day</span>' +
+    '<span class="sh-and">saveable without reducing availability, ' +
+    'durability, performance or the ability to serve current ' +
+    'traffic</span>' +
+    '<div class="rh-cap">' + esc(headline) + ' &middot; every ' +
+    'mitigation is a PROPOSAL you apply via GitOps &mdash; nothing is ' +
+    'executed. Configs are generic and paste-ready.</div></div>';
+
+  var cards = mits.length ?
+    mits.map(rcaMitCard).join('') :
+    '<div class="empty"><span class="eico">' + ico('info', 26) +
+    '</span>No auto-plannable mitigation for this RCA.<br>The planner ' +
+    'targets cross-AZ network drivers (zone/topology-aware) and NLB ' +
+    'cross-zone secondaries.</div>';
+
+  var cfgEntries = rcaConfigEntries(plan);
+  var cfgSection = cfgEntries.length ?
+    '<h3 style="margin-top:var(--s4)">Generated configs ' +
+    rcaTerm('zone-aware') + rcaTerm('trafficDistribution') +
+    rcaTerm('cross-zone NLB') + '</h3>' +
+    '<div class="card">' + cfgHtml(cfgEntries) +
+    '<p class="kv" style="margin-top:var(--s2)">Pick a target above ' +
+    'to switch the snippet. All configs are GENERIC (placeholders ' +
+    'only, no customer values) and GitOps-owned.</p></div>' : '';
+
+  var notes = plan.notes || [];
+  var notesHtml = notes.length ? '<div class="sec-note">' +
+    notes.map(function (n) { return esc(n); }).join('<br>') +
+    '</div>' : '';
+
+  el.innerHTML = head + headCard + cards + cfgSection + notesHtml +
+    jsonDetails('Full mitigation plan (JSON)', plan, false);
+}
+
+/* ---- AI analysis ---- */
+function renderRcaAi() {
+  var el = $('#rca-ai'); if (!el) return;
+  var r = App.rca;
+  if (!r.rca) { el.innerHTML = ''; return; }
+  var enabled = aiBackend((App.state || {}).session) !== 'none';
+  var askBtn = enabled ? '<button class="btn primary" ' +
+    'id="rca-ai-btn" type="button">' + ico('sparkle', 14) + ' ' +
+    (r.ai ? 'Re-run AI analysis' : 'Ask AI to analyze') +
+    '</button>' : '';
+  var head = '<div class="recs-head"><h2 style="margin:0">' +
+    ico('sparkle', 15) + ' AI analysis</h2><span class="grow"></span>' +
+    askBtn + '</div>';
+  var wire = function () {
+    var ab = $('#rca-ai-btn');
+    if (ab) ab.onclick = function () { onRcaAnalyze(ab); };
+  };
+  if (r.aiLoading) {
+    el.innerHTML = head + '<div class="ans-box"><span class="skel" ' +
+      'style="width:14px;height:14px;border-radius:50%;' +
+      'display:inline-block"></span> analyzing the anomaly&hellip;' +
+      '</div>';
+    wire(); return;
+  }
+  if (r.aiErr) {
+    el.innerHTML = head + errorCard('The AI could not analyze the ' +
+      'anomaly.', r.aiErr);
+    wire(); return;
+  }
+  if (!r.ai) {
+    if (!enabled) {
+      el.innerHTML = head + '<div class="empty"><span class="eico">' +
+        ico('sparkle', 26) + '</span><b>AI is not configured.</b>' +
+        '<br>Add an Anthropic API key or a local console AI command ' +
+        'in <a href="#/connect">Connect</a> to have the AI analyze ' +
+        'the anomaly and propose reliability-safe mitigations.</div>';
+      return;
+    }
+    el.innerHTML = head + '<p class="kv">Send the converged evidence ' +
+      'bundle (RCA + mitigation + flow logs) to your configured AI ' +
+      'backend and get a plan that cuts cost without reducing ' +
+      'reliability. The AI is instructed to keep RF/retention, never ' +
+      'CPU-limit ingesters, and keep every config generic.</p>';
+    wire(); return;
+  }
+  var ai = r.ai;
+  var backend = ai.backend ? '<span class="chip info" ' +
+    'style="float:right">' + esc(ai.backend) + '</span>' : '';
+  var body = '';
+  var text = ai.answer || ai.reply || ai.text || ai.analysis || '';
+  var plan = ai.plan || ai.result || ai;
+  if (text) {
+    body += '<div class="ans-box">' + backend + mdLite(text) + '</div>';
+    backend = '';
+  }
+  if (plan && typeof plan === 'object' &&
+      (plan.root_cause || plan.mitigations || plan.config_notes)) {
+    if (plan.root_cause) {
+      body += '<div class="ai-box"><h3>Root cause</h3><div>' +
+        (typeof plan.root_cause === 'string' ?
+          mdLite(plan.root_cause) :
+          esc(JSON.stringify(plan.root_cause))) + '</div></div>';
+    }
+    var pm = plan.mitigations || [];
+    if (pm.length) {
+      body += '<div class="ai-box"><h3>Proposed mitigations</h3>' +
+        pm.map(function (m) {
+          m = m || {};
+          var keeps = ['keeps_availability', 'keeps_durability',
+            'keeps_performance'].map(function (k) {
+            if (m[k] === true) return chip(k.replace('keeps_',
+              'keeps '), 'ok');
+            if (m[k] === false) return chip('may reduce ' +
+              k.replace('keeps_', ''), 'err');
+            return '';
+          }).join('');
+          var pre = (m.preconditions || []);
+          if (typeof pre === 'string') pre = [pre];
+          var preChips = pre.map(function (p) {
+            return chip(String(p), 'warn'); }).join('');
+          return '<div class="rec-card sev-low">' +
+            '<div class="rec-head"><span class="rec-title">' +
+            esc(m.title || 'Mitigation') + '</span>' +
+            (m.saving != null ? chip('~' +
+              (typeof m.saving === 'number' ?
+                fmtMoney(num(m.saving)) : esc(String(m.saving))),
+              'info') : '') + '</div>' +
+            (m.change ? '<div class="rec-rationale">' +
+              esc(m.change) + '</div>' : '') +
+            (keeps ? '<div class="risk-row">' + keeps + '</div>' :
+              '') +
+            (preChips ? '<div class="precon-row">' + preChips +
+              '</div>' : '') + '</div>';
+        }).join('') + '</div>';
+    }
+    if (plan.config_notes) {
+      body += '<div class="ai-box"><h3>Config notes</h3><div>' +
+        (typeof plan.config_notes === 'string' ?
+          mdLite(plan.config_notes) :
+          esc(JSON.stringify(plan.config_notes, null, 2))) +
+        '</div></div>';
+    }
+  } else if (!text) {
+    body += jsonDetails('AI response (JSON)', ai, true);
+  }
+  el.innerHTML = head + body;
+  wire();
 }
 
 /* ====================================================== theme */

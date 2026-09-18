@@ -161,6 +161,97 @@ _PACKING = {
 }
 
 
+_FLOWLOGS = {
+    "schema": "nr2grafana/flowlogs/v1",
+    "dominant_port": 9095,
+    "gb_per_day": 16470.0,
+    "cross_az_pct": 0.99,
+    "step_change_date": "2026-08-31",
+    "drivers": [
+        {"driver": "mimir/loki gRPC", "port": 9095,
+         "gb_per_day": 14990.0, "pct_of_cross_az": 0.91},
+        {"driver": "nlb cross-zone", "port": 443,
+         "gb_per_day": 1318.0, "pct_of_cross_az": 0.08},
+    ],
+    "top_flows": [
+        {"srcAddr": "10.0.1.10", "dstAddr": "10.0.2.20", "dstPort": 9095,
+         "az_pair": "us-east-1a->us-east-1b", "gb_per_day": 5000.0},
+    ],
+}
+
+_RCA = {
+    "schema": "nr2grafana/rca/v1",
+    "incident": {
+        "usage_type": "USE1-DataTransfer-Regional-Bytes",
+        "service": "EBS", "account": "348342704569",
+        "region": "us-east-1", "usd_per_day": 164.0,
+        "gb_per_day": 16470.0, "hypothesis_class": "CROSS_AZ_NETWORK",
+        "step_change_date": "2026-08-31", "score": 0.98,
+    },
+    "cause": {
+        "dominant": {
+            "share": 0.91,
+            "driver": "non-zone-aware LGTM ring replication + fan-out",
+            "summary": "RF=3 gRPC (port 9095) crosses AZ boundaries; "
+                       "ring confined to 2 imbalanced AZs.",
+            "evidence": [
+                "vpc-flow-logs: port 9095 = 91% of cross-AZ bytes",
+                "eks-control-plane: mimir/loki ingesters in 2 AZs",
+                "lgtm-self-metrics: ring non-zone-aware, RF=3"],
+        },
+        "secondary": [
+            {"share": 0.08, "driver": "cross-zone-enabled Mimir NLB",
+             "summary": "NLB routes across AZs incurring transfer."},
+        ],
+        "ruled_out": [
+            {"hypothesis": "EBS storage growth",
+             "evidence": "ce storage usage-type flat; volume/snapshot "
+                         "count flat across the step-change"},
+            {"hypothesis": "RDS cross-AZ replica",
+             "evidence": "no Multi-AZ replica; no matching RDS ENIs"},
+        ],
+    },
+    "evidence_convergence": ["cost-explorer", "cloudtrail",
+                             "vpc-flow-logs", "eks-control-plane",
+                             "lgtm-self-metrics"],
+    "confidence": "high",
+}
+
+_MITIGATION = {
+    "schema": "nr2grafana/mitigation/v1",
+    "mitigations": [
+        {"title": "Enable Mimir/Loki zone-aware replication",
+         "change": "Set zone_awareness_enabled + zone labels; migrate "
+                   "ring zone-by-zone via rollout-operator.",
+         "owner": "GitOps/IaC -- proposal only, never executed",
+         "est_savings": {"usd_per_day": 149.0, "pct_saved": 0.91},
+         "keeps_availability": True, "keeps_durability": True,
+         "keeps_performance": True, "handles_current_traffic": True,
+         "reliability_guardrails": [
+             "deploy across >= RF zones (RF=3 -> 3 AZs) or writes fail",
+             "roll one zone at a time; existing PDB maxUnavailable:0",
+             "double max-series/stream limits before reshuffle"],
+         "config": [{"target": "mimir-values", "language": "yaml",
+                     "snippet": "z" * 2000},
+                    {"target": "loki-values", "language": "yaml",
+                     "snippet": "z" * 2000}]},
+        {"title": "Disable cross-zone on the Mimir NLB",
+         "change": "load_balancing.cross_zone.enabled=false w/ gates.",
+         "owner": "GitOps/IaC -- proposal only, never executed",
+         "est_savings": {"usd_per_day": 13.0, "pct_saved": 0.08},
+         "keeps_availability": False, "keeps_durability": True,
+         "keeps_performance": True, "handles_current_traffic": True,
+         "reliability_guardrails": [
+             "black-hole risk: confirm >=1 healthy target in EVERY "
+             "enabled AZ before disabling cross-zone"],
+         "config": [{"target": "nlb-service", "language": "yaml",
+                     "snippet": "z" * 2000}]},
+    ],
+    "summary": {"count": 2, "total_usd_per_day_saved": 162.0},
+    "total_savings": {"usd_per_day": 162.0, "pct": 0.99},
+}
+
+
 _WIDGET_REPORT = {
     "widgets": [
         {"panel_id": 1, "widget": "RPS", "confidence": "exact",
@@ -189,6 +280,9 @@ def _seed_store(path):
     store.save_artifact("svc-1", "optimize", _OPTIMIZE)
     store.save_artifact("svc-1", "deepdive", _DEEPDIVE)
     store.save_artifact("svc-1", "packing", _PACKING)
+    store.save_artifact("svc-1", "flowlogs", _FLOWLOGS)
+    store.save_artifact("svc-1", "rca", _RCA)
+    store.save_artifact("svc-1", "mitigation", _MITIGATION)
     return store
 
 
@@ -253,10 +347,11 @@ class AiContextTest(unittest.TestCase):
     def test_compactness_top_n_and_no_raw_snippets(self):
         ctx = aicontext.build_context(self.store, "svc-1")
         blob = json.dumps(ctx)
-        # The raw optimize/deepdive artifacts carry 2000-char snippets;
-        # the compact bundle must not embed them.
+        # The raw optimize/deepdive/mitigation artifacts carry 2000-char
+        # snippets; the compact bundle must not embed them.
         self.assertNotIn("x" * 500, blob)
         self.assertNotIn("y" * 500, blob)
+        self.assertNotIn("z" * 500, blob)
         # Config is represented by target labels only.
         opt = ctx["artifacts"]["optimize"]["top_recommendations"][0]
         self.assertIn("config_targets", opt)
@@ -265,7 +360,8 @@ class AiContextTest(unittest.TestCase):
         # The whole bundle is far smaller than the raw artifacts.
         raw_total = sum(len(json.dumps(a)) for a in (
             _REQUIREMENTS, _DIAGNOSIS, _PARITY, _SAMPLES, _COST,
-            _OPTIMIZE, _DEEPDIVE, _PACKING))
+            _OPTIMIZE, _DEEPDIVE, _PACKING, _FLOWLOGS, _RCA,
+            _MITIGATION))
         self.assertLess(len(blob), raw_total)
 
     def test_top_n_cap(self):
@@ -380,6 +476,170 @@ class AiContextTest(unittest.TestCase):
     def test_translations_legend_entry(self):
         ctx = aicontext.build_context(self.store, "svc-1")
         self.assertIn("translations", ctx["legend"])
+
+    # -- cost-anomaly trio: flowlogs / rca / mitigation ----------------
+
+    def test_cost_trio_in_order_and_legend(self):
+        ctx = aicontext.build_context(self.store, "svc-1")
+        for kind in ("flowlogs", "rca", "mitigation"):
+            self.assertIn(kind, aicontext.ARTIFACT_ORDER)
+            self.assertIn(kind, ctx["artifacts"], kind)
+            self.assertIn(kind, ctx["legend"], kind)
+        # rca must follow flowlogs, mitigation must follow rca.
+        order = list(aicontext.ARTIFACT_ORDER)
+        self.assertLess(order.index("flowlogs"), order.index("rca"))
+        self.assertLess(order.index("rca"), order.index("mitigation"))
+
+    def test_flowlogs_summary(self):
+        ctx = aicontext.build_context(self.store, "svc-1")
+        fl = ctx["artifacts"]["flowlogs"]
+        self.assertEqual(fl["dominant_port"], 9095)
+        self.assertEqual(fl["gb_per_day"], 16470.0)
+        self.assertEqual(fl["step_change_date"], "2026-08-31")
+        # The dominant driver carries its %-of-cross-AZ share.
+        top = fl["drivers"][0]
+        self.assertEqual(top["port"], 9095)
+        self.assertEqual(top["pct_of_cross_az"], 0.91)
+        self.assertTrue(fl["top_flows"])
+
+    def test_flowlogs_degrades_to_note(self):
+        self.store.save_artifact("svc-1", "flowlogs", {
+            "schema": "nr2grafana/flowlogs/v1",
+            "note": "no flow logs configured for this VPC"})
+        ctx = aicontext.build_context(self.store, "svc-1")
+        self.assertIn("note", ctx["artifacts"]["flowlogs"])
+        self.assertNotIn("drivers", ctx["artifacts"]["flowlogs"])
+
+    def test_rca_summary(self):
+        ctx = aicontext.build_context(self.store, "svc-1")
+        rca = ctx["artifacts"]["rca"]
+        inc = rca["incident"]
+        self.assertEqual(inc["usage_type"],
+                         "USE1-DataTransfer-Regional-Bytes")
+        self.assertEqual(inc["usd_per_day"], 164.0)
+        self.assertEqual(inc["hypothesis_class"], "CROSS_AZ_NETWORK")
+        dom = rca["dominant"]
+        self.assertEqual(dom["share"], 0.91)
+        self.assertTrue(dom["evidence"])
+        # Secondary and ruled-out are preserved.
+        self.assertEqual(rca["secondary"][0]["share"], 0.08)
+        hyps = [r["hypothesis"] for r in rca["ruled_out"]]
+        self.assertIn("EBS storage growth", hyps)
+        self.assertIn("cost-explorer", rca["evidence_convergence"])
+        self.assertEqual(rca["confidence"], "high")
+
+    def test_rca_degrades_on_unknown_shape(self):
+        self.store.save_artifact("svc-1", "rca", {
+            "schema": "nr2grafana/rca/v1", "mystery": 1})
+        ctx = aicontext.build_context(self.store, "svc-1")
+        self.assertIn("keys", ctx["artifacts"]["rca"])
+
+    def test_mitigation_summary_flags_and_configs(self):
+        ctx = aicontext.build_context(self.store, "svc-1")
+        mit = ctx["artifacts"]["mitigation"]
+        m0 = mit["mitigations"][0]
+        self.assertIn("zone-aware", m0["title"])
+        # keeps_* land under the risk flags; handles_current_traffic too.
+        self.assertTrue(m0["risk"]["keeps_availability"])
+        self.assertTrue(m0["handles_current_traffic"])
+        self.assertTrue(m0["reliability_guardrails"])
+        self.assertIn("owner", m0)
+        # Config is represented by target labels only, never the snippet.
+        self.assertTrue(any("mimir-values" in t
+                            for t in m0["config_targets"]))
+        self.assertEqual(m0["est_savings"]["usd_per_day"], 149.0)
+        # The unsafe NLB disable keeps_availability=false is preserved.
+        m1 = mit["mitigations"][1]
+        self.assertFalse(m1["risk"]["keeps_availability"])
+        self.assertTrue(any("black-hole" in g
+                            for g in m1["reliability_guardrails"]))
+
+    def test_mitigation_preserves_planner_ranking(self):
+        # A demoted (unsafe) item stays where the planner put it.
+        ctx = aicontext.build_context(self.store, "svc-1")
+        titles = [m["title"]
+                  for m in ctx["artifacts"]["mitigation"]["mitigations"]]
+        self.assertEqual(titles[0],
+                         "Enable Mimir/Loki zone-aware replication")
+
+    def test_cost_trio_rendered_in_markdown(self):
+        ctx = aicontext.build_context(self.store, "svc-1")
+        md = aicontext.to_markdown(ctx)
+        for kind in ("flowlogs", "rca", "mitigation"):
+            self.assertIn("## %s" % kind, md)
+        self.assertIn("USE1-DataTransfer-Regional-Bytes", md)
+        self.assertIn("zone-aware replication", md)
+        # No raw config snippet leaks into the rendered markdown.
+        self.assertNotIn("z" * 500, md)
+
+    # -- analyze_cost (RCA/mitigation AI flow) -------------------------
+
+    _PLAN_JSON = json.dumps({
+        "root_cause": "cross-AZ ring replication on port 9095",
+        "mitigations": [
+            {"title": "zone-aware Mimir/Loki", "saving": "$149/day",
+             "change": "enable zone_awareness_enabled",
+             "preconditions": "deploy across >= RF zones",
+             "keeps_availability": True, "keeps_durability": True,
+             "keeps_performance": True}],
+        "config_notes": "generic placeholders only"})
+
+    def test_analyze_cost_happy_parses_plan(self):
+        ctx = aicontext.build_context(self.store, "svc-1")
+        fake = _FakeAssistant(reply=self._PLAN_JSON)
+        out = aicontext.analyze_cost(fake, ctx)
+        self.assertEqual(out["backend"], "_FakeAssistant")
+        self.assertIn("plan", out)
+        self.assertIn("root_cause", out["plan"])
+        self.assertEqual(len(out["plan"]["mitigations"]), 1)
+        # The RCA system framing was used and the bundle was carried.
+        self.assertIn("DataTransfer-Regional-Bytes", fake.system)
+        self.assertIn("CROSS-AZ NETWORK", fake.system)
+        self.assertIn("# nr2grafana AI context", fake.seen[0]["content"])
+
+    def test_analyze_cost_default_question_is_rca(self):
+        ctx = aicontext.build_context(self.store, "svc-1")
+        fake = _FakeAssistant(reply="ok")
+        aicontext.analyze_cost(fake, ctx)
+        self.assertIn("reliability-safe", fake.seen[0]["content"])
+
+    def test_analyze_cost_parses_fenced_plan(self):
+        ctx = aicontext.build_context(self.store, "svc-1")
+        fenced = "```json\n" + self._PLAN_JSON + "\n```"
+        fake = _FakeAssistant(reply=fenced)
+        out = aicontext.analyze_cost(fake, ctx)
+        self.assertIn("plan", out)
+        self.assertIn("root_cause", out["plan"])
+
+    def test_analyze_cost_prose_reply_has_no_plan(self):
+        ctx = aicontext.build_context(self.store, "svc-1")
+        fake = _FakeAssistant(reply="Here is the analysis in prose.")
+        out = aicontext.analyze_cost(fake, ctx)
+        self.assertEqual(out["answer"], "Here is the analysis in prose.")
+        self.assertNotIn("plan", out)
+
+    def test_analyze_cost_no_backend(self):
+        ctx = aicontext.build_context(self.store, "svc-1")
+        out = aicontext.analyze_cost(None, ctx)
+        self.assertEqual(out["backend"], "none")
+        self.assertIn("No AI backend", out["answer"])
+
+    def test_analyze_cost_unavailable_backend(self):
+        ctx = aicontext.build_context(self.store, "svc-1")
+        out = aicontext.analyze_cost(_FakeAssistant(available=False), ctx)
+        self.assertEqual(out["backend"], "none")
+
+    def test_analyze_cost_backend_error_is_text(self):
+        ctx = aicontext.build_context(self.store, "svc-1")
+        out = aicontext.analyze_cost(_FakeAssistant(boom=True), ctx)
+        self.assertIn("could not analyze", out["answer"])
+        self.assertIn("api exploded", out["answer"])
+        self.assertNotIn("plan", out)
+
+    def test_analyze_cost_empty_reply(self):
+        ctx = aicontext.build_context(self.store, "svc-1")
+        out = aicontext.analyze_cost(_FakeAssistant(reply="   "), ctx)
+        self.assertIn("empty reply", out["answer"])
 
     # -- redaction -----------------------------------------------------
 

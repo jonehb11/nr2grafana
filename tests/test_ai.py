@@ -11,9 +11,10 @@ from unittest import mock
 
 from nr2grafana.ai import (AIAssist, AIError, DEFAULT_MODEL, LocalAgent,
                            get_assistant, _CONVERT_SYSTEM, _FIX_SYSTEM,
-                           _fix_prompt, _parse_fix, _parse_fix_loose,
-                           _render_prompt, _strip_ansi, _strip_echo,
-                           _strip_fences, _system_for)
+                           _RCA_SYSTEM, _fix_prompt, _parse_fix,
+                           _parse_fix_loose, _parse_rca, _parse_rca_loose,
+                           _rca_prompt, _render_prompt, _strip_ansi,
+                           _strip_echo, _strip_fences, _system_for)
 
 FAKE_KEY = "sk-ant-test-key-do-not-log"
 
@@ -275,6 +276,262 @@ class ConversionModePromptTests(unittest.TestCase):
         self.assertIn("SAW_OTEL", raw)
         out = agent.suggest_fix(CONVERT_CONTEXT)
         self.assertEqual(out, FIX_JSON)
+
+
+RCA_CONTEXT = {
+    "mode": "rca",
+    "incident": {
+        "usage_type": "USE1-DataTransfer-Regional-Bytes",
+        "service": "EBS",
+        "account": "<ACCOUNT>",
+        "region": "us-east-1",
+        "usd_per_day": 164.0,
+        "gb_per_day": 16470.0,
+        "step_change": "2026-08-31",
+    },
+    "cause": {
+        "dominant": {"share": 0.91,
+                     "summary": "non-zone-aware Mimir/Loki ring on 9095"},
+        "secondary": [{"share": 0.08, "summary": "cross-zone Mimir NLB"}],
+        "ruled_out": ["EBS storage growth: volume/snapshot size flat"],
+    },
+    "evidence_convergence": ["cost-explorer", "vpc-flow-logs",
+                             "eks-control-plane", "lgtm-self-metrics"],
+    "confidence": "high",
+    "flowlogs": {"dominant_port": 9095, "gb_per_day": 15000.0},
+    "mitigations": [{"title": "Mimir zone-aware replication"}],
+    "reliability": {"required_preconditions": ["deploy across >= RF zones"]},
+    "instance": {"metrics_sample": ["cortex_ingester_memory_series"]},
+}
+
+RCA_JSON = {
+    "root_cause": "Cross-AZ network from a non-zone-aware ring (~91%), "
+                  "port 9095; DataTransfer-Regional-Bytes is cross-AZ.",
+    "mitigations": [
+        {"title": "Enable Mimir/Loki zone-aware replication",
+         "saving": "~$150/day",
+         "change": "set zone_awareness_enabled=true across write+read path",
+         "preconditions": ["deploy across >= RF zones",
+                           "migrate one zone at a time"],
+         "keeps_availability": True,
+         "keeps_durability": True,
+         "keeps_performance": True},
+        {"title": "Disable NLB cross-zone",
+         "saving": "~$13/day",
+         "change": "load_balancing.cross_zone.enabled=false, gated",
+         "preconditions": ["confirm >=1 healthy target per enabled AZ"],
+         "keeps_availability": False,
+         "keeps_durability": True,
+         "keeps_performance": True},
+    ],
+    "config_notes": ["configs are generic with <ANGLE_BRACKET> placeholders"],
+}
+
+
+class RcaModeSystemTests(unittest.TestCase):
+    """RCA-mode framing: distinct system prompt with the domain rules."""
+
+    def test_system_for_picks_rca(self):
+        self.assertIs(_system_for({"mode": "rca"}), _RCA_SYSTEM)
+        self.assertIs(_system_for({"mode": " RCA "}), _RCA_SYSTEM)
+
+    def test_system_for_other_modes_unaffected(self):
+        self.assertIs(_system_for({}), _FIX_SYSTEM)
+        self.assertIs(_system_for({"mode": "fix"}), _FIX_SYSTEM)
+        self.assertIs(_system_for({"mode": "convert"}), _CONVERT_SYSTEM)
+
+    def test_rca_system_is_distinct(self):
+        self.assertNotEqual(_RCA_SYSTEM, _FIX_SYSTEM)
+        self.assertNotEqual(_RCA_SYSTEM, _CONVERT_SYSTEM)
+
+    def test_rca_system_demands_strict_rca_json(self):
+        self.assertIn("STRICT JSON", _RCA_SYSTEM)
+        self.assertIn("root_cause", _RCA_SYSTEM)
+        self.assertIn("mitigations", _RCA_SYSTEM)
+        self.assertIn("config_notes", _RCA_SYSTEM)
+        self.assertIn("preconditions", _RCA_SYSTEM)
+        for flag in ("keeps_availability", "keeps_durability",
+                     "keeps_performance"):
+            self.assertIn(flag, _RCA_SYSTEM)
+
+    def test_rca_system_encodes_domain_guardrails(self):
+        # DataTransfer-Regional-Bytes is cross-AZ network, not storage.
+        self.assertIn("DataTransfer-Regional-Bytes", _RCA_SYSTEM)
+        self.assertIn("cross-AZ", _RCA_SYSTEM)
+        low = _RCA_SYSTEM.lower()
+        self.assertIn("storage", low)
+        # Never drop RF/retention or CPU-limit ingesters.
+        self.assertIn("replication factor", low)
+        self.assertIn("retention", low)
+        self.assertIn("cpu-limit", low)
+        self.assertIn("ingester", low)
+        # Never blind-disable NLB cross-zone.
+        self.assertIn("black-hole", low)
+        # Configs stay GENERIC.
+        self.assertIn("GENERIC", _RCA_SYSTEM)
+        self.assertIn("<ANGLE_BRACKETS>", _RCA_SYSTEM)
+        # Preserve availability/durability/performance + current traffic.
+        self.assertIn("availability", low)
+        self.assertIn("durability", low)
+        self.assertIn("performance", low)
+        self.assertIn("current traffic", low)
+
+
+class RcaPromptTests(unittest.TestCase):
+    """RCA prompt: distinct framing that carries the evidence bundle."""
+
+    def test_rca_prompt_distinct_from_fix_and_convert(self):
+        prompt = _rca_prompt(RCA_CONTEXT)
+        self.assertIn("Analyze this AWS cost anomaly", prompt)
+        self.assertNotIn("Fix this failing", prompt)
+        self.assertNotIn("Translate this auto-migrated", prompt)
+
+    def test_rca_prompt_folds_in_evidence(self):
+        prompt = _rca_prompt(RCA_CONTEXT)
+        self.assertIn("DataTransfer-Regional-Bytes", prompt)
+        self.assertIn("evidence_convergence", prompt)
+        self.assertIn("vpc-flow-logs", prompt)
+        self.assertIn("9095", prompt)
+        self.assertIn("ruled_out", prompt)
+        self.assertIn("reliability", prompt)
+        self.assertIn("cortex_ingester_memory_series", prompt)
+
+    def test_rca_prompt_omits_absent_keys(self):
+        prompt = _rca_prompt({"mode": "rca",
+                              "incident": {"usage_type": "X"}})
+        self.assertNotIn("evidence_convergence", prompt)
+        self.assertNotIn("flowlogs", prompt)
+        self.assertIn("usage_type", prompt)
+
+
+class ParseRcaTests(unittest.TestCase):
+    def test_parse_plain_json(self):
+        out = _parse_rca(json.dumps(RCA_JSON))
+        self.assertEqual(out["root_cause"], RCA_JSON["root_cause"])
+        self.assertEqual(len(out["mitigations"]), 2)
+        self.assertEqual(out["config_notes"], RCA_JSON["config_notes"])
+        m0 = out["mitigations"][0]
+        self.assertEqual(m0["title"],
+                         "Enable Mimir/Loki zone-aware replication")
+        self.assertTrue(m0["keeps_availability"])
+        self.assertEqual(m0["preconditions"],
+                         ["deploy across >= RF zones",
+                          "migrate one zone at a time"])
+        self.assertFalse(out["mitigations"][1]["keeps_availability"])
+
+    def test_parse_fenced_json(self):
+        text = "```json\n%s\n```" % json.dumps(RCA_JSON)
+        self.assertEqual(_parse_rca(text)["root_cause"],
+                         RCA_JSON["root_cause"])
+
+    def test_parse_non_json_falls_back(self):
+        out = _parse_rca("just some prose about cross-AZ")
+        self.assertEqual(out, {"root_cause": "just some prose about cross-AZ",
+                               "mitigations": [], "config_notes": []})
+
+    def test_parse_json_array_falls_back(self):
+        out = _parse_rca("[1, 2]")
+        self.assertEqual(out["root_cause"], "[1, 2]")
+        self.assertEqual(out["mitigations"], [])
+
+    def test_mitigation_defaults_keeps_flags(self):
+        out = _parse_rca(json.dumps(
+            {"root_cause": "x",
+             "mitigations": [{"title": "t"}]}))
+        m = out["mitigations"][0]
+        self.assertEqual(m["saving"], "")
+        self.assertEqual(m["change"], "")
+        self.assertEqual(m["preconditions"], [])
+        self.assertFalse(m["keeps_availability"])
+        self.assertFalse(m["keeps_durability"])
+        self.assertFalse(m["keeps_performance"])
+
+    def test_extra_keeps_flag_preserved(self):
+        out = _parse_rca(json.dumps(
+            {"root_cause": "x",
+             "mitigations": [{"title": "t",
+                              "keeps_current_traffic": True}]}))
+        self.assertTrue(out["mitigations"][0]["keeps_current_traffic"])
+
+    def test_preconditions_coerced_to_list(self):
+        out = _parse_rca(json.dumps(
+            {"root_cause": "x",
+             "mitigations": [{"title": "t",
+                              "preconditions": "single string"}]}))
+        self.assertEqual(out["mitigations"][0]["preconditions"],
+                         ["single string"])
+
+    def test_non_string_root_cause_serialized(self):
+        out = _parse_rca(json.dumps(
+            {"root_cause": {"share": 0.91}, "mitigations": []}))
+        self.assertIn("0.91", out["root_cause"])
+
+    def test_parse_loose_extracts_from_prose(self):
+        raw = "Here is my RCA:\n%s\nHope that helps." % json.dumps(RCA_JSON)
+        self.assertEqual(_parse_rca_loose(raw)["root_cause"],
+                         RCA_JSON["root_cause"])
+
+    def test_parse_loose_plain_prose_falls_back(self):
+        out = _parse_rca_loose("no json here")
+        self.assertEqual(out["root_cause"], "no json here")
+        self.assertEqual(out["mitigations"], [])
+
+
+class AnalyzeApiTests(unittest.TestCase):
+    def test_analyze_uses_rca_system_and_parses(self):
+        ai = AIAssist(api_key=FAKE_KEY)
+        with mock.patch("urllib.request.urlopen",
+                        return_value=api_response(
+                            json.dumps(RCA_JSON))) as m:
+            out = ai.analyze(RCA_CONTEXT)
+        self.assertEqual(out["root_cause"], RCA_JSON["root_cause"])
+        self.assertEqual(len(out["mitigations"]), 2)
+        body = json.loads(m.call_args[0][0].data.decode())
+        self.assertEqual(body["system"], _RCA_SYSTEM)
+        user = body["messages"][0]["content"]
+        self.assertIn("Analyze this AWS cost anomaly", user)
+        self.assertIn("DataTransfer-Regional-Bytes", user)
+
+    def test_analyze_forces_rca_even_without_mode(self):
+        ai = AIAssist(api_key=FAKE_KEY)
+        ctx = {"incident": {"usage_type": "USE1-DataTransfer-Regional-"
+                            "Bytes"}}
+        with mock.patch("urllib.request.urlopen",
+                        return_value=api_response(
+                            json.dumps(RCA_JSON))) as m:
+            ai.analyze(ctx)
+        body = json.loads(m.call_args[0][0].data.decode())
+        self.assertEqual(body["system"], _RCA_SYSTEM)
+
+    def test_analyze_non_json_falls_back(self):
+        ai = AIAssist(api_key=FAKE_KEY)
+        with mock.patch("urllib.request.urlopen",
+                        return_value=api_response("cross-AZ ring")):
+            out = ai.analyze(RCA_CONTEXT)
+        self.assertEqual(out["root_cause"], "cross-AZ ring")
+        self.assertEqual(out["mitigations"], [])
+
+
+class AnalyzeLocalAgentTests(unittest.TestCase):
+    def test_local_analyze_sees_rca_system_and_parses(self):
+        code = ("import sys; d = sys.stdin.read();"
+                " print('SAW_RCA' if 'DataTransfer-Regional-Bytes' in d"
+                " else 'NO_RCA');"
+                " print(%r)" % json.dumps(RCA_JSON))
+        agent = LocalAgent(cli(code), timeout=30)
+        raw = agent.chat([{"role": "user",
+                           "content": _rca_prompt(RCA_CONTEXT)}],
+                         system=_RCA_SYSTEM)
+        self.assertIn("SAW_RCA", raw)
+        out = agent.analyze(RCA_CONTEXT)
+        self.assertEqual(out["root_cause"], RCA_JSON["root_cause"])
+        self.assertEqual(len(out["mitigations"]), 2)
+
+    def test_local_analyze_non_json_falls_back(self):
+        code = "import sys; sys.stdin.read(); print('just prose')"
+        out = LocalAgent(cli(code), timeout=30).analyze(RCA_CONTEXT)
+        self.assertEqual(out["root_cause"], "just prose")
+        self.assertEqual(out["mitigations"], [])
 
 
 class ErrorMappingTests(unittest.TestCase):

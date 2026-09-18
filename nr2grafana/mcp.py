@@ -50,8 +50,17 @@ GRAFANA_TOKEN_REF = "${GRAFANA_SERVICE_ACCOUNT_TOKEN}"
 # The AWS Cost Explorer MCP server (awslabs), run on demand via uvx. It
 # reads AWS_PROFILE / AWS_REGION from the local credential chain -- AWS
 # keys are NEVER embedded in the generated config, only env references.
+# This server also covers AWS Cost Anomaly Detection (GetAnomalies and
+# friends), so it is the "cost anomaly" MCP surface for the RCA feature.
 AWS_COST_MCP_COMMAND = "uvx"
 AWS_COST_MCP_PACKAGE = "awslabs.cost-explorer-mcp-server@latest"
+# The AWS CloudWatch MCP server (awslabs), also run on demand via uvx.
+# It exposes CloudWatch metrics and Logs Insights over existing log data
+# (e.g. VPC Flow Logs for cross-AZ byte attribution) -- read of DATA
+# only, it creates no infrastructure. Same credential story: AWS keys are
+# NEVER embedded, only AWS_PROFILE / AWS_REGION references.
+AWS_CLOUDWATCH_MCP_COMMAND = "uvx"
+AWS_CLOUDWATCH_MCP_PACKAGE = "awslabs.cloudwatch-mcp-server@latest"
 AWS_PROFILE_ENV = "AWS_PROFILE"
 AWS_REGION_ENV = "AWS_REGION"
 AWS_PROFILE_REF = "${AWS_PROFILE}"
@@ -594,17 +603,17 @@ def _context_server_entry(context_path: str, kind: str) -> Dict[str, Any]:
     return entry
 
 
-def _aws_cost_server_entry(kind: str) -> Dict[str, Any]:
-    """The AWS Cost Explorer MCP server entry (read-only discovery).
+def _aws_uvx_server_entry(command: str, package: str,
+                          kind: str) -> Dict[str, Any]:
+    """A uvx-launched awslabs AWS MCP server entry (read-only discovery).
 
-    Runs the awslabs cost-explorer MCP server on demand via ``uvx``. AWS
-    auth comes from the local credential chain: ``AWS_PROFILE`` and
+    AWS auth comes from the local credential chain: ``AWS_PROFILE`` and
     ``AWS_REGION`` are referenced through ``${...}`` env interpolation --
     AWS access keys are NEVER embedded in the generated config.
     """
     entry: Dict[str, Any] = {
-        "command": AWS_COST_MCP_COMMAND,
-        "args": [AWS_COST_MCP_PACKAGE],
+        "command": command,
+        "args": [package],
         "env": {
             # Reference the profile/region env vars -- never any secret.
             AWS_PROFILE_ENV: AWS_PROFILE_REF,
@@ -617,10 +626,35 @@ def _aws_cost_server_entry(kind: str) -> Dict[str, Any]:
     return entry
 
 
+def _aws_cost_server_entry(kind: str) -> Dict[str, Any]:
+    """The AWS Cost Explorer / Cost Anomaly MCP server entry (read-only).
+
+    Runs the awslabs cost-explorer MCP server on demand via ``uvx``. It
+    covers Cost Explorer AND Cost Anomaly Detection (GetAnomalies), the
+    entry point for the cost-anomaly RCA feature.
+    """
+    return _aws_uvx_server_entry(AWS_COST_MCP_COMMAND, AWS_COST_MCP_PACKAGE,
+                                 kind)
+
+
+def _aws_cloudwatch_server_entry(kind: str) -> Dict[str, Any]:
+    """The AWS CloudWatch MCP server entry (read-only discovery).
+
+    Runs the awslabs cloudwatch MCP server on demand via ``uvx``. It
+    exposes CloudWatch metrics and Logs Insights over existing log data
+    (e.g. VPC Flow Logs) for cross-AZ byte attribution -- read of DATA
+    only, no infrastructure is created or mutated.
+    """
+    return _aws_uvx_server_entry(AWS_CLOUDWATCH_MCP_COMMAND,
+                                 AWS_CLOUDWATCH_MCP_PACKAGE, kind)
+
+
 def generate_mcp_config(grafana_url: str = "", kind: str = "claude",
                         n2g_context_path: str = "",
                         include_grafana: bool = True,
-                        include_aws_cost: bool = False) -> Dict[str, Any]:
+                        include_aws_cost: bool = False,
+                        include_aws_cloudwatch: bool = False
+                        ) -> Dict[str, Any]:
     """Build an MCP servers config for a local AI client.
 
     ``kind`` is ``claude`` | ``kiro`` | ``generic`` (all currently share
@@ -632,7 +666,10 @@ def generate_mcp_config(grafana_url: str = "", kind: str = "claude",
     ``${GRAFANA_SERVICE_ACCOUNT_TOKEN}``. When ``n2g_context_path`` is
     given a read-only filesystem server exposing that context is added.
     When ``include_aws_cost`` is true an ``aws-cost-explorer`` server
-    (awslabs Cost Explorer MCP via ``uvx``) is added, reading
+    (awslabs Cost Explorer MCP via ``uvx``, which also covers Cost
+    Anomaly Detection) is added; when ``include_aws_cloudwatch`` is true
+    an ``aws-cloudwatch`` server (awslabs CloudWatch MCP via ``uvx``, for
+    metrics + Logs Insights over VPC Flow Logs) is added. Both read
     ``AWS_PROFILE`` / ``AWS_REGION`` from the local credential chain --
     AWS keys are NEVER written into the returned config.
 
@@ -647,6 +684,8 @@ def generate_mcp_config(grafana_url: str = "", kind: str = "claude",
         servers["grafana"] = _grafana_server_entry(grafana_url, kind)
     if include_aws_cost:
         servers["aws-cost-explorer"] = _aws_cost_server_entry(kind)
+    if include_aws_cloudwatch:
+        servers["aws-cloudwatch"] = _aws_cloudwatch_server_entry(kind)
     if n2g_context_path:
         servers["nr2grafana-context"] = _context_server_entry(
             n2g_context_path, kind)
