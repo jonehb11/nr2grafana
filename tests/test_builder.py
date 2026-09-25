@@ -209,8 +209,13 @@ class RowsStrategyTests(unittest.TestCase):
         # NRQL uniques(appName) variable -> prometheus query variable
         app = tvars["app"]
         self.assertEqual(app["type"], "query")
-        self.assertEqual(app["definition"], "label_values(service_name)")
-        self.assertEqual(app["query"]["query"], "label_values(service_name)")
+        # ...scoped to the metric family FROM Transaction maps to.
+        self.assertEqual(
+            app["definition"],
+            "label_values(http_server_request_duration_seconds_count, "
+            "service_name)")
+        self.assertEqual(app["query"]["query"], app["definition"])
+        self.assertEqual(app["datasource"]["type"], "prometheus")
         self.assertTrue(app["multi"])
         self.assertTrue(app["includeAll"])
         # ENUM -> custom variable with default selected
@@ -440,3 +445,178 @@ class BuilderAdditionsTests(unittest.TestCase):
             "viz.line", "SELECT count(*) FROM Transaction FACET name "
                         "TIMESERIES", "byname")])[0]
         self.assertEqual(rep[0]["panel_title"], "byname [REVIEW]")
+
+
+class Iteration2BuilderTests(unittest.TestCase):
+    """Widget/variable-level fidelity: implied TIMESERIES, heatmap layouts,
+    time overrides, scoped variables."""
+
+    def _build(self, widgets, variables=None, cfg_updates=None):
+        from nr2grafana.config import load_config
+        from nr2grafana.grafana.builder import build_dashboards
+        from nr2grafana.model import parse_nr_dashboard
+        cfg = load_config()
+        cfg["label_map"].update(cfg_updates or {})
+        data = {"name": "Q", "pages": [{"name": "P", "widgets": widgets}],
+                "variables": variables or []}
+        return build_dashboards(parse_nr_dashboard(data), cfg)[0][1]
+
+    def _widget(self, title, viz, nrql, extra=None, col=1):
+        rc = {"nrqlQueries": [{"accountId": 1, "query": nrql}]}
+        rc.update(extra or {})
+        return {"title": title, "visualization": {"id": viz},
+                "layout": {"column": col, "row": 1, "width": 4, "height": 3},
+                "rawConfiguration": rc}
+
+    def _panel(self, dash, title):
+        return panel_by_title(dash, title)
+
+    def test_line_widget_without_timeseries_gets_a_range_query(self):
+        dash = self._build([self._widget(
+            "Line", "viz.line",
+            "SELECT count(*) FROM Transaction WHERE appName = 'c' "
+            "SINCE 1 hour ago")])
+        tgt = self._panel(dash, "Line")["targets"][0]
+        self.assertTrue(tgt["range"])
+        self.assertFalse(tgt["instant"])
+        self.assertIn("$__rate_interval", tgt["expr"])
+        self.assertIn("no TIMESERIES clause",
+                      self._panel(dash, "Line")["description"])
+
+    def test_billboard_with_timeseries_shows_a_sparkline(self):
+        dash = self._build([self._widget(
+            "Stat", "viz.billboard",
+            "SELECT count(*) FROM Transaction WHERE appName = 'c' TIMESERIES")])
+        self.assertEqual(self._panel(dash, "Stat")["options"]["graphMode"],
+                         "area")
+
+    def test_billboard_without_timeseries_has_no_sparkline(self):
+        dash = self._build([self._widget(
+            "Stat", "viz.billboard",
+            "SELECT count(*) FROM Transaction WHERE appName = 'c'")])
+        self.assertEqual(self._panel(dash, "Stat")["options"]["graphMode"],
+                         "none")
+
+    def test_facet_heatmap_keeps_series_as_rows(self):
+        dash = self._build([self._widget(
+            "Facet heat", "viz.heatmap",
+            "SELECT count(*) FROM Transaction WHERE appName = 'c' "
+            "FACET name TIMESERIES")])
+        p = self._panel(dash, "Facet heat")
+        tgt = p["targets"][0]
+        self.assertEqual(p["type"], "heatmap")
+        self.assertEqual(tgt["format"], "time_series")
+        self.assertEqual(tgt["legendFormat"], "{{http_route}}")
+        self.assertFalse(p["options"]["calculate"])
+
+    def test_histogram_heatmap_uses_le_buckets(self):
+        dash = self._build([self._widget(
+            "Hist heat", "viz.heatmap",
+            "SELECT histogram(duration, 10, 20) FROM Transaction "
+            "WHERE appName = 'c'")])
+        tgt = self._panel(dash, "Hist heat")["targets"][0]
+        self.assertEqual(tgt["format"], "heatmap")
+        self.assertEqual(tgt["legendFormat"], "{{le}}")
+
+    def test_y_axis_zero_and_other_series_note(self):
+        dash = self._build([self._widget(
+            "Zero", "viz.line",
+            "SELECT count(*) FROM Transaction WHERE appName = 'c' "
+            "FACET name LIMIT 5 TIMESERIES",
+            {"yAxisLeft": {"zero": True},
+             "facet": {"showOtherSeries": True}})])
+        p = self._panel(dash, "Zero")
+        self.assertEqual(p["fieldConfig"]["defaults"]["min"], 0)
+        self.assertIn("'Other' series", p["description"])
+
+    def test_billboard_comparison_note(self):
+        dash = self._build([self._widget(
+            "Cmp", "viz.billboard-comparison",
+            "SELECT count(*) FROM Transaction WHERE appName = 'c' "
+            "COMPARE WITH 1 day ago")])
+        p = self._panel(dash, "Cmp")
+        self.assertTrue(p["options"]["showPercentChange"])
+        self.assertIn("COMPARE WITH target", p["description"])
+
+    def test_calendar_relative_ranges_become_time_overrides(self):
+        dash = self._build([
+            self._widget("A", "viz.line",
+                         "SELECT count(*) FROM Transaction SINCE 1 hour ago "
+                         "TIMESERIES"),
+            self._widget("B", "viz.line",
+                         "SELECT count(*) FROM Transaction SINCE 1 hour ago "
+                         "TIMESERIES", col=5),
+            self._widget("Today", "viz.billboard",
+                         "SELECT count(*) FROM Transaction SINCE today",
+                         col=9),
+            self._widget("Yesterday", "viz.line",
+                         "SELECT count(*) FROM Transaction SINCE yesterday "
+                         "TIMESERIES 5 minutes", col=13),
+        ])
+        self.assertEqual(dash["time"], {"from": "now-1h", "to": "now"})
+        self.assertEqual(self._panel(dash, "Today")["timeFrom"], "now/d")
+        yesterday = self._panel(dash, "Yesterday")
+        self.assertEqual(yesterday["timeFrom"], "now-1d/d")
+        self.assertEqual(yesterday["interval"], "5m")
+        self.assertNotIn("timeFrom", self._panel(dash, "A"))
+
+    def test_nrql_variables_are_scoped_per_datasource_family(self):
+        variables = [
+            {"name": "app", "title": "App", "type": "NRQL",
+             "isMultiSelection": True,
+             "nrqlQuery": {"accountIds": [1], "query":
+                           "SELECT uniques(appName) FROM Transaction "
+                           "WHERE environment = 'prod'"}},
+            {"name": "host", "title": "Host", "type": "NRQL",
+             "nrqlQuery": {"accountIds": [1], "query":
+                           "SELECT count(*) FROM SystemSample FACET hostname"}},
+            {"name": "svc", "title": "Svc", "type": "NRQL",
+             "nrqlQuery": {"accountIds": [1], "query":
+                           "SELECT uniques(service.name) FROM Log "
+                           "WHERE level = 'error'"}},
+            {"name": "span_svc", "title": "Span svc", "type": "NRQL",
+             "nrqlQuery": {"accountIds": [1], "query":
+                           "SELECT uniques(service.name) FROM Span"}},
+            {"name": "mhost", "title": "Metric host", "type": "NRQL",
+             "nrqlQuery": {"accountIds": [1], "query":
+                           "SELECT uniques(host) FROM Metric WHERE metricName"
+                           " = 'apm.service.transaction.duration' AND "
+                           "appName = 'c'"}},
+            {"name": "raw", "title": "Raw", "type": "NRQL",
+             "nrqlQuery": {"accountIds": [1], "query":
+                           "SELECT count(*) FROM Transaction"}},
+        ]
+        dash = self._build(
+            [self._widget("W", "viz.line",
+                          "SELECT count(*) FROM Transaction TIMESERIES")],
+            variables, {"environment": "deployment_environment",
+                        "hostname": "instance"})
+        tvars = {v["name"]: v for v in dash["templating"]["list"]}
+        app = tvars["app"]
+        self.assertEqual(app["datasource"]["type"], "prometheus")
+        self.assertEqual(
+            app["definition"],
+            'label_values(http_server_request_duration_seconds_count{'
+            'deployment_environment="prod"}, service_name)')
+        self.assertEqual(app["query"]["query"], app["definition"])
+        self.assertTrue(app["multi"])
+        self.assertEqual(tvars["host"]["definition"],
+                         "label_values(node_uname_info, instance)")
+        svc = tvars["svc"]
+        self.assertEqual(svc["datasource"]["type"], "loki")
+        self.assertEqual(svc["query"], {
+            "type": 1, "label": "service_name",
+            "stream": '{level=~"(?i)error"}',
+            "refId": "LokiVariableQueryEditor-VariableQuery"})
+        span = tvars["span_svc"]
+        self.assertEqual(span["datasource"]["type"], "tempo")
+        self.assertEqual(span["query"]["label"], "resource.service.name")
+        self.assertEqual(
+            tvars["mhost"]["definition"],
+            'label_values(http_server_request_duration_seconds_count{'
+            'service_name="c"}, instance)')
+        # No enumerable attribute -> textbox with a warning label.
+        self.assertEqual(tvars["raw"]["type"], "textbox")
+        from nr2grafana.grafana.validate import validate_dashboard_full
+        res = validate_dashboard_full(dash)
+        self.assertEqual([e for e in res["errors"] if "variable" in e], [])

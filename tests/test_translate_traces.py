@@ -166,3 +166,63 @@ class StatusAndMetricsTests(unittest.TestCase):
         t = tr("SELECT average(customAttr) FROM Span WHERE service.name = "
                "'c' TIMESERIES")
         self.assertEqual(t.confidence, "untranslatable")
+
+
+class TypedAttributeTests(unittest.TestCase):
+    """TraceQL is typed: int attributes compare with numbers, never with
+    strings or regexes."""
+
+    def test_status_code_string_literal_becomes_an_int(self):
+        t = tr("SELECT * FROM Span WHERE http.statusCode = '500' "
+               "AND service.name = 'x'")
+        self.assertEqual(
+            t.expr,
+            '{ span.http.response.status_code = 500 && '
+            'resource.service.name = "x" }')
+
+    def test_in_list_on_int_attribute_is_an_equality_alternation(self):
+        t = tr("SELECT * FROM Span WHERE http.statusCode IN (500, 502, 503)")
+        self.assertEqual(
+            t.expr,
+            "{ span.http.response.status_code = 500 || "
+            "span.http.response.status_code = 502 || "
+            "span.http.response.status_code = 503 }")
+
+    def test_not_in_list_on_int_attribute(self):
+        t = tr("SELECT * FROM Span WHERE http.statusCode NOT IN ('500', '502')")
+        self.assertEqual(
+            t.expr,
+            "{ span.http.response.status_code != 500 && "
+            "span.http.response.status_code != 502 }")
+
+    def test_status_class_like_becomes_a_band(self):
+        t = tr("SELECT * FROM Span WHERE http.statusCode LIKE '5%'")
+        self.assertEqual(
+            t.expr,
+            "{ span.http.response.status_code >= 500 && "
+            "span.http.response.status_code < 600 }")
+
+    def test_status_class_not_like(self):
+        t = tr("SELECT * FROM Span WHERE http.statusCode NOT LIKE '50%'")
+        self.assertEqual(
+            t.expr,
+            "{ span.http.response.status_code < 500 || "
+            "span.http.response.status_code >= 510 }")
+
+    def test_like_on_another_int_attribute_is_dropped_with_a_note(self):
+        t = tr("SELECT * FROM Span WHERE net.peer.port LIKE '8%'")
+        self.assertEqual(t.expr, "{ }")
+        self.assertTrue(any("integer attribute" in n for n in t.notes))
+
+    def test_string_attribute_in_list_stays_an_anchored_regex(self):
+        t = tr("SELECT * FROM Span WHERE http.method IN ('GET', 'POST')")
+        self.assertEqual(t.expr,
+                         '{ span.http.request.method =~ "^(?:GET|POST)$" }')
+
+    def test_variable_field_mapping(self):
+        from nr2grafana.translate.traces import variable_field
+        self.assertEqual(variable_field("service.name"),
+                         "resource.service.name")
+        self.assertEqual(variable_field("http.statusCode"),
+                         "span.http.response.status_code")
+        self.assertEqual(variable_field("custom.attr"), ".custom.attr")

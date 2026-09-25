@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-from ..nrql.parser import Attr, Func, NrqlParseError, Star, parse_nrql
+from ..nrql.parser import (
+    Attr, Func, NrqlParseError, Star, TimeseriesSpec, parse_nrql,
+)
 from .common import (
     APPROXIMATE, EXACT, NEEDS_REVIEW, UNTRANSLATABLE, Translation,
     Untranslatable, route_event_type,
@@ -36,9 +38,11 @@ def _timing_notes(q, t) -> None:
                "series will look more stepped than in NR" % ts.slide_by,
                APPROXIMATE)
     if ts is not None and ts.interval_seconds:
+        t.notes.append("interval:%s" % _interval_text(ts.interval_seconds))
         t.notes.append(
-            "TIMESERIES %s: Grafana buckets by the query interval; set "
-            "the panel's 'Min interval' to %s to mirror NR bucketing"
+            "TIMESERIES %s: the panel's min interval is set to %s so "
+            "Grafana buckets the way New Relic did (a wider dashboard "
+            "range still widens the step)"
             % (_interval_text(ts.interval_seconds),
                _interval_text(ts.interval_seconds)))
     if q.facet and t.group_by and not isinstance(q.limit, int):
@@ -119,15 +123,35 @@ def _time_hints(q, t: Translation) -> None:
                    "dashboard default range applies" % q.since, NEEDS_REVIEW)
 
 
-def translate_query(nrql_text: str, cfg: Dict[str, Any]) -> Translation:
+# Widget kinds that plot over time: New Relic renders them only with a
+# TIMESERIES query, so a query lacking the clause still means "over time".
+_TIME_CHART_VIZ = {"viz.line", "viz.area", "viz.stacked-bar", "viz.sparkline",
+                   "viz.scatter"}
+
+
+def _imply_timeseries(q, widget_viz: str) -> bool:
+    if widget_viz not in _TIME_CHART_VIZ or q.timeseries is not None:
+        return False
+    if not any(isinstance(i.expr, Func) for i in q.select):
+        return False
+    q.timeseries = TimeseriesSpec()
+    return True
+
+
+def translate_query(nrql_text: str, cfg: Dict[str, Any],
+                    widget_viz: str = "") -> Translation:
     """Translate one NRQL string. Never raises: untranslatable/broken
-    queries come back as Translation(confidence='untranslatable')."""
+    queries come back as Translation(confidence='untranslatable').
+
+    ``widget_viz`` (the NR visualization id) lets a time chart imply
+    TIMESERIES when the query omits it."""
     try:
         q = parse_nrql(nrql_text)
     except NrqlParseError as e:
         t = Translation(confidence=UNTRANSLATABLE)
         t.notes.append("NRQL could not be parsed: %s" % e)
         return t
+    implied = _imply_timeseries(q, widget_viz)
 
     family = route_event_type(q.from_, cfg)
     try:
@@ -159,6 +183,11 @@ def translate_query(nrql_text: str, cfg: Dict[str, Any]) -> Translation:
                % "; ".join(repr(x) for x in q.extras), NEEDS_REVIEW)
     if t.confidence != UNTRANSLATABLE:
         _timing_notes(q, t)
+        if implied:
+            t.note("the NRQL has no TIMESERIES clause but a %s widget plots "
+                   "over time; translated as a range query (one point per "
+                   "Grafana interval) — add TIMESERIES in New Relic to make "
+                   "this exact" % widget_viz, APPROXIMATE)
     if len(q.from_) > 1:
         t.note("query selects FROM multiple event types (%s); only %r was "
                "translated" % (", ".join(q.from_), q.from_[0]), NEEDS_REVIEW)

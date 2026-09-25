@@ -317,3 +317,23 @@ class DeepValidationTests(unittest.TestCase):
         d["panels"][0].pop("targets")
         self.assertTrue(any("expanded row" in e
                             for e in validate_dashboard_full(d)["errors"]))
+
+
+class VariableQueryShapeTests(unittest.TestCase):
+    def test_object_variable_queries_are_not_empty(self):
+        from nr2grafana.grafana.validate import validate_dashboard_full
+        dash = make_dash(templating={"list": [
+            {"name": "svc", "type": "query",
+             "datasource": {"type": "loki", "uid": "l"},
+             "query": {"type": 1, "label": "service_name", "stream": ""}},
+            {"name": "span", "type": "query",
+             "datasource": {"type": "tempo", "uid": "t"},
+             "query": {"type": 1, "label": "resource.service.name"}},
+            {"name": "empty", "type": "query",
+             "datasource": {"type": "prometheus", "uid": "p"},
+             "query": {"query": ""}},
+        ]})
+        res = validate_dashboard_full(dash)
+        empties = [e for e in res["errors"] if "empty query" in e]
+        self.assertEqual(len(empties), 1)
+        self.assertIn("'empty'", empties[0])

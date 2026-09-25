@@ -21,7 +21,7 @@ class MatcherSplitTests(unittest.TestCase):
                "AND level = 'error' AND message LIKE '%payment%' LIMIT 100")
         self.assertEqual(
             t.expr,
-            '{service_name="checkout", level="error"} |~ "(?i).*payment.*"')
+            '{service_name="checkout", level=~"(?i)error"} |~ "(?i).*payment.*"')
         self.assertEqual(t.datasource, "loki")
         self.assertEqual(t.confidence, EXACT)
 
@@ -203,7 +203,7 @@ class FilterIfTests(unittest.TestCase):
                "WHERE service.name = 'x' TIMESERIES")
         self.assertEqual(
             t.expr,
-            'sum(count_over_time({service_name="x", level="error"} '
+            'sum(count_over_time({service_name="x", level=~"(?i)error"} '
             '[$__auto]))')
 
     def test_filter_supports_unwrap_aggregations(self):
@@ -211,7 +211,7 @@ class FilterIfTests(unittest.TestCase):
                "FROM Log WHERE service.name = 'x' TIMESERIES")
         self.assertEqual(
             t.expr,
-            'avg_over_time({service_name="x", level="error"} | json '
+            'avg_over_time({service_name="x", level=~"(?i)error"} | json '
             '| unwrap duration | __error__="" [$__auto]) by ()')
 
     def test_count_if_becomes_filtered_count(self):
@@ -219,7 +219,7 @@ class FilterIfTests(unittest.TestCase):
                "WHERE service.name = 'x' TIMESERIES")
         self.assertEqual(
             t.expr,
-            'sum(count_over_time({service_name="x", level="error"} '
+            'sum(count_over_time({service_name="x", level=~"(?i)error"} '
             '[$__auto]))')
         self.assertTrue(any("filtered aggregation" in n for n in t.notes))
 
@@ -228,7 +228,7 @@ class FilterIfTests(unittest.TestCase):
                "WHERE service.name = 'x'")
         self.assertEqual(
             t.expr,
-            'sum(count_over_time({service_name="x", level="error"} '
+            'sum(count_over_time({service_name="x", level=~"(?i)error"} '
             '[$__range]))')
 
     def test_if_with_nontrivial_else_untranslatable(self):
@@ -275,7 +275,7 @@ class LogsAdvancedTests(unittest.TestCase):
                "FROM Log WHERE service.name = 'x' TIMESERIES")
         self.assertEqual(
             t.expr,
-            '(sum(count_over_time({service_name="x", level="error"} '
+            '(sum(count_over_time({service_name="x", level=~"(?i)error"} '
             '[$__auto]))) / (sum(count_over_time({service_name="x"} '
             '[$__auto])))')
         self.assertIn("unit:percentunit", t.notes)
@@ -289,7 +289,7 @@ class LogsAdvancedTests(unittest.TestCase):
     def test_latest_message_is_a_one_line_logs_panel(self):
         t = tr("SELECT latest(message) FROM Log WHERE service.name = 'x' "
                "AND level = 'error'")
-        self.assertEqual(t.expr, '{service_name="x", level="error"}')
+        self.assertEqual(t.expr, '{service_name="x", level=~"(?i)error"}')
         self.assertIn("panel-hint:logs", t.notes)
         self.assertIn("maxlines:1", t.notes)
 
@@ -312,7 +312,7 @@ class LogsAdvancedTests(unittest.TestCase):
         t = tr("SELECT count(*) FROM Log WHERE service.name = 'a' OR "
                "level = 'error' TIMESERIES")
         self.assertIn('{service_name=~".+"}', t.expr)
-        self.assertIn('service_name="a" or level="error"', t.expr)
+        self.assertIn('service_name="a" or level=~"(?i)error"', t.expr)
         self.assertEqual(t.confidence, NEEDS_REVIEW)
 
     def test_or_mixing_message_is_dropped_with_note(self):
@@ -328,3 +328,41 @@ class LogsAdvancedTests(unittest.TestCase):
         self.assertEqual(t.datasource, "loki")
         self.assertTrue(t.expr.startswith('{job="audit"}'))
         self.assertIn('actor="root"', t.expr)
+
+
+class LevelCaseTests(unittest.TestCase):
+    """Log levels match case-insensitively (Loki is usually lowercase)."""
+
+    def test_level_in_list(self):
+        t = tr("SELECT count(*) FROM Log WHERE level IN ('ERROR', 'WARN') "
+               "AND service.name = 'x' TIMESERIES")
+        self.assertEqual(
+            t.expr,
+            'sum(count_over_time({level=~"(?i)ERROR|WARN", service_name="x"} '
+            '[$__auto]))')
+        self.assertTrue(any("case-insensitively" in n for n in t.notes))
+
+    def test_level_inequality(self):
+        t = tr("SELECT count(*) FROM Log WHERE severity != 'error' TIMESERIES")
+        self.assertEqual(t.expr,
+                         'sum(count_over_time({level!~"(?i)error"} [$__auto]))')
+
+    def test_message_like_with_an_embedded_variable(self):
+        t = tr("SELECT count(*) FROM Log WHERE message LIKE '%{{needle}}%' "
+               "AND level = 'ERROR' TIMESERIES")
+        self.assertEqual(
+            t.expr,
+            'sum(count_over_time({level=~"(?i)ERROR"} '
+            '|~ "(?i).*${needle:regex}.*" [$__auto]))')
+
+    def test_variable_scope_is_the_stream_selector(self):
+        from nr2grafana.nrql.parser import parse_nrql
+        from nr2grafana.translate.logs import variable_scope
+        cfg = load_config()
+        self.assertEqual(
+            variable_scope(parse_nrql("SELECT uniques(service.name) FROM Log "
+                                      "WHERE level = 'error'"), cfg),
+            '{level=~"(?i)error"}')
+        self.assertEqual(
+            variable_scope(parse_nrql("SELECT uniques(service.name) FROM Log "
+                                      "WHERE message LIKE '%x%'"), cfg), "")

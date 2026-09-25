@@ -97,13 +97,13 @@ class TransactionTests(unittest.TestCase):
                "TIMESERIES 30 minutes SINCE 1 day ago COMPARE WITH 1 week ago")
         self.assertEqual(
             t.expr,
-            'sum(increase(%s_count{service_name="checkout"}'
-            '[$__rate_interval]))' % HTTP)
+            'sum(rate(%s_count{service_name="checkout"}'
+            '[$__rate_interval])) * $__interval_ms / 1000' % HTTP)
         self.assertEqual(len(t.extra), 1)
         self.assertEqual(
             t.extra[0].expr,
-            'sum(increase(%s_count{service_name="checkout"}'
-            '[$__rate_interval] offset 1w))' % HTTP)
+            'sum(rate(%s_count{service_name="checkout"}'
+            '[$__rate_interval] offset 1w)) * $__interval_ms / 1000' % HTTP)
         self.assertEqual(t.extra[0].legend, "(1w earlier)")
         self.assertIn("timefrom:now-1d", t.notes)
 
@@ -142,7 +142,8 @@ class MetricEventTests(unittest.TestCase):
     def test_counter_heuristic_count(self):
         t = tr("SELECT count(orders) FROM Metric TIMESERIES")
         self.assertEqual(t.expr,
-                         "sum(increase(orders_total[$__rate_interval]))")
+                         "sum(rate(orders_total[$__rate_interval])) * "
+                         "$__interval_ms / 1000")
         self.assertEqual(t.query_type, "range")
         self.assertEqual(t.confidence, NEEDS_REVIEW)
 
@@ -168,8 +169,9 @@ class MetricEventTests(unittest.TestCase):
                "FACET k8s.namespace.name TIMESERIES")
         self.assertEqual(
             t.expr,
-            'sum by (namespace)(increase(checkout_orders_completed_total{'
-            'deployment_environment="prod"}[$__rate_interval]))')
+            'sum by (namespace)(rate(checkout_orders_completed_total{'
+            'deployment_environment="prod"}[$__rate_interval])) * '
+            '$__interval_ms / 1000')
         self.assertEqual(t.legend, "{{namespace}}")
         self.assertEqual(t.confidence, NEEDS_REVIEW)
 
@@ -202,8 +204,9 @@ class SpanMetricsTests(unittest.TestCase):
                "TIMESERIES")
         self.assertEqual(
             t.expr,
-            'sum(increase(traces_span_metrics_calls_total{'
-            'service_name="checkout"}[$__rate_interval]))')
+            'sum(rate(traces_span_metrics_calls_total{'
+            'service_name="checkout"}[$__rate_interval])) * '
+            '$__interval_ms / 1000')
         self.assertEqual(t.datasource, "prometheus")
         self.assertEqual(t.confidence, NEEDS_REVIEW)
 
@@ -326,9 +329,9 @@ class WhereOperatorTests(unittest.TestCase):
                "AND duration > 1 TIMESERIES")
         self.assertEqual(
             t.expr,
-            'sum(increase(%s_count{service_name="c"}[$__rate_interval])) - '
-            'sum(increase(%s_bucket{service_name="c",le=~"1|1\\\\.0"}'
-            '[$__rate_interval]))' % (HTTP, HTTP))
+            '(sum(rate(%s_count{service_name="c"}[$__rate_interval])) - '
+            'sum(rate(%s_bucket{service_name="c",le=~"1|1\\\\.0"}'
+            '[$__rate_interval]))) * $__interval_ms / 1000' % (HTTP, HTTP))
         self.assertEqual(t.confidence, NEEDS_REVIEW)
         self.assertTrue(any("bucket boundary" in n for n in t.notes))
 
@@ -402,8 +405,9 @@ class WhereOperatorTests(unittest.TestCase):
         t = tr("SELECT count(*) FROM Span WHERE error IS TRUE TIMESERIES")
         self.assertEqual(
             t.expr,
-            'sum(increase(traces_span_metrics_calls_total{'
-            'status_code="STATUS_CODE_ERROR"}[$__rate_interval]))')
+            'sum(rate(traces_span_metrics_calls_total{'
+            'status_code="STATUS_CODE_ERROR"}[$__rate_interval])) * '
+            '$__interval_ms / 1000')
 
 
 class IfCasesTests(unittest.TestCase):
@@ -444,14 +448,14 @@ class IfCasesTests(unittest.TestCase):
                "WHERE httpResponseCode < 500 AS 'ok') TIMESERIES")
         self.assertEqual(
             t.expr,
-            'sum(increase(%s_count{http_response_status_code=~"5.."}'
-            '[$__rate_interval]))' % HTTP)
+            'sum(rate(%s_count{http_response_status_code=~"5.."}'
+            '[$__rate_interval])) * $__interval_ms / 1000' % HTTP)
         self.assertEqual(t.legend, "errors")
         self.assertEqual(len(t.extra), 1)
         self.assertEqual(
             t.extra[0].expr,
-            'sum(increase(%s_count{http_response_status_code=~"[1234].."}'
-            '[$__rate_interval]))' % HTTP)
+            'sum(rate(%s_count{http_response_status_code=~"[1234].."}'
+            '[$__rate_interval])) * $__interval_ms / 1000' % HTTP)
         self.assertEqual(t.extra[0].legend, "ok")
         self.assertTrue(any("'Other' bucket" in n for n in t.notes))
 
@@ -533,11 +537,13 @@ class ConstructCoverageTests(unittest.TestCase):
 
     def test_timeseries_interval_hint_noted(self):
         t = tr("SELECT count(*) FROM Transaction TIMESERIES 30 minutes")
-        self.assertTrue(any("'Min interval' to 30m" in n for n in t.notes))
+        self.assertIn("interval:30m", t.notes)
+        self.assertTrue(any("min interval is set to 30m" in n
+                            for n in t.notes))
 
     def test_timeseries_auto_has_no_interval_hint(self):
         t = tr("SELECT count(*) FROM Transaction TIMESERIES AUTO")
-        self.assertFalse(any("Min interval" in n for n in t.notes))
+        self.assertFalse(any(n.startswith("interval:") for n in t.notes))
 
     def test_facet_without_limit_cardinality_note(self):
         t = tr("SELECT count(*) FROM Transaction FACET name TIMESERIES")
@@ -620,8 +626,10 @@ class RatioTests(unittest.TestCase):
         t = tr("SELECT count(errors)/count(requests) FROM Metric TIMESERIES")
         self.assertEqual(
             t.expr,
-            "(sum(increase(errors_total[$__rate_interval]))) / "
-            "(sum(increase(requests_total[$__rate_interval])))")
+            "(sum(rate(errors_total[$__rate_interval]))) / "
+            "(sum(rate(requests_total[$__rate_interval])))")
+        # ...and the per-step factor of the two counts cancelled out.
+        self.assertNotIn("$__interval_ms", t.expr)
         # count/count is a proportion in [0, 1].
         self.assertIn("unit:percentunit", t.notes)
 
@@ -694,3 +702,181 @@ class GaugePercentileTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EmbeddedVariableTests(unittest.TestCase):
+    """{{var}} placeholders that are part of a longer literal."""
+
+    def test_variable_inside_like_pattern(self):
+        t = tr("SELECT count(*) FROM Transaction WHERE host LIKE '%{{host}}%' "
+               "TIMESERIES")
+        self.assertEqual(
+            t.expr,
+            'sum(rate(%s_count{instance=~"(?i).*${host:regex}.*"}'
+            '[$__rate_interval])) * $__interval_ms / 1000' % HTTP)
+
+    def test_variable_inside_equality_literal(self):
+        t = tr("SELECT count(*) FROM Transaction WHERE appName = 'prod-{{svc}}' "
+               "SINCE 1 hour ago")
+        self.assertEqual(
+            t.expr,
+            'sum(increase(%s_count{service_name=~"prod-${svc:regex}"}'
+            '[$__range]))' % HTTP)
+
+    def test_variable_inside_rlike(self):
+        t = tr("SELECT count(*) FROM Transaction WHERE appName RLIKE "
+               "'prod-{{svc}}.*'")
+        self.assertEqual(
+            t.expr,
+            'sum(increase(%s_count{service_name=~"prod-${svc:regex}.*"}'
+            '[$__range]))' % HTTP)
+
+    def test_variable_inside_in_list(self):
+        t = tr("SELECT count(*) FROM Transaction WHERE appName IN "
+               "('a-{{env}}', 'b')")
+        self.assertEqual(
+            t.expr,
+            'sum(increase(%s_count{service_name=~"a-${env:regex}|b"}'
+            '[$__range]))' % HTTP)
+
+    def test_embedded_variable_is_not_merged_into_same_attribute_or(self):
+        t = tr("SELECT count(*) FROM Transaction WHERE appName = 'a-{{env}}' "
+               "OR appName = 'b'")
+        self.assertEqual(
+            t.expr,
+            'sum((increase(%s_count{service_name=~"a-${env:regex}"}[$__range])'
+            ' or increase(%s_count{service_name="b"}[$__range])))'
+            % (HTTP, HTTP))
+
+    def test_variable_as_facet_attribute(self):
+        t = tr("SELECT count(*) FROM Transaction WHERE appName = 'x' "
+               "FACET {{facetAttr}} TIMESERIES")
+        self.assertEqual(
+            t.expr,
+            'sum by ($facetAttr)(rate(%s_count{service_name="x"}'
+            '[$__rate_interval])) * $__interval_ms / 1000' % HTTP)
+        self.assertEqual(t.legend, "{{$facetAttr}}")
+        self.assertFalse(any("not in label_map" in n for n in t.notes))
+
+
+class PerStepCountTests(unittest.TestCase):
+    """TIMESERIES counts are rate * step; instant counts are the increase
+    over the whole range."""
+
+    def test_instant_count_keeps_increase_over_range(self):
+        t = tr("SELECT count(*) FROM Transaction WHERE appName = 'c' "
+               "SINCE 1 hour ago")
+        self.assertEqual(
+            t.expr,
+            'sum(increase(%s_count{service_name="c"}[$__range]))' % HTTP)
+        self.assertNotIn("$__interval_ms", t.expr)
+
+    def test_percentage_cancels_the_step_factor(self):
+        t = tr("SELECT percentage(count(*), WHERE error IS TRUE) "
+               "FROM Transaction WHERE appName = 'c' TIMESERIES")
+        self.assertEqual(
+            t.expr,
+            '100 * (sum(rate(%s_count{service_name="c",'
+            'http_response_status_code=~"5.."}[$__rate_interval]))) / '
+            '(sum(rate(%s_count{service_name="c"}[$__rate_interval])))'
+            % (HTTP, HTTP))
+
+    def test_filter_over_count_ratio_cancels(self):
+        t = tr("SELECT filter(count(*), WHERE error IS TRUE) / count(*) "
+               "FROM Transaction WHERE appName = 'c' TIMESERIES")
+        self.assertEqual(
+            t.expr,
+            '(sum(rate(%s_count{service_name="c",'
+            'http_response_status_code=~"5.."}[$__rate_interval]))) / '
+            '(sum(rate(%s_count{service_name="c"}[$__rate_interval])))'
+            % (HTTP, HTTP))
+        self.assertIn("unit:percentunit", t.notes)
+
+    def test_sum_over_count_average_cancels(self):
+        t = tr("SELECT sum(duration) / count(*) FROM Transaction "
+               "WHERE appName = 'c' TIMESERIES")
+        self.assertEqual(
+            t.expr,
+            '(sum(rate(%s_sum{service_name="c"}[$__rate_interval]))) / '
+            '(sum(rate(%s_count{service_name="c"}[$__rate_interval])))'
+            % (HTTP, HTTP))
+
+    def test_difference_keeps_both_factors(self):
+        t = tr("SELECT count(*) - filter(count(*), WHERE error IS TRUE) "
+               "FROM Transaction WHERE appName = 'c' TIMESERIES")
+        self.assertEqual(
+            t.expr,
+            '(sum(rate(%s_count{service_name="c"}[$__rate_interval])) * '
+            '$__interval_ms / 1000) - (sum(rate(%s_count{service_name="c",'
+            'http_response_status_code=~"5.."}[$__rate_interval])) * '
+            '$__interval_ms / 1000)' % (HTTP, HTTP))
+
+    def test_bucket_band_is_scaled_once(self):
+        t = tr("SELECT count(*) FROM Transaction WHERE appName = 'c' "
+               "AND duration > 1 AND duration <= 4 TIMESERIES")
+        self.assertEqual(
+            t.expr,
+            '(sum(rate(%s_bucket{service_name="c",le=~"4|4\\\\.0"}'
+            '[$__rate_interval])) - sum(rate(%s_bucket{service_name="c",'
+            'le=~"1|1\\\\.0"}[$__rate_interval]))) * $__interval_ms / 1000'
+            % (HTTP, HTTP))
+
+    def test_nr_rate_is_untouched(self):
+        t = tr("SELECT rate(count(*), 1 minute) FROM Transaction "
+               "WHERE appName = 'c' TIMESERIES")
+        self.assertEqual(
+            t.expr,
+            'sum(rate(%s_count{service_name="c"}[$__rate_interval])) * 60'
+            % HTTP)
+
+    def test_macro_substitution_handles_interval_ms(self):
+        from nr2grafana.livecheck import substitute
+        self.assertEqual(
+            substitute("sum(rate(m[$__rate_interval])) * $__interval_ms / 1000"),
+            "sum(rate(m[5m])) * 60000 / 1000")
+
+
+class SpanKindTests(unittest.TestCase):
+    def test_span_kind_uses_enum_names(self):
+        t = tr("SELECT count(*) FROM Span WHERE span.kind = 'server' "
+               "AND service.name = 'x' TIMESERIES")
+        self.assertEqual(
+            t.expr,
+            'sum(rate(traces_span_metrics_calls_total{'
+            'span_kind="SPAN_KIND_SERVER",service_name="x"}'
+            '[$__rate_interval])) * $__interval_ms / 1000')
+
+    def test_span_kind_in_list(self):
+        t = tr("SELECT count(*) FROM Span WHERE span.kind IN "
+               "('server', 'consumer') FACET service.name")
+        self.assertEqual(
+            t.expr,
+            'sum by (service_name)(increase(traces_span_metrics_calls_total{'
+            'span_kind=~"SPAN_KIND_SERVER|SPAN_KIND_CONSUMER"}[$__range]))')
+
+
+class ImpliedTimeseriesTests(unittest.TestCase):
+    NRQL = "SELECT count(*) FROM Transaction WHERE appName = 'c' SINCE 1 hour ago"
+
+    def test_line_widget_implies_a_range_query(self):
+        t = translate_query(self.NRQL, load_config(), "viz.line")
+        self.assertEqual(t.query_type, "range")
+        self.assertIn("$__rate_interval", t.expr)
+        self.assertEqual(t.confidence, APPROXIMATE)
+        self.assertTrue(any("no TIMESERIES clause" in n for n in t.notes))
+
+    def test_billboard_keeps_the_instant_query(self):
+        t = translate_query(self.NRQL, load_config(), "viz.billboard")
+        self.assertEqual(t.query_type, "instant")
+        self.assertFalse(any("no TIMESERIES clause" in n for n in t.notes))
+
+    def test_explicit_timeseries_is_not_noted(self):
+        t = translate_query(self.NRQL + " TIMESERIES", load_config(),
+                            "viz.line")
+        self.assertFalse(any("no TIMESERIES clause" in n for n in t.notes))
+
+    def test_raw_log_listing_is_not_turned_into_a_range_query(self):
+        t = translate_query("SELECT * FROM Log WHERE level = 'error'",
+                            load_config(), "viz.line")
+        self.assertEqual(t.expr, '{level=~"(?i)error"}')
+        self.assertFalse(any("no TIMESERIES clause" in n for n in t.notes))

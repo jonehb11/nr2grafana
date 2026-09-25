@@ -191,6 +191,7 @@ def subst(expr):
         (r'"\$\{[A-Za-z_][A-Za-z0-9_:]*\}"', '".+"'),
         (r'"\$[A-Za-z_][A-Za-z0-9_]*"', '".+"'),
         (r"\$__rate_interval", "5m"),
+        (r"\$__interval_ms", "60000"),
         (r"\$__interval", "1m"),
         (r"\$__range", "1h"),
         (r"\$__auto", "5m"),

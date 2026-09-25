@@ -176,6 +176,11 @@ def map_attr(name: str, cfg: Dict[str, Any]) -> Tuple[str, bool]:
     label_map = cfg.get("label_map", {})
     if name in label_map:
         return label_map[name], True
+    var = _VAR_RE.fullmatch(name.strip())
+    if var:
+        # FACET {{attr}} / WHERE {{attr}} = ...: Grafana interpolates the
+        # variable into the label position.
+        return "$" + grafana_var(var.group(1), cfg), True
     # Strip common NR prefixes then retry.
     for prefix in ("tags.", "attributes.", "resource.", "label.", "labels."):
         if name.startswith(prefix) and name[len(prefix):] in label_map:
@@ -227,6 +232,30 @@ def like_to_regex(pattern: str) -> str:
             out.append(".")
         else:
             out.append(regex_escape(ch))
+    return "".join(out)
+
+
+def has_embedded_variable(value: Any) -> bool:
+    """True for a string literal that contains a {{var}} placeholder as
+    part of a longer value ('%{{host}}%', 'prod-{{svc}}')."""
+    return isinstance(value, Lit) and isinstance(value.value, str) \
+        and _VAR_RE.search(value.value) is not None
+
+
+def var_aware_regex(raw: str, cfg: Dict[str, Any], like: bool = False) -> str:
+    """A literal embedding {{var}} placeholders -> regex: literal segments
+    are escaped (LIKE wildcards translated when ``like``) and each variable
+    becomes ${var:regex}, so Grafana escapes the selected value and a
+    multi-value selection still matches."""
+    out: List[str] = []
+    pos = 0
+    for m in _VAR_RE.finditer(raw):
+        seg = raw[pos:m.start()]
+        out.append(like_to_regex(seg) if like else regex_escape(seg))
+        out.append("${%s:regex}" % grafana_var(m.group(1), cfg))
+        pos = m.end()
+    seg = raw[pos:]
+    out.append(like_to_regex(seg) if like else regex_escape(seg))
     return "".join(out)
 
 
@@ -363,7 +392,8 @@ def _try_merge_or(cond: BoolOp, cfg: Dict[str, Any],
                 return None
             l, _ = map_attr(attr.name, cfg)
             val = item.right
-            if is_nr_variable(val) or isinstance(val, (Attr, Func, BinOp)):
+            if is_nr_variable(val) or has_embedded_variable(val) \
+                    or isinstance(val, (Attr, Func, BinOp)):
                 return None
             raw = _lit_str(val)
             if item.op == "=":
@@ -380,7 +410,8 @@ def _try_merge_or(cond: BoolOp, cfg: Dict[str, Any],
             if attr is None:
                 return None
             l, _ = map_attr(attr.name, cfg)
-            if any(is_nr_variable(v) for v in item.values):
+            if any(is_nr_variable(v) or has_embedded_variable(v)
+                   for v in item.values):
                 return None
             parts.extend(regex_escape(_lit_str(v)) for v in item.values)
         else:
@@ -411,7 +442,9 @@ def _leaf_matchers(cond: Any, negate: bool, cfg: Dict[str, Any],
             # IN ({{var}}) -> multi-value Grafana variable regex match
             return [Matcher(label, "!~" if neg else "=~",
                             "${%s:regex}" % grafana_var(var, cfg))]
-        alt = "|".join(regex_escape(_lit_str(v)) for v in cond.values)
+        alt = "|".join(
+            var_aware_regex(_lit_str(v), cfg) if has_embedded_variable(v)
+            else regex_escape(_lit_str(v)) for v in cond.values)
         if ci:
             alt = "(?i)" + alt
         return [Matcher(label, "!~" if neg else "=~", alt)]
@@ -531,6 +564,7 @@ def _cmp_to_matcher(cmp_: Cmp, cfg: Dict[str, Any], t: Translation,
                NEEDS_REVIEW)
         return []
     raw = "$%s" % var if var else _lit_str(val)
+    embedded = not var and has_embedded_variable(val)
 
     if op in ("=", "!="):
         m_op = "=" if op == "=" else "!="
@@ -540,6 +574,10 @@ def _cmp_to_matcher(cmp_: Cmp, cfg: Dict[str, Any], t: Translation,
             # Grafana multi-value vars need regex matching.
             return [Matcher(label, "=~" if m_op == "=" else "!~",
                             "${%s:regex}" % var)]
+        if embedded:
+            # 'prod-{{svc}}': the variable part must stay a variable.
+            return [Matcher(label, "=~" if m_op == "=" else "!~",
+                            ("(?i)" if ci else "") + var_aware_regex(raw, cfg))]
         if ci:
             return [Matcher(label, "=~" if m_op == "=" else "!~",
                             "(?i)" + regex_escape(raw))]
@@ -549,13 +587,21 @@ def _cmp_to_matcher(cmp_: Cmp, cfg: Dict[str, Any], t: Translation,
         if negate:
             m_op = flip(m_op)
         # NRQL LIKE is case-insensitive; RE2 needs an explicit flag.
-        pattern = ("(?i)" + like_to_regex(raw)) if not var \
-            else "${%s:regex}" % var
+        if var:
+            pattern = "${%s:regex}" % var
+        elif embedded:
+            # '%{{host}}%' -> .*${host:regex}.* (the braces are not text).
+            pattern = "(?i)" + var_aware_regex(raw, cfg, like=True)
+        else:
+            pattern = "(?i)" + like_to_regex(raw)
         return [Matcher(label, m_op, pattern)]
     if op in ("RLIKE", "NOT RLIKE"):
         m_op = "=~" if op == "RLIKE" else "!~"
         if negate:
             m_op = flip(m_op)
+        if embedded:
+            raw = _VAR_RE.sub(
+                lambda m: "${%s:regex}" % grafana_var(m.group(1), cfg), raw)
         return [Matcher(label, m_op, ("(?i)" + raw) if ci else raw)]
     if op in ("<", "<=", ">", ">="):
         t.note("comparison %s %s %s is not numeric; dropped"

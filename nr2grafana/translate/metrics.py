@@ -405,8 +405,47 @@ def _span_fixups(matchers: List[Matcher],
                 else "STATUS_CODE_UNSET"
             out.append(Matcher("status_code", m.op if m.op in ("=", "!=")
                                else "=", code))
+        elif m.label in ("span_kind", "kind") and _kind_values(m.value):
+            # span.kind = 'server' -> span_kind="SPAN_KIND_SERVER" (the
+            # OTel spanmetrics connector and Tempo both emit the enum name).
+            out.append(Matcher("span_kind", m.op, _kind_values(m.value)))
         else:
             out.append(m)
+    return out
+
+
+_SPAN_KINDS = ("server", "client", "producer", "consumer", "internal")
+
+
+def _kind_values(value: str) -> str:
+    """'server' / 'server|client' -> SPAN_KIND_SERVER[|SPAN_KIND_CLIENT]."""
+    parts = [p.strip() for p in value.split("|")]
+    if parts and all(p.lower() in _SPAN_KINDS for p in parts):
+        return "|".join("SPAN_KIND_" + p.upper() for p in parts)
+    return ""
+
+
+def _legacy_aws_fixups(ctx: "_Ctx", matchers: List[Matcher]) -> List[Matcher]:
+    """Legacy AWS sample events: `provider` picks the CloudWatch namespace
+    (consumed, not a label); label.<Tag> attributes are YACE tag_<Tag>."""
+    out: List[Matcher] = []
+    for m in matchers:
+        if m.label == "provider":
+            value = m.value[4:] if m.value.startswith("(?i)") else m.value
+            if m.op in ("=", "=~") and "|" not in value \
+                    and not value.startswith("$"):
+                ctx.aws_provider = value.replace("\\", "")
+            else:
+                ctx.t.note("WHERE provider %s %r does not name exactly one "
+                           "AWS resource type; the CloudWatch namespace "
+                           "could not be chosen — split the query per "
+                           "resource type" % (m.op, m.value), NEEDS_REVIEW)
+            continue
+        if m.label.startswith("label_"):
+            out.append(Matcher("tag_" + m.label[len("label_"):], m.op,
+                               m.value))
+            continue
+        out.append(m)
     return out
 
 
@@ -458,7 +497,11 @@ class _Ctx:
         etl = self.event.lower()
         # Event-specific attribute -> label conventions overlay the
         # generic label_map while translating this event type.
-        overlay = nrmetrics.EVENT_LABELS.get(etl)
+        overlay = dict(nrmetrics.EVENT_LABELS.get(etl) or {})
+        if etl in nrmetrics.LEGACY_AWS_EVENTS:
+            # label.<Tag> attributes of AWS samples are YACE tag_<Tag> labels.
+            for tag in set(re.findall(r"\blabel\.([A-Za-z0-9_]+)", q.raw or "")):
+                overlay["label." + tag] = "tag_" + tag
         if overlay:
             cfg = dict(cfg)
             merged = dict(cfg.get("label_map") or {})
@@ -470,6 +513,8 @@ class _Ctx:
                                "distributedtracesummary")
         self.is_apm_http = etl in ("transaction", "transactionerror") \
             or _uses_apm_http_metric(q)
+        self.is_legacy_aws = etl in nrmetrics.LEGACY_AWS_EVENTS
+        self.aws_provider = ""  # WHERE provider = '...' on legacy AWS events
         self.branches = cond_to_branches(q.where, cfg, t)
         # Numeric predicates captured while building the matchers belong
         # to the outer WHERE; each SELECT item may consume a copy.
@@ -482,6 +527,9 @@ class _Ctx:
                    "selectors (series are deduplicated before aggregation)"
                    % len(self.branches), APPROXIMATE)
         self.by = facet_labels(q, cfg, t)
+        if self.is_legacy_aws:
+            self.by = ["tag_" + l[len("label_"):] if l.startswith("label_")
+                       else l for l in self.by]
         if self.is_apm_http:
             if "span_name" in self.by or any(
                     src == "span_name" for _n, _r, src, _x in t.label_replace):
@@ -511,6 +559,8 @@ class _Ctx:
         return self.branches[0]
 
     def _fixups(self, matchers: List[Matcher]) -> List[Matcher]:
+        if self.is_legacy_aws:
+            return _legacy_aws_fixups(self, matchers)
         if self.is_span:
             return _span_fixups(matchers, self.cfg)
         if self.is_apm_http:
@@ -567,6 +617,20 @@ class _Ctx:
     def unit_hint(self, unit: str) -> None:
         if unit:
             self.t.notes.append("unit:%s" % unit)
+
+
+# NR's TIMESERIES counts events per bucket. In a Grafana range query the
+# per-bucket count is the per-second rate times the step width: rate() over
+# $__rate_interval is robust to scrape gaps, while increase() over
+# $__rate_interval over-counts by (rate_interval / interval).
+_PER_STEP = " * $__interval_ms / 1000"
+
+
+def _cancel_per_step(a: str, b: str) -> Tuple[str, str]:
+    """Both operands of a ratio carry the per-step factor -> it cancels."""
+    if a.endswith(_PER_STEP) and b.endswith(_PER_STEP):
+        return a[:-len(_PER_STEP)], b[:-len(_PER_STEP)]
+    return a, b
 
 
 def _wrap_topk(ctx: _Ctx, expr: str) -> str:
@@ -652,6 +716,12 @@ def _agg_expr(ctx: _Ctx, fn: Func, src: MetricSource,
                    "matcher for this metric; dropped — apply it manually"
                    % (p.attr, p.op, _fmt_num(p.value)), NEEDS_REVIEW)
 
+    # Windowed counts: see _PER_STEP.
+    inc = "rate" if ctx.is_range else "increase"
+
+    def per_step(expr: str) -> str:
+        return expr + _PER_STEP if ctx.is_range else expr
+
     if name in ("average", "avg"):
         leftover(numeric)
         if src.mtype == "histogram":
@@ -669,9 +739,9 @@ def _agg_expr(ctx: _Ctx, fn: Func, src: MetricSource,
     if name == "sum":
         leftover(numeric)
         if src.mtype == "counter":
-            return "sum%s(%s)" % (by, hsel("", fnname="increase"))
+            return per_step("sum%s(%s)" % (by, hsel("", fnname=inc)))
         if src.mtype == "histogram":
-            return "sum%s(%s)" % (by, hsel("_sum", fnname="increase"))
+            return per_step("sum%s(%s)" % (by, hsel("_sum", fnname=inc)))
         if src.mtype == "rate":
             return "sum%s(%s)" % (by, hsel("", fnname="rate"))
         t.note("sum() of a gauge: NR sums datapoints; emitted sum of "
@@ -700,7 +770,7 @@ def _agg_expr(ctx: _Ctx, fn: Func, src: MetricSource,
         if src.mtype == "counter":
             t.note("%s() of a counter: emitted %s of the windowed increase"
                    % (name, name), APPROXIMATE)
-            return "%s%s(%s)" % (name, by, hsel("", fnname="increase"))
+            return per_step("%s%s(%s)" % (name, by, hsel("", fnname=inc)))
         fname = "max_over_time" if name == "max" else "min_over_time"
         return "%s%s(%s)" % (name, by, hsel("", fnname=fname))
 
@@ -709,30 +779,30 @@ def _agg_expr(ctx: _Ctx, fn: Func, src: MetricSource,
         leftover(rest)
         if src.mtype == "histogram":
             if lo is None and hi is None:
-                return "sum%s(%s)" % (by, hsel("_count", fnname="increase"))
+                return per_step("sum%s(%s)" % (by, hsel("_count", fnname=inc)))
             t.note("the duration threshold became histogram bucket "
                    "arithmetic; it is exact only if a bucket boundary "
                    "exists at %s — verify your histogram buckets"
                    % " and ".join(_fmt_num(v) for v in (lo, hi)
                                   if v is not None), NEEDS_REVIEW)
             if lo is None:
-                return "sum%s(%s)" % (by, hsel("_bucket", fnname="increase",
-                                              more=[_le_matcher(hi)]))
-            upper = ("sum%s(%s)" % (by, hsel("_bucket", fnname="increase",
+                return per_step("sum%s(%s)" % (by, hsel(
+                    "_bucket", fnname=inc, more=[_le_matcher(hi)])))
+            upper = ("sum%s(%s)" % (by, hsel("_bucket", fnname=inc,
                                              more=[_le_matcher(hi)]))
                      if hi is not None
-                     else "sum%s(%s)" % (by, hsel("_count",
-                                                  fnname="increase")))
-            return "%s - sum%s(%s)" % (
-                upper, by, hsel("_bucket", fnname="increase",
+                     else "sum%s(%s)" % (by, hsel("_count", fnname=inc)))
+            diff = "%s - sum%s(%s)" % (
+                upper, by, hsel("_bucket", fnname=inc,
                                 more=[_le_matcher(lo)]))
+            return per_step("(%s)" % diff) if ctx.is_range else diff
         if src.mtype == "counter":
             if ctx.is_metric_event:
                 t.note("count() on a Metric counter emitted as the summed "
                        "increase (event count); NRQL count() strictly counts "
                        "datapoints — use sum() in NR to compare like for "
                        "like", APPROXIMATE)
-            return "sum%s(%s)" % (by, hsel("", fnname="increase"))
+            return per_step("sum%s(%s)" % (by, hsel("", fnname=inc)))
         if src.mtype == "rate":
             t.note("count() of a per-second rate source counts series, not "
                    "events", NEEDS_REVIEW)
@@ -1174,6 +1244,9 @@ def _source_for(ctx: _Ctx, item: SelectItem) -> Any:
             return spanmetrics_source(cfg, "duration")
         return spanmetrics_source(cfg, "calls")
 
+    if ctx.is_legacy_aws:
+        return _legacy_aws_source(ctx, agg, arg)
+
     # Infrastructure sample events and other built-in event knowledge.
     if nrmetrics.is_infra_event(etl):
         return _infra_source(ctx, item, fn, agg, arg)
@@ -1200,6 +1273,60 @@ def _source_for(ctx: _Ctx, item: SelectItem) -> Any:
 def _event_map(ctx: _Ctx) -> Optional[Dict[str, Any]]:
     from .common import event_map_entry
     return event_map_entry(ctx.event, ctx.cfg)
+
+
+def _legacy_aws_source(ctx: _Ctx, agg: str, arg: Any) -> Any:
+    """Legacy AWS polling-integration sample events -> YACE metrics."""
+    t = ctx.t
+    cfg = ctx.cfg
+    attr, _ = unwrap_attr(arg)
+    attr_name = attr.name if attr is not None else ""
+    mm = cfg.get("metric_map", {})
+    if attr_name:
+        for key in ("%s.%s" % (ctx.event, attr_name), attr_name):
+            if key in mm:
+                return resolve_metric(key, agg, cfg, t)
+    provider = ctx.aws_provider
+    ns = nrmetrics.legacy_aws_namespace(ctx.event, provider)
+    known = ", ".join(nrmetrics.legacy_aws_providers(ctx.event))
+    if ns is None:
+        if provider:
+            raise Untranslatable(
+                "FROM %s WHERE provider = %r: unknown AWS resource type "
+                "(known: %s); map the attribute in metric_map (key "
+                "\"%s.%s\") instead" % (ctx.event, provider, known,
+                                          ctx.event, attr_name))
+        raise Untranslatable(
+            "FROM %s needs WHERE provider = '<resource type>' to choose the "
+            "CloudWatch namespace (one of: %s)" % (ctx.event, known))
+    is_star = attr is None or isinstance(arg, Star)
+    if agg == "count" and is_star:
+        t.note("count(*) FROM %s counts YACE's discovered %s resources "
+               "(aws_%s_info series), not New Relic samples"
+               % (ctx.event, provider, ns), APPROXIMATE)
+        return DerivedSource("count <BY>(aws_%s_info{<SELBARE>})" % ns,
+                             "short", NEEDS_REVIEW, "")
+    if agg in ("uniquecount", "cardinality") and attr is not None:
+        label, _mapped = map_attr(attr_name, cfg)
+        return DerivedSource(
+            "count <BY>(count by (%s%s)(aws_%s_info{<SELBARE>}))"
+            % (label, "".join(", " + l for l in ctx.by), ns), "short",
+            NEEDS_REVIEW, "distinct %s across YACE's aws_%s_info resource "
+            "series" % (label, ns))
+    if attr is None:
+        raise Untranslatable("%s() FROM %s needs a provider.* attribute"
+                             % (agg or "?", ctx.event))
+    spec = nrmetrics.legacy_aws_spec(ctx.event, provider, attr_name, agg)
+    if spec is None:
+        raise Untranslatable(
+            "%s(%s) FROM %s: only provider.<Metric>.<Statistic> attributes "
+            "map to CloudWatch metrics; add %r to metric_map (key "
+            "\"%s.%s\")" % (agg, attr_name, ctx.event, attr_name,
+                              ctx.event, attr_name))
+    src = _spec_to_source(spec, cfg, t)
+    if spec.note:
+        t.note(spec.note)
+    return src
 
 
 def _infra_source(ctx: _Ctx, item: SelectItem, fn: Optional[Func],
@@ -1698,6 +1825,7 @@ def _translate_item(ctx: _Ctx, fn: Func,
         mid = len(t.notes)
         right_expr = _translate_item(ctx, right, extra, list(numeric))
         right_units = [n for n in t.notes[mid:] if n.startswith("unit:")]
+        left_expr, right_expr = _cancel_per_step(left_expr, right_expr)
         # A ratio is dimensionless; the operands' own unit hints do not
         # carry over to the quotient.
         new = t.notes[notes_before:]
@@ -1789,6 +1917,7 @@ def _translate_item(ctx: _Ctx, fn: Func,
             num = _agg_expr(ctx, inner, src, extra=num_extra,
                             numeric=num_numeric)
             den = _agg_expr(ctx, inner, src, extra=extra, numeric=numeric)
+            num, den = _cancel_per_step(num, den)
         t.notes.append("unit:percent")
         return "100 * (%s) / (%s)" % (num, den)
 
@@ -1845,6 +1974,45 @@ def _apply_compare_with(ctx: _Ctx, t: Translation) -> None:
         shifted.legend = ((t.legend + " " if t.legend else "")
                           + "(%s earlier)" % off)
         t.extra.append(shifted)
+
+
+def variable_scope(q: NrqlQuery, cfg: Dict[str, Any]) -> str:
+    """Selector scoping a Grafana label_values() variable derived from a
+    dashboard-variable NRQL (SELECT uniques(attr) FROM X WHERE ...): the
+    metric family FROM maps to, with the WHERE clause as matchers. '' when
+    no metric can be named (the variable is then unscoped)."""
+    t = Translation(datasource="prometheus")
+    try:
+        ctx = _Ctx(q, cfg, t)
+        etl = ctx.event.lower()
+        name = ""
+        fixed: List[Matcher] = []
+        if etl in ("transaction", "transactionerror"):
+            name = http_server_source(cfg).name("_count")
+        elif ctx.is_span:
+            name = spanmetrics_source(cfg, "calls").name()
+        elif ctx.is_metric_event:
+            mn = _metric_name_from_where(ctx)
+            if mn:
+                src = resolve_metric(mn, "latest", cfg, t)
+                if isinstance(src, MetricSource):
+                    name = src.name("_count" if src.mtype == "histogram"
+                                    else "")
+                    fixed = list(src.extra_matchers or [])
+        elif ctx.is_legacy_aws:
+            ns = nrmetrics.legacy_aws_namespace(ctx.event, ctx.aws_provider)
+            if ns:
+                name = "aws_%s_info" % ns
+        elif nrmetrics.is_infra_event(etl):
+            spec = nrmetrics.infra_count_spec(etl)
+            if spec is not None and spec.kind == "count":
+                name = spec.name
+                fixed = [Matcher(l, o, v) for l, o, v in spec.matchers]
+        if not name:
+            return ""
+        return render_selector(name, fixed + ctx.matchers)
+    except Untranslatable:
+        return ""
 
 
 def translate_to_promql_with_offset(ctx: _Ctx) -> Optional[Translation]:

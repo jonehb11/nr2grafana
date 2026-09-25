@@ -409,15 +409,17 @@ _add("k8scontainersample", {
     "cpuCoresUtilization": _e(
         "100 * <AGG> <BY>(sum by (namespace, pod, container)(rate("
         "container_cpu_usage_seconds_total{container!=\"\"<SEL>}[<W>])) / on "
-        "(namespace, pod, container) kube_pod_container_resource_limits{"
-        "resource=\"cpu\"<SEL>})", "percent",
+        "(namespace, pod, container) max by (namespace, pod, container)("
+        "kube_pod_container_resource_limits{"
+        "resource=\"cpu\"<SEL>}))", "percent",
         "used / limit; containers without a CPU limit drop out",
         APPROXIMATE),
     "cpuRequestedCoresUtilization": _e(
         "100 * <AGG> <BY>(sum by (namespace, pod, container)(rate("
         "container_cpu_usage_seconds_total{container!=\"\"<SEL>}[<W>])) / on "
-        "(namespace, pod, container) kube_pod_container_resource_requests{"
-        "resource=\"cpu\"<SEL>})", "percent", "used / request", APPROXIMATE),
+        "(namespace, pod, container) max by (namespace, pod, container)("
+        "kube_pod_container_resource_requests{"
+        "resource=\"cpu\"<SEL>}))", "percent", "used / request", APPROXIMATE),
     "cpuLimitCores": _g("kube_pod_container_resource_limits", "short",
                         [("resource", "=", "cpu")], KSM_NOTE, EXACT),
     "cpuRequestedCores": _g("kube_pod_container_resource_requests", "short",
@@ -434,21 +436,24 @@ _add("k8scontainersample", {
     "memoryWorkingSetUtilization": _e(
         "100 * <AGG> <BY>(sum by (namespace, pod, container)("
         "container_memory_working_set_bytes{container!=\"\"<SEL>}) / on "
-        "(namespace, pod, container) kube_pod_container_resource_limits{"
-        "resource=\"memory\"<SEL>})", "percent",
+        "(namespace, pod, container) max by (namespace, pod, container)("
+        "kube_pod_container_resource_limits{"
+        "resource=\"memory\"<SEL>}))", "percent",
         "working set / limit; containers without a memory limit drop out",
         APPROXIMATE),
     "memoryUtilization": _e(
         "100 * <AGG> <BY>(sum by (namespace, pod, container)("
         "container_memory_usage_bytes{container!=\"\"<SEL>}) / on "
-        "(namespace, pod, container) kube_pod_container_resource_limits{"
-        "resource=\"memory\"<SEL>})", "percent", "usage / limit",
+        "(namespace, pod, container) max by (namespace, pod, container)("
+        "kube_pod_container_resource_limits{"
+        "resource=\"memory\"<SEL>}))", "percent", "usage / limit",
         APPROXIMATE),
     "memoryRequestedUtilization": _e(
         "100 * <AGG> <BY>(sum by (namespace, pod, container)("
         "container_memory_working_set_bytes{container!=\"\"<SEL>}) / on "
-        "(namespace, pod, container) kube_pod_container_resource_requests{"
-        "resource=\"memory\"<SEL>})", "percent", "working set / request",
+        "(namespace, pod, container) max by (namespace, pod, container)("
+        "kube_pod_container_resource_requests{"
+        "resource=\"memory\"<SEL>}))", "percent", "working set / request",
         APPROXIMATE),
     "isReady": _g("kube_pod_container_status_ready", "short", note=KSM_NOTE,
                   conf=EXACT),
@@ -524,8 +529,8 @@ _add("k8snodesample", {
         "when kube-prometheus relabeling is in place", APPROXIMATE),
     "cpuUsedCoresUtilization": _e(
         "100 * <AGG> <BY>(sum by (node)(rate(container_cpu_usage_seconds_total"
-        "{id=\"/\"<SEL>}[<W>])) / on (node) kube_node_status_allocatable{"
-        "resource=\"cpu\"<SEL>})", "percent", "used / allocatable",
+        "{id=\"/\"<SEL>}[<W>])) / on (node) max by (node)(kube_node_status_allocatable{"
+        "resource=\"cpu\"<SEL>}))", "percent", "used / allocatable",
         APPROXIMATE),
     "memoryUsedBytes": _g("container_memory_usage_bytes", "bytes", _ROOT,
                           "root-cgroup cAdvisor series", APPROXIMATE),
@@ -534,8 +539,8 @@ _add("k8snodesample", {
                                 APPROXIMATE),
     "memoryUsedBytesUtilization": _e(
         "100 * <AGG> <BY>(sum by (node)(container_memory_working_set_bytes"
-        "{id=\"/\"<SEL>}) / on (node) kube_node_status_allocatable{"
-        "resource=\"memory\"<SEL>})", "percent", "working set / allocatable",
+        "{id=\"/\"<SEL>}) / on (node) max by (node)(kube_node_status_allocatable{"
+        "resource=\"memory\"<SEL>}))", "percent", "working set / allocatable",
         APPROXIMATE),
     "allocatableCpuCores": _g("kube_node_status_allocatable", "short",
                               [("resource", "=", "cpu")], KSM_NOTE, EXACT),
@@ -1230,3 +1235,139 @@ TRANSACTION_ATTRS: Dict[str, Tuple[str, str]] = {
                               "use apdex() on the duration histogram"),
     "timestamp": ("timestamp", ""),
 }
+
+
+# ---------------------------------------------------------------------------
+# Legacy AWS integration sample events (ComputeSample, DatastoreSample, ...)
+# ---------------------------------------------------------------------------
+#
+# New Relic's API-polling AWS integrations write one sample event per
+# resource, with attributes named provider.<CloudWatchMetric>.<Statistic>
+# and a `provider` attribute naming the resource type. YACE exports the same
+# CloudWatch metrics as aws_<namespace>_<metric>_<statistic> with
+# dimension_<Name> labels, plus one aws_<namespace>_info series per
+# discovered resource (tags as tag_<Key> labels).
+
+LEGACY_AWS_EVENTS: Dict[str, Dict[str, str]] = {
+    "computesample": {
+        "ec2instance": "ec2", "lambdafunction": "lambda",
+        "ecscluster": "ecs", "ecsservice": "ecs",
+        "ebinstance": "elasticbeanstalk",
+        "elasticbeanstalkenvironment": "elasticbeanstalk",
+        "emrcluster": "elasticmapreduce", "autoscalinggroup": "autoscaling",
+    },
+    "datastoresample": {
+        "rdsdbinstance": "rds", "rdsdbcluster": "rds",
+        "dynamodbtable": "dynamodb", "dynamodbregion": "dynamodb",
+        "dynamodbglobalsecondaryindex": "dynamodb",
+        "elasticacheredisnode": "elasticache",
+        "elasticacherediscluster": "elasticache",
+        "elasticachememcachednode": "elasticache",
+        "elasticachememcachedcluster": "elasticache",
+        "redshiftcluster": "redshift", "redshiftnode": "redshift",
+        "elasticsearchcluster": "es", "elasticsearchnode": "es",
+        "documentdbcluster": "docdb", "documentdbinstance": "docdb",
+        "neptuneinstance": "neptune", "neptunecluster": "neptune",
+        "efsfilesystem": "efs", "s3bucket": "s3",
+    },
+    "queuesample": {"sqsqueue": "sqs"},
+    "loadbalancersample": {
+        "elb": "elb", "alb": "applicationelb",
+        "albtargetgroup": "applicationelb", "nlb": "networkelb",
+        "nlbtargetgroup": "networkelb",
+    },
+    "blockdevicesample": {"ebsvolume": "ebs"},
+    "serverlesssample": {"lambdafunction": "lambda",
+                         "lambdafunctionalias": "lambda",
+                         "lambdaregion": "lambda"},
+    "streamsample": {"kinesisstream": "kinesis",
+                     "kinesisstreamshard": "kinesis",
+                     "kinesisdeliverystream": "firehose"},
+    "cdnsample": {"cloudfrontdistribution": "cloudfront"},
+    "dnssample": {"route53healthcheck": "route53",
+                  "route53hostedzone": "route53"},
+    "apigatewaysample": {"apigatewayapi": "apigateway",
+                         "apigatewaystage": "apigateway",
+                         "apigatewayresourcewithmetrics": "apigateway"},
+}
+
+# Sample attributes -> YACE labels (dimensions, account, region, identity).
+LEGACY_AWS_LABELS: Dict[str, str] = {
+    "provider": "provider",  # consumed by the translator, never a label
+    "awsRegion": "region", "providerAccountId": "account_id",
+    "ec2InstanceId": "dimension_InstanceId",
+    "instanceId": "dimension_InstanceId",
+    "dbInstanceIdentifier": "dimension_DBInstanceIdentifier",
+    "dbClusterIdentifier": "dimension_DBClusterIdentifier",
+    "queueName": "dimension_QueueName",
+    "functionName": "dimension_FunctionName",
+    "loadBalancerName": "dimension_LoadBalancerName",
+    "tableName": "dimension_TableName",
+    "cacheClusterId": "dimension_CacheClusterId",
+    "cacheNodeId": "dimension_CacheNodeId",
+    "volumeId": "dimension_VolumeId",
+    "clusterIdentifier": "dimension_ClusterIdentifier",
+    "streamName": "dimension_StreamName",
+    "autoScalingGroupName": "dimension_AutoScalingGroupName",
+    "distributionId": "dimension_DistributionId",
+    "apiName": "dimension_ApiName", "stage": "dimension_Stage",
+    "fileSystemId": "dimension_FileSystemId",
+    "bucketName": "dimension_BucketName",
+    "domainName": "dimension_DomainName",
+    "entityName": "name", "displayName": "name",
+}
+
+for _event in LEGACY_AWS_EVENTS:
+    EVENT_LABELS.setdefault(_event, {}).update(LEGACY_AWS_LABELS)
+
+_AWS_STATS = {"average": "average", "sum": "sum", "maximum": "maximum",
+              "minimum": "minimum", "samplecount": "sample_count"}
+
+
+def _aws_unit(metric: str) -> str:
+    low = metric.lower()
+    if "bytes" in low:
+        return "bytes"
+    if "utilization" in low or "percent" in low:
+        return "percent"
+    if "latency" in low or "responsetime" in low:
+        return "s"
+    if "duration" in low:
+        return "ms"
+    return "short"
+
+
+def legacy_aws_providers(event: str) -> List[str]:
+    return sorted(LEGACY_AWS_EVENTS.get(event.lower(), {}))
+
+
+def legacy_aws_namespace(event: str, provider: str) -> Optional[str]:
+    return LEGACY_AWS_EVENTS.get(event.lower(), {}).get(
+        (provider or "").lower())
+
+
+def legacy_aws_spec(event: str, provider: str, attr: str,
+                    agg: str) -> Optional[Spec]:
+    """provider.<Metric>.<Statistic> on a legacy AWS sample event ->
+    aws_<namespace>_<metric>_<statistic> under YACE naming."""
+    ns = legacy_aws_namespace(event, provider)
+    parts = attr.split(".")
+    if ns is None or len(parts) < 2 or parts[0].lower() != "provider":
+        return None
+    if len(parts) >= 3 and parts[-1].lower() in _AWS_STATS:
+        stat = _AWS_STATS[parts[-1].lower()]
+        metric = ".".join(parts[1:-1])
+    else:
+        stat = _STAT_FOR_AGG.get(agg, "average")
+        metric = ".".join(parts[1:])
+    name = "aws_%s_%s_%s" % (ns, _yace_snake(metric), stat)
+    return Spec(
+        "gauge", name=name, unit=_aws_unit(metric), conf=NEEDS_REVIEW,
+        note="legacy AWS %s (provider %s) mapped to the CloudWatch metric "
+             "under YACE naming (aws_<namespace>_<metric>_<statistic>, "
+             "dimension_<Name> labels). New Relic camel-cases the "
+             "CloudWatch name, so verify %s against your metric names "
+             "(YACE keeps acronyms together: CPUUtilization is "
+             "aws_%s_cpuutilization_average) and pin it with metric_map "
+             "(key \"%s.%s\") if it differs"
+             % (event, provider, name, ns, event, attr))

@@ -18,6 +18,7 @@ from typing import Any, Callable, Dict, List, Tuple
 
 SUBS = [
     (r"\$__rate_interval", "5m"),
+    (r"\$__interval_ms", "60000"),
     (r"\$__interval", "1m"),
     (r"\$__range", "1h"),
     (r"\$__auto", "5m"),

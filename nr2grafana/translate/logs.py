@@ -33,6 +33,34 @@ def _fmt_num(n: float) -> str:
     return str(int(n)) if n == int(n) else ("%f" % n).rstrip("0").rstrip(".")
 
 
+_LEVEL_LABELS = {"level", "severity", "severity_text", "severitytext",
+                 "detected_level", "log_level", "loglevel"}
+
+
+def _ci_levels(matchers: List[Matcher], t: Translation) -> List[Matcher]:
+    """Log-level comparisons match case-insensitively: New Relic stores
+    the level as the agent sent it (ERROR / Error / error) while Loki's
+    level / detected_level labels are normally lowercase."""
+    out: List[Matcher] = []
+    for m in matchers:
+        if m.label.lower() in _LEVEL_LABELS and m.value \
+                and not m.value.startswith("(?i)"):
+            if m.op in ("=", "!="):
+                out.append(Matcher(m.label, "=~" if m.op == "=" else "!~",
+                                   "(?i)" + regex_escape(m.value)))
+            elif m.op in ("=~", "!~"):
+                out.append(Matcher(m.label, m.op, "(?i)" + m.value))
+            else:
+                out.append(m)
+                continue
+            t.notes.append("%s compared case-insensitively (Loki levels are "
+                           "usually lowercase; New Relic had %r)"
+                           % (m.label, m.value))
+        else:
+            out.append(m)
+    return out
+
+
 def _render_pipe(m: Matcher) -> str:
     if m.op in _NUMERIC_OPS:
         return "%s %s %s" % (m.label, m.op, m.value)
@@ -132,7 +160,8 @@ class _Split:
 
     def __init__(self, nq: NrqlQuery, cfg: Dict[str, Any], t: Translation,
                  extra_stream: Optional[List[Matcher]] = None):
-        branches = cond_to_branches(nq.where, cfg, t)
+        branches = [_ci_levels(b, t)
+                    for b in cond_to_branches(nq.where, cfg, t)]
         numeric = [Matcher(p.label, p.op, _fmt_num(p.value))
                    for p in t.numeric]
         del t.numeric[:]
@@ -264,6 +293,18 @@ def _event_stream_labels(nq: NrqlQuery, cfg: Dict[str, Any],
            % (nq.from_[0], ", ".join(m.render() for m in out) or "none"),
            NEEDS_REVIEW)
     return out
+
+
+def variable_scope(nq: NrqlQuery, cfg: Dict[str, Any]) -> str:
+    """Stream selector scoping a Loki label_values() variable derived from
+    a dashboard-variable NRQL, or '' when the WHERE names no stream label."""
+    t = Translation(datasource="loki")
+    try:
+        extra_stream = _event_stream_labels(nq, cfg, t)
+        sp = _Split(nq, cfg, t, extra_stream)
+    except Untranslatable:
+        return ""
+    return sp.sel if sp.stream else ""
 
 
 def translate_to_logql(nq: NrqlQuery, cfg: Dict[str, Any]) -> Translation:
@@ -550,7 +591,8 @@ def _translate_one(nq: NrqlQuery, cfg: Dict[str, Any],
         inner = fn.args[0] if fn.args else None
         if isinstance(inner, Func) and inner.name == "count":
             probe = Translation()
-            branches = cond_to_branches(fn.where, cfg, probe)
+            branches = [_ci_levels(b, probe)
+                        for b in cond_to_branches(fn.where, cfg, probe)]
             for n in probe.notes:
                 t.note(n)
             numeric = [Matcher(p.label, p.op, _fmt_num(p.value))

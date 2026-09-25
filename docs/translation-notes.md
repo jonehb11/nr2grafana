@@ -48,10 +48,10 @@ General invariants:
 
 | Construct | Status | Translation / notes |
 | --- | --- | --- |
-| `count(*)` on counter | approximate | `sum by (...)(increase(m[W]))`; on `FROM Metric` NR count() counts datapoints, not increase - noted |
-| `count(*)` on histogram | exact | `sum(increase(m_count[W]))` |
+| `count(*)` on counter | approximate | TIMESERIES: `sum by (...)(rate(m[$__rate_interval])) * $__interval_ms / 1000` (events per Grafana step); no TIMESERIES: `sum(increase(m[$__range]))`; on `FROM Metric` NR count() counts datapoints, not increase - noted |
+| `count(*)` on histogram | exact | same idiom on `m_count` |
 | `count(*)` on gauge | needs-review | `count(m)` counts series, not events |
-| `sum(x)` counter | exact | `sum(increase(m[W]))` |
+| `sum(x)` counter | exact | same count idiom (`rate * step` / `increase` over the range) |
 | `sum(x)` gauge | approximate | `sum(avg_over_time(m[W]))` (current-total semantics) |
 | `average(x)` histogram | exact | `sum(rate(_sum)) / sum(rate(_count))` |
 | `average(x)` gauge | exact | `avg(avg_over_time(m[W]))` |
@@ -272,3 +272,28 @@ one target each; `agg/agg` and `agg ± agg` preserved as LogQL arithmetic;
 
 `SINCE a UNTIL b` (relative) → `timeFrom = a − b`, `timeShift = b`
 (exact); `SINCE last week` → `now-1w/w`, `last month` → `now-1M/M`.
+
+### Iteration 2 — semantic quirks found by auditing the emitted queries
+
+Every emitted PromQL / LogQL / TraceQL expression of a 256-query corpus
+and the fixture dashboards is now parsed and type-checked by the real
+engines (`promtool check rules`, `logcli fmt`, a local Tempo) before a
+release; the pass found no syntax problems but the semantic review found
+these, all fixed:
+
+| Construct | Before | Now |
+| --- | --- | --- |
+| `count(*)` / `sum(counter)` with TIMESERIES | `sum(increase(m[$__rate_interval]))` — over-counts by `rate_interval / interval` (25 % at a 15 s scrape and a 1 m step) | `sum(rate(m[$__rate_interval])) * $__interval_ms / 1000` = events per Grafana step, NR's per-bucket count; the factor cancels in `percentage()`, `filter()/count()` and `sum()/count()` ratios; instant queries keep `increase(m[$__range])` |
+| `TIMESERIES 5 minutes` | note only | panel `interval` = `5m` (min interval), so buckets match NR |
+| `host LIKE '%{{host}}%'`, `appName = 'prod-{{svc}}'`, `IN ('a-{{env}}', 'b')`, `RLIKE 'x-{{v}}.*'` | the braces were regex-escaped and matched literally (no data) | `=~".*${host:regex}.*"`, `=~"prod-${svc:regex}"`, ... (the variable stays a variable; multi-value selections work) |
+| `FACET {{attr}}` | `by (__attr__)` | `by ($attr)`, legend `{{$attr}}` |
+| TraceQL `http.statusCode = '500'`, `IN (500, 502)`, `LIKE '5%'` | string / regex comparisons that never match an int attribute | `= 500`, `(f = 500 \|\| f = 502)`, `(f >= 500 && f < 600)`; other int attributes with LIKE are dropped with a note |
+| span metrics `span.kind = 'server'` | `span_kind="server"` | `span_kind="SPAN_KIND_SERVER"` (the enum name both the OTel connector and Tempo emit) |
+| Loki `level = 'ERROR'` (also `severity`, `detected_level`, ...) | case-sensitive | `level=~"(?i)ERROR"`, noted |
+| `K8sContainerSample` / `K8sNodeSample` utilization joins | `... / on (...) kube_pod_container_resource_limits{...}` — fails with *many-to-many matching* when kube-state-metrics runs two replicas | right side reduced with `max by (namespace, pod, container)(...)` / `max by (node)(...)` |
+| `viz.line` / `viz.area` / `viz.stacked-bar` / `viz.sparkline` / `viz.scatter` whose NRQL lacks `TIMESERIES` | instant query → a single point | translated as a range query (approximate, noted); a `viz.billboard` with `TIMESERIES` gets a stat sparkline |
+| `viz.heatmap` with `FACET` (no `histogram()`) | targets forced to `format: heatmap` with a `{{le}}` legend (empty) | series kept as rows (Grafana's time-series-buckets layout); only `histogram()` targets use `le` buckets |
+| `SINCE today` / `yesterday` / `this week` on one widget | no panel override (only `now-<n>` forms) | `timeFrom: now/d`, `now-1d/d`, `now/w` (Grafana's own relative syntax) |
+| `yAxisLeft.zero`, `facet.showOtherSeries`, `viz.billboard-comparison` | ignored | `min: 0`; note that topk has no 'Other' bucket; note on the percent-change badge |
+| NRQL dashboard variables | always `label_values(label)` on Prometheus | routed by FROM: Prometheus `label_values(<metric>{<WHERE>}, label)` (HTTP histogram `_count`, span-metrics calls, the `metricName`, the infra entity metric, `aws_<ns>_info`), Loki `label_values({<stream>}, label)`, Tempo tag values (`resource.service.name`); `SELECT count(*) ... FACET attr` variables work too |
+| `ComputeSample` / `DatastoreSample` / `QueueSample` / `LoadBalancerSample` / `BlockDeviceSample` / `ServerlessSample` / `StreamSample` / `CdnSample` / `DnsSample` / `ApiGatewaySample` (API-polling AWS integrations) | untranslatable | `provider.<Metric>.<Statistic>` + `WHERE provider = '<type>'` → YACE `aws_<namespace>_<metric>_<statistic>` (needs-review: NR camel-cases the CloudWatch name; pin with `metric_map` key `"<Event>.provider.<Metric>.<Stat>"`), dimensions → `dimension_<Name>`, `awsRegion` → `region`, `label.<Tag>` → `tag_<Tag>`, `count(*)` / `uniqueCount(<id>)` → `aws_<ns>_info` series; without `provider` the message lists the known types |

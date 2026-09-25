@@ -200,7 +200,12 @@ def validate_dashboard_full(dash: Dict[str, Any]) -> Dict[str, List[str]]:
     for v in (dash.get("templating") or {}).get("list") or []:
         if v.get("type") == "query":
             q = v.get("query")
-            qtext = q.get("query", "") if isinstance(q, dict) else str(q or "")
+            if isinstance(q, dict):
+                # Prometheus keeps a query string; Loki and Tempo variable
+                # models carry the label to enumerate instead.
+                qtext = str(q.get("query") or q.get("label") or "")
+            else:
+                qtext = str(q or "")
             if not qtext.strip():
                 errs.append("template variable %r has an empty query"
                             % v.get("name"))

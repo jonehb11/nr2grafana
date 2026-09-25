@@ -7,6 +7,7 @@ span metrics; this module handles trace search / listing widgets
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional
 
 from ..nrql.parser import (
@@ -36,6 +37,36 @@ _TRACEQL_FIELDS = {
 
 _DURATION_ATTRS = {"duration", "duration.ms", "durationms", "duration_ms"}
 _KIND_VALUES = {"server", "client", "producer", "consumer", "internal"}
+
+# TraceQL is typed: an int attribute never matches a string literal (and
+# regex operators are rejected on ints), so these compare as numbers.
+_INT_FIELDS = {
+    "span.http.response.status_code", "span.http.status_code",
+    "span.http.request.body.size", "span.http.response.body.size",
+    "span.net.peer.port", "span.net.host.port", "span.server.port",
+    "span.client.port", "span.rpc.grpc.status_code", "span.thread.id",
+    "resource.process.pid",
+}
+_INT_ATTR_SUFFIXES = ("statuscode", "status_code", ".port", "_port", ".pid",
+                      ".size", "_size")
+
+
+def _is_int_field(field: str, attr: str) -> bool:
+    if field in _INT_FIELDS:
+        return True
+    return attr.lower().endswith(_INT_ATTR_SUFFIXES)
+
+
+def _int_text(v: Any) -> Optional[str]:
+    """Integer text for a literal that is (or spells) an integer."""
+    raw = getattr(v, "value", v)
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, (int, float)):
+        return str(int(raw)) if float(raw) == int(raw) else None
+    if isinstance(raw, str) and re.fullmatch(r"-?\d+", raw.strip()):
+        return str(int(raw.strip()))
+    return None
 
 
 def _field_for(attr: str, t: Translation) -> str:
@@ -88,6 +119,14 @@ def _cond_to_traceql(cond: Optional[Cond], t: Translation,
             t.note("IN on a non-attribute dropped", NEEDS_REVIEW)
             return ""
         field = _field_for(cond.left.name, t)
+        if _is_int_field(field, cond.left.name):
+            ints = [_int_text(v) for v in cond.values]
+            if ints and all(i is not None for i in ints):
+                if cond.negated:
+                    return "(%s)" % " && ".join(
+                        "%s != %s" % (field, i) for i in ints)
+                return "(%s)" % " || ".join(
+                    "%s = %s" % (field, i) for i in ints)
         # TraceQL regex matchers are UNANCHORED (unlike PromQL) — anchor
         # explicitly or IN degrades to substring matching.
         alt = "|".join(regex_escape(str(getattr(v, "value", v)))
@@ -145,6 +184,33 @@ def _cmp_to_traceql(c: Cmp, t: Translation, cfg: Dict[str, Any]) -> str:
     else:
         rhs = _value_text(c.right)
 
+    if not var and _is_int_field(field, attr):
+        it = _int_text(c.right)
+        if it is not None and c.op in ("=", "!=", "<", "<=", ">", ">="):
+            return "%s %s %s" % (field, c.op, it)
+        if c.op in ("LIKE", "NOT LIKE"):
+            # http.statusCode LIKE '5%' -> the numeric band 500..599 (a
+            # status code has three digits; the wildcard fills the rest).
+            pat = str(getattr(c.right, "value", ""))
+            m = re.fullmatch(r"(\d{1,3})%+", pat)
+            if m and field.endswith("status_code"):
+                width = 10 ** (3 - len(m.group(1)))
+                lo = int(m.group(1)) * width
+                hi = lo + width
+                if c.op == "LIKE":
+                    return "(%s >= %d && %s < %d)" % (field, lo, field, hi)
+                return "(%s < %d || %s >= %d)" % (field, lo, field, hi)
+            t.note("%s is an integer attribute in TraceQL; the LIKE pattern "
+                   "%r cannot be applied to it (regex operators are rejected "
+                   "on ints); dropped — express it as a numeric range"
+                   % (field, pat), NEEDS_REVIEW)
+            return ""
+        if it is None and c.op in ("=", "!=") and isinstance(c.right, Lit):
+            t.note("%s is an integer attribute in TraceQL but the NRQL "
+                   "compares it with %r; verify the value" % (field,
+                                                               c.right.value),
+                   NEEDS_REVIEW)
+
     if c.op in ("=", "!=", "<", "<=", ">", ">="):
         return "%s %s %s" % (field, c.op, rhs)
     # TraceQL regex matchers are UNANCHORED (unlike PromQL/NRQL) — anchor
@@ -162,6 +228,16 @@ def _cmp_to_traceql(c: Cmp, t: Translation, cfg: Dict[str, Any]) -> str:
                              q("^(?:%s)$" % raw_rx))
     t.note("operator %r unsupported in TraceQL; dropped" % c.op, NEEDS_REVIEW)
     return ""
+
+
+def variable_field(attr: str) -> str:
+    """Scoped tag name for a Tempo label-values dashboard variable."""
+    low = attr.lower()
+    for table in (_TRACEQL_BY_FIELDS, _TRACEQL_FIELDS):
+        for k, v in table.items():
+            if k.lower() == low:
+                return v
+    return "." + attr  # unknown scope: Tempo searches every scope
 
 
 _TRACEQL_BY_FIELDS = {

@@ -15,9 +15,12 @@ from ..model import NRDashboard, NRPage, NRVariable, NRWidget
 from ..nrql.parser import Attr, Func, NrqlParseError, parse_nrql
 from ..translate.common import (
     APPROXIMATE, EXACT, NEEDS_REVIEW, UNTRANSLATABLE, Translation, map_attr,
-    worst, _VAR_RE,
+    route_event_type, worst, _VAR_RE,
 )
+from ..translate.logs import variable_scope as loki_variable_scope
+from ..translate.metrics import variable_scope as prom_variable_scope
 from ..translate.router import translate_query
+from ..translate.traces import variable_field as tempo_variable_field
 
 
 def _nr_vars_to_grafana(text: str, cfg: Dict[str, Any]) -> str:
@@ -230,6 +233,9 @@ def _apply_notes_to_panel(panel: Dict[str, Any], trans: List[Translation],
             elif note.startswith("timeshift:"):
                 panel["timeShift"] = note.split(":", 1)[1]
                 panel["hideTimeOverride"] = False
+            elif note.startswith("interval:"):
+                # TIMESERIES <n unit> -> the panel's min interval.
+                panel["interval"] = note.split(":", 1)[1]
 
 
 def _describe(widget: NRWidget, trans: List[Translation]) -> str:
@@ -325,6 +331,8 @@ def _panel_options(ptype: str, widget: NRWidget,
         defaults["min"] = y["min"]
     if isinstance(y.get("max"), (int, float)):
         defaults["max"] = y["max"]
+    if y.get("zero") is True and "min" not in defaults:
+        defaults["min"] = 0  # NR "start y-axis at zero"
 
     legend_enabled = (rc.get("legend") or {}).get("enabled", True)
 
@@ -385,6 +393,10 @@ def _panel_options(ptype: str, widget: NRWidget,
         elif widget.viz_id == "viz.traffic-light":
             options["colorMode"] = "background"
             options["textMode"] = "none"
+        if widget.viz_id != "viz.traffic-light" and any(
+                t.query_type == "range" for t in trans):
+            # A TIMESERIES query behind a billboard: show the trend too.
+            options["graphMode"] = "area"
 
     elif ptype == "gauge":
         defaults["color"] = {"mode": "thresholds"}
@@ -521,7 +533,9 @@ def _convert_widget(widget: NRWidget, b: _Build,
                                equivalent=_PANEL_TYPES.get(widget.viz_id,
                                                            "timeseries"))
 
-    trans = [translate_query(qtext, cfg) for qtext in queries]
+    trans = [translate_query(qtext, cfg, widget.viz_id or "")
+             for qtext in queries]
+    _widget_config_notes(widget, trans)
 
     conf = EXACT
     for t in trans:
@@ -566,7 +580,9 @@ def _convert_widget(widget: NRWidget, b: _Build,
     panel["fieldConfig"] = field_config
     panel["targets"] = _make_targets(trans, b)
 
-    if ptype == "heatmap":
+    if ptype == "heatmap" and "heatmap" in hints:
+        # histogram() -> Prometheus le buckets; a FACET heatmap keeps its
+        # series as rows (Grafana's "time series buckets" layout).
         for tgt in panel["targets"]:
             if tgt.get("expr") and "datasource" in tgt \
                     and tgt["datasource"].get("type") == "prometheus":
@@ -601,9 +617,27 @@ def _convert_widget(widget: NRWidget, b: _Build,
     return panel
 
 
+def _widget_config_notes(widget: NRWidget, trans: List[Translation]) -> None:
+    """Widget configuration that has no exact Grafana counterpart."""
+    ok = [t for t in trans if t.confidence != UNTRANSLATABLE]
+    if not ok:
+        return
+    rc = widget.raw_configuration or {}
+    if (rc.get("facet") or {}).get("showOtherSeries"):
+        ok[0].note("New Relic grouped the facets beyond the limit into an "
+                   "'Other' series; topk() has no remainder bucket, so the "
+                   "panel shows the top groups only", APPROXIMATE)
+    if widget.viz_id == "viz.billboard-comparison":
+        ok[0].note("billboard comparison: the stat panel shows the current "
+                   "value and the COMPARE WITH target as a second value; "
+                   "its percent-change badge is computed within the query "
+                   "range, not against the comparison period", APPROXIMATE)
+
+
 def _is_hint(note: str) -> bool:
     return ":" in note and note.split(":", 1)[0] in (
-        "unit", "timefrom", "timeshift", "maxlines", "limit", "panel-hint")
+        "unit", "timefrom", "timeshift", "maxlines", "limit", "panel-hint",
+        "interval")
 
 
 def _fallback_panel(panel: Dict[str, Any], widget: NRWidget, b: _Build,
@@ -734,29 +768,18 @@ def _convert_variable(v: NRVariable, b: _Build,
                     current={"selected": False, "text": val, "value": val},
                     options=[])
     if v.type == "NRQL":
-        # Try to derive label_values() from a uniques()-style NRQL variable.
+        # Derive a label-values query from a uniques()/FACET NRQL variable,
+        # on the datasource family its FROM clause maps to, scoped by its
+        # WHERE clause.
         nrql = (v.nrql_query or {}).get("query", "")
-        label = None
-        try:
-            pq = parse_nrql(nrql)
-            for item in pq.select:
-                if isinstance(item.expr, Func) and item.expr.name in (
-                        "uniques", "uniquecount", "keyset") and item.expr.args:
-                    arg = item.expr.args[0]
-                    if isinstance(arg, Attr):
-                        label, _ = map_attr(arg.name, cfg)
-                        break
-        except NrqlParseError:
-            pass
-        if label:
-            query = "label_values(%s)" % label
+        plan = _variable_plan(nrql, cfg)
+        if plan:
+            family, query, definition = plan
             return dict(
-                common, type="query",
-                datasource=b.ds_ref("prometheus"),
-                query={"query": query,
-                       "refId": "PrometheusVariableQueryEditor-VariableQuery"},
-                definition=query, refresh=2, regex="", sort=1,
-                multi=v.is_multi, includeAll=v.is_multi, allValue=".*",
+                common, type="query", datasource=b.ds_ref(family),
+                query=query, definition=definition, refresh=2, regex="",
+                sort=1, multi=v.is_multi, includeAll=v.is_multi,
+                allValue=".*",
                 current={"selected": False, "text": ["All"],
                          "value": ["$__all"]} if v.is_multi else {},
                 options=[])
@@ -766,6 +789,54 @@ def _convert_variable(v: NRVariable, b: _Build,
                     current={"selected": False, "text": "", "value": ""},
                     options=[])
     return None
+
+
+def _variable_attr(pq: Any) -> Optional[Attr]:
+    """The attribute a variable query enumerates: uniques(attr) / keyset
+    or a single-attribute FACET (SELECT count(*) ... FACET attr)."""
+    for item in pq.select:
+        fn = item.expr
+        if isinstance(fn, Func) and fn.name in ("uniques", "keyset") \
+                and fn.args and isinstance(fn.args[0], Attr):
+            return fn.args[0]
+    if pq.facet and isinstance(pq.facet[0].expr, Attr):
+        return pq.facet[0].expr
+    return None
+
+
+def _variable_plan(nrql: str, cfg: Dict[str, Any]) \
+        -> Optional[Tuple[str, Dict[str, Any], str]]:
+    """-> (datasource family, variable query model, definition text)."""
+    try:
+        pq = parse_nrql(nrql)
+    except NrqlParseError:
+        return None
+    attr = _variable_attr(pq)
+    if attr is None:
+        return None
+    family = route_event_type(pq.from_, cfg)
+    if family == "traces":
+        field = tempo_variable_field(attr.name)
+        return ("tempo",
+                {"type": 1, "label": field,
+                 "refId": "TempoDatasourceVariableQueryEditor-VariableQuery"},
+                "label_values(%s)" % field)
+    label, _mapped = map_attr(attr.name, cfg)
+    if family == "logs":
+        stream = loki_variable_scope(pq, cfg)
+        definition = ("label_values(%s, %s)" % (stream, label) if stream
+                      else "label_values(%s)" % label)
+        return ("loki",
+                {"type": 1, "label": label, "stream": stream,
+                 "refId": "LokiVariableQueryEditor-VariableQuery"},
+                definition)
+    scope = prom_variable_scope(pq, cfg)
+    query = ("label_values(%s, %s)" % (scope, label) if scope
+             else "label_values(%s)" % label)
+    return ("prometheus",
+            {"query": query, "qryType": 1,
+             "refId": "PrometheusVariableQueryEditor-VariableQuery"},
+            query)
 
 
 def _datasource_variables(b: _Build) -> List[Dict[str, Any]]:
@@ -868,15 +939,21 @@ def _finish_dashboard(dash: Dict[str, Any], b: _Build,
     tvars.extend(copy.deepcopy(b.cfg.get("extra_variables") or []))
     dash["templating"]["list"] = tvars
     # Most common SINCE across widgets becomes the dashboard range; panels
-    # whose SINCE differs get a relative timeFrom override where possible
-    # (Grafana timeFrom accepts "30m"/"1h" style values, not now/d).
+    # whose SINCE differs get a relative timeFrom override (Grafana accepts
+    # "30m"/"1h" as well as its own now/d, now-1d/d, now/w spellings).
     if b.timefroms:
         best = max(set(b.timefroms), key=b.timefroms.count)
         dash["time"] = {"from": best, "to": "now"}
         for panel, rng in b.panel_ranges:
-            if rng != best and rng.startswith("now-") and "/" not in rng:
+            if rng == best or not rng.startswith("now"):
+                continue
+            if "/" in rng:
+                panel["timeFrom"] = rng
+            elif rng.startswith("now-"):
                 panel["timeFrom"] = rng[len("now-"):]
-                panel["hideTimeOverride"] = False
+            else:
+                continue
+            panel["hideTimeOverride"] = False
 
 
 def _source_meta(nr: NRDashboard, source_file: str = "") -> Dict[str, Any]:

@@ -90,8 +90,9 @@ class ApmMetricTests(unittest.TestCase):
     def test_getfield_count(self):
         t = tr("SELECT getField(apm.service.transaction.duration, count) "
                "FROM Metric WHERE appName = 'c' TIMESERIES")
-        self.assertEqual(t.expr, 'sum(increase(%s_count{service_name="c"}'
-                                 '[$__rate_interval]))' % HTTP)
+        self.assertEqual(t.expr, 'sum(rate(%s_count{service_name="c"}'
+                                 '[$__rate_interval])) * $__interval_ms / 1000'
+                         % HTTP)
 
     def test_timeslice_needs_metric_map(self):
         t = tr("SELECT average(newrelic.timeslice.value) FROM Metric WHERE "
@@ -114,8 +115,8 @@ class ApmMetricTests(unittest.TestCase):
         t = tr("SELECT count(*) FROM Metric WHERE metricName = "
                "'my.custom.counter' TIMESERIES")
         self.assertEqual(t.expr,
-                         "sum(increase(my_custom_counter_total"
-                         "[$__rate_interval]))")
+                         "sum(rate(my_custom_counter_total"
+                         "[$__rate_interval])) * $__interval_ms / 1000")
 
     def test_otel_semconv_histogram_known(self):
         t = tr("FROM Metric SELECT count(`http.server.request.duration`) "
@@ -123,8 +124,9 @@ class ApmMetricTests(unittest.TestCase):
                "TIMESERIES")
         self.assertEqual(
             t.expr,
-            'sum by (http_response_status_code)(increase(%s_count{'
-            'service_name="x"}[$__rate_interval]))' % HTTP)
+            'sum by (http_response_status_code)(rate(%s_count{'
+            'service_name="x"}[$__rate_interval])) * $__interval_ms / 1000'
+            % HTTP)
 
     def test_otel_utilization_ratio_unit(self):
         t = tr("FROM Metric SELECT average(`system.cpu.utilization`) "
@@ -253,9 +255,11 @@ class InfraSampleTests(unittest.TestCase):
     def test_container_utilization_join(self):
         t = tr("SELECT average(cpuCoresUtilization) FROM K8sContainerSample "
                "FACET podName")
-        self.assertIn("/ on (namespace, pod, container) "
-                      "kube_pod_container_resource_limits{resource=\"cpu\"}",
-                      t.expr)
+        # The join's right side is reduced so duplicate KSM replicas cannot
+        # produce a many-to-many matching error.
+        self.assertIn("/ on (namespace, pod, container) max by (namespace, "
+                      "pod, container)(kube_pod_container_resource_limits{"
+                      "resource=\"cpu\"}))", t.expr)
         self.assertIn("unit:percent", t.notes)
 
     def test_deployment_multi_latest(self):
@@ -351,8 +355,9 @@ class TransactionAttributeTests(unittest.TestCase):
                "appName = 'c' TIMESERIES")
         self.assertEqual(
             t.expr,
-            'sum(increase(%s_count{service_name="c",http_response_status_'
-            'code=~"5.."}[$__rate_interval]))' % HTTP)
+            'sum(rate(%s_count{service_name="c",http_response_status_'
+            'code=~"5.."}[$__rate_interval])) * $__interval_ms / 1000'
+            % HTTP)
 
 
 class SelectArithmeticTests(unittest.TestCase):
@@ -453,7 +458,8 @@ class EventMapTests(unittest.TestCase):
                                                 "type": "counter"}
         t = tr("SELECT count(*) FROM Purchase TIMESERIES", cfg)
         self.assertEqual(t.expr,
-                         "sum(increase(purchases_total[$__rate_interval]))")
+                         "sum(rate(purchases_total[$__rate_interval])) * "
+                         "$__interval_ms / 1000")
 
     def test_unknown_custom_event_message_mentions_event_map(self):
         t = tr("SELECT count(*) FROM MyCustomEvent TIMESERIES")
@@ -504,3 +510,109 @@ class KnowledgeTableTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LegacyAwsSampleTests(unittest.TestCase):
+    """ComputeSample / DatastoreSample / QueueSample ... (API-polling AWS
+    integrations) -> YACE metric names."""
+
+    def test_ec2_metric_attribute(self):
+        t = tr("SELECT average(provider.cpuUtilization.Average) "
+               "FROM ComputeSample WHERE provider = 'Ec2Instance' "
+               "AND awsRegion = 'us-east-1' FACET ec2InstanceId TIMESERIES")
+        self.assertEqual(
+            t.expr,
+            'avg by (dimension_InstanceId)(avg_over_time('
+            'aws_ec2_cpu_utilization_average{region="us-east-1"}'
+            '[$__rate_interval]))')
+        self.assertEqual(t.confidence, NEEDS_REVIEW)
+        self.assertIn("unit:percent", t.notes)
+        self.assertTrue(any("YACE" in n for n in t.notes))
+        # `provider` picked the namespace; it is not a label to verify.
+        self.assertFalse(any("'provider' not in label_map" in n
+                             for n in t.notes))
+
+    def test_statistic_from_the_attribute_wins(self):
+        t = tr("SELECT max(provider.databaseConnections.Maximum) "
+               "FROM DatastoreSample WHERE provider = 'RdsDbInstance' "
+               "FACET dbInstanceIdentifier")
+        self.assertEqual(
+            t.expr,
+            'max by (dimension_DBInstanceIdentifier)(max_over_time('
+            'aws_rds_database_connections_maximum[$__range]))')
+
+    def test_statistic_from_the_aggregation_otherwise(self):
+        t = tr("SELECT sum(provider.numberOfMessagesSent) FROM QueueSample "
+               "WHERE provider = 'SqsQueue'")
+        self.assertIn("aws_sqs_number_of_messages_sent_sum", t.expr)
+
+    def test_tags_become_tag_labels(self):
+        t = tr("SELECT latest(provider.approximateNumberOfMessagesVisible.Sum) "
+               "FROM QueueSample WHERE provider = 'SqsQueue' "
+               "AND label.Team = 'checkout' FACET queueName")
+        self.assertEqual(
+            t.expr,
+            'max by (dimension_QueueName)('
+            'aws_sqs_approximate_number_of_messages_visible_sum{'
+            'tag_Team="checkout"})')
+        self.assertFalse(any("'label.Team' not in label_map" in n
+                             for n in t.notes), t.notes)
+
+    def test_count_star_counts_the_info_series(self):
+        t = tr("SELECT count(*) FROM ComputeSample WHERE provider = "
+               "'Ec2Instance'")
+        self.assertEqual(t.expr, "count(aws_ec2_info)")
+        self.assertTrue(any("discovered" in n for n in t.notes))
+
+    def test_unique_count_of_a_dimension(self):
+        t = tr("SELECT uniqueCount(ec2InstanceId) FROM ComputeSample "
+               "WHERE provider = 'Ec2Instance' FACET awsRegion")
+        self.assertEqual(
+            t.expr,
+            "count by (region)(count by (dimension_InstanceId, region)"
+            "(aws_ec2_info))")
+
+    def test_missing_provider_is_untranslatable_with_the_choices(self):
+        t = tr("SELECT average(provider.cpuUtilization.Average) "
+               "FROM ComputeSample")
+        self.assertEqual(t.confidence, UNTRANSLATABLE)
+        self.assertTrue(any("WHERE provider = " in n and "ec2instance" in n
+                            for n in t.notes), t.notes)
+
+    def test_unknown_provider_is_untranslatable(self):
+        t = tr("SELECT average(provider.cpuUtilization.Average) "
+               "FROM ComputeSample WHERE provider = 'Foo'")
+        self.assertEqual(t.confidence, UNTRANSLATABLE)
+        self.assertTrue(any("unknown AWS resource type" in n
+                            for n in t.notes), t.notes)
+
+    def test_metric_map_pins_the_metric(self):
+        cfg = load_config()
+        cfg["metric_map"]["ComputeSample.provider.cpuUtilization.Average"] = {
+            "name": "aws_ec2_cpuutilization_average", "type": "gauge",
+            "unit": "percent"}
+        t = tr("SELECT average(provider.cpuUtilization.Average) "
+               "FROM ComputeSample WHERE provider = 'Ec2Instance' TIMESERIES",
+               cfg)
+        self.assertEqual(
+            t.expr,
+            "avg(avg_over_time(aws_ec2_cpuutilization_average"
+            "[$__rate_interval]))")
+        self.assertEqual(t.confidence, EXACT)
+
+    def test_spec_table(self):
+        spec = nrmetrics.legacy_aws_spec("LoadBalancerSample", "Alb",
+                                         "provider.requestCount.Sum", "sum")
+        self.assertEqual(spec.name, "aws_applicationelb_request_count_sum")
+        self.assertIsNone(nrmetrics.legacy_aws_spec(
+            "LoadBalancerSample", "Alb", "entityName", "latest"))
+        self.assertEqual(nrmetrics.legacy_aws_namespace("BlockDeviceSample",
+                                                        "EbsVolume"), "ebs")
+
+
+class JoinSafetyTests(unittest.TestCase):
+    def test_node_utilization_join_is_reduced(self):
+        t = tr("SELECT average(cpuUsedCoresUtilization) FROM K8sNodeSample "
+               "FACET nodeName TIMESERIES")
+        self.assertIn('/ on (node) max by (node)(kube_node_status_allocatable{'
+                      'resource="cpu"}))', t.expr)

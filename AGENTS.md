@@ -86,6 +86,11 @@ create folders). Never print or commit them.
 
 - `TIMESERIES` → range query (`$__rate_interval` / `$__auto`); no `TIMESERIES`
   → **instant** query over `$__range` (NR aggregates the whole SINCE window).
+  Counts per bucket are `sum(rate(m[$__rate_interval])) * $__interval_ms / 1000`
+  (events per Grafana step); instant counts are `increase(m[$__range])`.
+  `TIMESERIES 5 minutes` sets the panel's min interval. A line/area/bar
+  widget whose NRQL lacks `TIMESERIES` is still translated as a range query
+  (noted as approximate).
 - `SINCE x` → panel/dashboard time range; `SINCE a UNTIL b` → panel
   `timeFrom`/`timeShift`; `COMPARE WITH` → a second target with `offset`.
 - `FACET a` → `by (a)` + legend; `FACET … LIMIT n` → `topk(n, …)`;
@@ -105,6 +110,14 @@ create folders). Never print or commit them.
 - Infra samples (`SystemSample`, `K8s*Sample`, `ProcessSample`,
   `ContainerSample`, …) → node_exporter / kube-state-metrics / cAdvisor /
   process-exporter / kubelet metrics.
+- Legacy AWS polling samples (`ComputeSample`, `DatastoreSample`,
+  `QueueSample`, `LoadBalancerSample`, …) need `WHERE provider = '<type>'`;
+  `provider.<Metric>.<Stat>` → YACE `aws_<ns>_<metric>_<stat>` (needs-review:
+  verify the name, pin it with `metric_map` keyed `"<Event>.<attribute>"`).
+- `{{var}}` anywhere in a literal stays a variable (`'%{{host}}%'` →
+  `=~".*${host:regex}.*"`); `FACET {{attr}}` → `by ($attr)`. NRQL dashboard
+  variables become `label_values(<metric>{<WHERE>}, label)` on the datasource
+  family their FROM maps to (Prometheus / Loki / Tempo).
 - Never translatable: `funnel()`, service maps, custom nerdpack
   visualizations, browser/mobile RUM (Faro is the LGTM equivalent), synthetics
   (blackbox_exporter), `Nr*` account data, subqueries. The tool says so per
