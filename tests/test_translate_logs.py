@@ -253,3 +253,78 @@ class FilterIfTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LogsAdvancedTests(unittest.TestCase):
+    def test_numeric_predicate_becomes_pipeline_filter(self):
+        t = tr("SELECT count(*) FROM Log WHERE service.name = 'x' AND "
+               "duration_ms > 500 TIMESERIES")
+        self.assertEqual(
+            t.expr,
+            'sum(count_over_time({service_name="x"} | json | duration_ms > '
+            '500 | __error__="" [$__auto]))')
+        self.assertEqual(t.confidence, NEEDS_REVIEW)
+
+    def test_numeric_wrapper_unwrapped_for_average(self):
+        t = tr("SELECT average(numeric(duration_ms)) FROM Log WHERE "
+               "service.name = 'x' TIMESERIES")
+        self.assertIn("| unwrap duration_ms", t.expr)
+
+    def test_ratio_of_log_aggregations(self):
+        t = tr("SELECT filter(count(*), WHERE level = 'error') / count(*) "
+               "FROM Log WHERE service.name = 'x' TIMESERIES")
+        self.assertEqual(
+            t.expr,
+            '(sum(count_over_time({service_name="x", level="error"} '
+            '[$__auto]))) / (sum(count_over_time({service_name="x"} '
+            '[$__auto])))')
+        self.assertIn("unit:percentunit", t.notes)
+
+    def test_multiplier_applied_and_unit_scaled(self):
+        t = tr("SELECT filter(count(*), WHERE level = 'error') / count(*) "
+               "* 100 FROM Log WHERE service.name = 'x' TIMESERIES")
+        self.assertTrue(t.expr.endswith(") * 100"))
+        self.assertIn("unit:percent", t.notes)
+
+    def test_latest_message_is_a_one_line_logs_panel(self):
+        t = tr("SELECT latest(message) FROM Log WHERE service.name = 'x' "
+               "AND level = 'error'")
+        self.assertEqual(t.expr, '{service_name="x", level="error"}')
+        self.assertIn("panel-hint:logs", t.notes)
+        self.assertIn("maxlines:1", t.notes)
+
+    def test_multiple_aggregations_become_extra_targets(self):
+        t = tr("SELECT count(*), uniqueCount(user.id) FROM Log WHERE "
+               "service.name = 'x' TIMESERIES")
+        self.assertTrue(t.expr.startswith("sum(count_over_time("))
+        self.assertEqual(len(t.extra), 1)
+        self.assertIn("count(sum by (user_id)", t.extra[0].expr)
+
+    def test_or_across_parsed_fields_becomes_pipeline_or(self):
+        t = tr("SELECT count(*) FROM Log WHERE service.name = 'x' AND "
+               "(status = '500' OR path = '/pay') TIMESERIES")
+        self.assertEqual(
+            t.expr,
+            'sum(count_over_time({service_name="x"} | json | status="500" '
+            'or path="/pay" | __error__="" [$__auto]))')
+
+    def test_or_across_stream_labels_falls_back_to_pipeline_with_note(self):
+        t = tr("SELECT count(*) FROM Log WHERE service.name = 'a' OR "
+               "level = 'error' TIMESERIES")
+        self.assertIn('{service_name=~".+"}', t.expr)
+        self.assertIn('service_name="a" or level="error"', t.expr)
+        self.assertEqual(t.confidence, NEEDS_REVIEW)
+
+    def test_or_mixing_message_is_dropped_with_note(self):
+        t = tr("SELECT count(*) FROM Log WHERE service.name = 'x' AND "
+               "(message LIKE '%a%' OR level = 'error') TIMESERIES")
+        self.assertTrue(any("DROPPED" in n for n in t.notes))
+
+    def test_event_map_stream_labels(self):
+        cfg = load_config()
+        cfg["event_map"] = {"AuditEvent": {"family": "logs",
+                                           "labels": {"job": "audit"}}}
+        t = tr("SELECT * FROM AuditEvent WHERE actor = 'root' LIMIT 20", cfg)
+        self.assertEqual(t.datasource, "loki")
+        self.assertTrue(t.expr.startswith('{job="audit"}'))
+        self.assertIn('actor="root"', t.expr)

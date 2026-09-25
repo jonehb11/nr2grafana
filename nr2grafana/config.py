@@ -100,11 +100,63 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "error.type": "error_type",
         "request.uri": "http_route",
         "http.route": "http_route",
+        # Infrastructure agent dimensional metrics (host.* / k8s.*) name
+        # their entities with these attributes.
+        "host.hostname": "instance",
+        "host.id": "instance",
+        "host.displayName": "instance",
+        "k8s.podName": "pod",
+        "k8s.namespaceName": "namespace",
+        "k8s.nodeName": "node",
+        "k8s.clusterName": "cluster",
+        "k8s.containerName": "container",
+        "k8s.deploymentName": "deployment",
+        "k8s.daemonsetName": "daemonset",
+        "k8s.statefulsetName": "statefulset",
+        "k8s.replicasetName": "replicaset",
+        "k8s.hpaName": "horizontalpodautoscaler",
+        "k8s.node.name": "node",
+        "nodeName": "node",
+        "node": "node",
+        "mountPoint": "mountpoint",
+        "interfaceName": "device",
+        "datastoreType": "db_system",
+        "db.system": "db_system",
+        "external.host": "server_address",
+        "server.address": "server_address",
+        "http.url": "url_full",
+        "service.instance.id": "service_instance_id",
+        "entity.guid": "service_instance_id",
+        "metricTimesliceName": "metricTimesliceName",
+        "state": "state",
+        "phase": "phase",
+        "reason": "reason",
+        "user.id": "user_id",
+        "trace.id": "trace_id",
+        "span.id": "span_id",
+        "span.kind": "span_kind",
+        "otel.status_code": "status_code",
+        "http.request.method": "http_request_method",
+        "http.response.status_code": "http_response_status_code",
+        "url.path": "http_route",
+        "messaging.destination.name": "messaging_destination_name",
+        "messaging.system": "messaging_system",
+        "rpc.service": "rpc_service",
+        "rpc.method": "rpc_method",
     },
 
     # NR metric name (FROM Metric SELECT ...(`metric.name`)) -> Prometheus
-    # metric name. Checked before the automatic dot->underscore/OTel
-    # normalization. Populate with your own known mappings.
+    # metric name. Checked before the built-in knowledge of New Relic's own
+    # metric names (apm.service.*, newrelic.goldenmetrics.*, host.*, k8s.*,
+    # aws.*, OTel semconv) and the dot->underscore heuristics. Entries:
+    #   "orders.completed": {"name": "orders_total", "type": "counter"}
+    #   "queue.depth": {"name": "queue_depth", "type": "gauge",
+    #                   "unit": "short", "matchers": {"queue": "main"}}
+    #   "custom.ratio": {"expr": "<AGG> <BY>(my_ratio{<SELBARE>})",
+    #                    "unit": "percentunit"}   # full PromQL template
+    # Legacy timeslice metrics are keyed by their metricTimesliceName:
+    #   "Custom/checkout/orders": {"name": "checkout_orders_total",
+    #                              "type": "counter"}
     "metric_map": {},
 
     # Attributes that exist as Loki *stream labels* in your setup. WHERE
@@ -158,6 +210,22 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # to counters. The OTel collector's prometheusremotewrite exporter with
     # default settings does NOT; the prometheus exporter does.
     "metric_total_suffix": True,
+
+    # How aggregated FROM Span queries are answered:
+    #   "spanmetrics" -> PromQL over span metrics in Mimir (default)
+    #   "traceql"     -> TraceQL metrics in Tempo 2.4+ ({...} | rate() by ())
+    # uniqueCount(trace.id) always uses TraceQL metrics (root-span count).
+    "span_aggregations": "spanmetrics",
+
+    # Custom event types -> where that data lives in your stack. Keys are
+    # NR event types; a "logs" entry routes the query to Loki with these
+    # stream labels, a "metrics" entry names the Prometheus metric that
+    # carries the event's numeric attribute (then metric_map applies).
+    #   "event_map": {
+    #     "Purchase":  {"family": "logs", "labels": {"job": "purchases"}},
+    #     "MyMetricEvent": {"family": "metrics", "metric": "my.metric"}
+    #   }
+    "event_map": {},
 
     # When true, widgets whose NRQL cannot be translated become panels that
     # query the New Relic Grafana datasource plugin with the original NRQL.

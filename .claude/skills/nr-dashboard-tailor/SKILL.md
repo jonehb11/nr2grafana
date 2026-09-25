@@ -14,6 +14,10 @@ had to guess is tagged. Your job is to turn guesses into verified facts.
 1. The converted dashboard JSON file(s) and `migration-report.json` from the
    same output directory. The report lists, per widget: original NRQL,
    emitted queries, confidence, and notes explaining every assumption.
+   `python3 -m nr2grafana --json inspect <nr.json>` gives the same per
+   widget plus the parsed NRQL clauses; `python3 -m nr2grafana --json
+   validate <dir> --grafana-url $GRAFANA_URL --test` tells you which
+   datasource types are missing and which panels error / return no data.
 2. Stack endpoints (ask the user if unknown, or read from Grafana
    datasource provisioning):
    - Mimir/Prometheus query URL (e.g. `http://mimir:9009/prometheus`)
@@ -69,8 +73,11 @@ Every fix is one of these — put it where it belongs in the mapping config
 - wrong span-metrics naming → `spanmetrics_flavor` or `span_metrics`
 - wrong HTTP semconv generation → `http_metrics_flavor`
 
-Then offer to re-run `python3 -m nr2grafana convert` on the remaining
-dashboards with the updated config, and diff the results.
+Then re-run `python3 -m nr2grafana convert` on the remaining dashboards
+with the updated config, `validate --grafana-url ... --test` again, and
+finish with `python3 -m nr2grafana export <dir> --grafana-url ... --folder
+"..." --test`, which creates the dashboards, verifies them by reading them
+back, and names the New Relic dashboard each came from.
 
 ### 5. Verify end-to-end
 If Grafana API access exists: POST the dashboard

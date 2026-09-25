@@ -29,6 +29,8 @@ FIXTURE = os.path.join(REPO_ROOT, "fixtures", "newrelic",
 
 # Every tool the contract requires the server to expose.
 EXPECTED_TOOLS = {
+    "inspect", "explain", "import", "convert_files", "validate_dashboards",
+    "export",
     "list_dashboards", "get_dashboard", "get_artifact", "convert",
     "fetch_newrelic", "validate", "parity", "compare", "samples",
     "diagnose", "deepdive", "cost_analyze", "tco", "cost_rca",

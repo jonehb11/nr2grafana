@@ -8,13 +8,22 @@ Design goals:
 - Forgiving: anything we cannot parse raises NrqlParseError with position
   info; callers degrade gracefully (panel is emitted with the original NRQL
   preserved and flagged needs-review) instead of aborting a batch run.
+- Complete for the dashboard subset of NRQL: arithmetic in SELECT and
+  WHERE (``(a / b) * 100``, ``duration * 1000 > 500``), ``--`` and
+  ``/* */`` comments, ``WITH ... AS`` computed attributes, named function
+  arguments (``apdex(duration, t:0.3)``), embedded ``WHERE`` in
+  ``filter()`` / ``percentage()`` / ``cases()``, and every tail clause
+  (SINCE / UNTIL / COMPARE WITH / TIMESERIES / SLIDE BY / LIMIT / ORDER
+  BY / WITH TIMEZONE / EXTRAPOLATE). Subqueries are rejected with a
+  precise message.
 """
 
 from __future__ import annotations
 
+import copy
 import re
 from dataclasses import dataclass, field
-from typing import Any, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 
 class NrqlParseError(Exception):
@@ -56,6 +65,11 @@ class Func:
     and the condition argument of if(...). ``cases`` collects every
     embedded ``WHERE <cond> [AS <alias>]`` for cases(...); for functions
     with a single embedded WHERE it holds one entry mirroring ``where``.
+
+    Pseudo-functions produced by SELECT normalization:
+      _ratio(a, b)        a / b where both sides are aggregations
+      _arith(op, a, b)    any other arithmetic between aggregations /
+                          numbers (op is a Lit holding '+', '-', '*', '/')
     """
     name: str  # lowercased
     args: List[Any] = field(default_factory=list)
@@ -64,8 +78,16 @@ class Func:
 
 
 @dataclass
+class BinOp:
+    """Arithmetic between two expressions: '+', '-', '*', '/'."""
+    op: str
+    left: Any
+    right: Any
+
+
+@dataclass
 class SelectItem:
-    expr: Union[Attr, Lit, Star, Func]
+    expr: Union[Attr, Lit, Star, Func, BinOp]
     alias: Optional[str] = None
     # SELECT agg(x) * 1000 — unit-conversion multiplier, very common in NR.
     multiplier: Optional[float] = None
@@ -146,6 +168,9 @@ class NrqlQuery:
     timezone: Optional[str] = None
     extrapolate: bool = False
     metric_format: Optional[str] = None
+    # WITH <expr> AS <alias> computed attributes (already substituted into
+    # select/where/facet; kept for inspection).
+    with_: Dict[str, Any] = field(default_factory=dict)
     # Anything at the tail we recognized but do not model.
     extras: List[str] = field(default_factory=list)
 
@@ -167,8 +192,10 @@ _TOKEN_RE = re.compile(
   | (?P<comma>,)
   | (?P<star>\*)
   | (?P<slash>/)
+  | (?P<plus>\+)
+  | (?P<minus>-)
   | (?P<percent>%)
-  | (?P<ident>[A-Za-z_][A-Za-z0-9_.\-/:$%{}\[\]]*)
+  | (?P<ident>[A-Za-z_][A-Za-z0-9_.:$%{}\[\]]*)
     """,
     re.VERBOSE,
 )
@@ -184,7 +211,53 @@ class Tok:
         return self.text.upper()
 
 
+def strip_comments(query: str) -> str:
+    """Blank out ``-- ...`` line comments and ``/* ... */`` block comments
+    outside string literals (positions are preserved so error offsets
+    still point into the original text)."""
+    out: List[str] = []
+    i = 0
+    n = len(query)
+    in_str = False
+    while i < n:
+        ch = query[i]
+        if in_str:
+            out.append(ch)
+            if ch == "\\" and i + 1 < n:
+                out.append(query[i + 1])
+                i += 2
+                continue
+            if ch == "'":
+                if i + 1 < n and query[i + 1] == "'":
+                    out.append("'")
+                    i += 2
+                    continue
+                in_str = False
+            i += 1
+            continue
+        if ch == "'":
+            in_str = True
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "-" and i + 1 < n and query[i + 1] == "-":
+            while i < n and query[i] != "\n":
+                out.append(" ")
+                i += 1
+            continue
+        if ch == "/" and i + 1 < n and query[i + 1] == "*":
+            end = query.find("*/", i + 2)
+            end = n if end < 0 else end + 2
+            out.append(" " * (end - i))
+            i = end
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def tokenize(query: str) -> List[Tok]:
+    query = strip_comments(query)
     toks: List[Tok] = []
     i = 0
     n = len(query)
@@ -220,6 +293,12 @@ _CLAUSE_KEYWORDS = {
     "COMPARE", "LIMIT", "ORDER", "WITH", "EXTRAPOLATE", "SLIDE", "SHOW",
 }
 
+# Words that can never start an operand (so `x AND y` is not parsed as
+# `x` followed by an attribute named AND).
+_RESERVED_OPERAND = _CLAUSE_KEYWORDS | {
+    "AND", "OR", "NOT", "IN", "LIKE", "RLIKE", "IS", "AS", "BY",
+}
+
 _DURATION_UNITS = {
     "millisecond": 0.001, "milliseconds": 0.001, "ms": 0.001,
     "second": 1, "seconds": 1, "s": 1,
@@ -229,6 +308,20 @@ _DURATION_UNITS = {
     "week": 604800, "weeks": 604800, "w": 604800,
     "month": 2592000, "months": 2592000,
 }
+
+# Aggregations for which agg(x * k) == agg(x) * k, so a scale factor on
+# the argument can be lifted into the SELECT multiplier.
+_LINEAR_AGGS = {
+    "average", "avg", "sum", "max", "min", "latest", "earliest",
+    "percentile", "median", "stddev", "derivative", "predictlinear",
+}
+
+_NAMED_ARG_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*):(\S+)$")
+
+
+def _is_number(v: Any) -> bool:
+    return isinstance(v, Lit) and isinstance(v.value, (int, float)) \
+        and not isinstance(v.value, bool)
 
 
 # ---------------------------------------------------------------------------
@@ -285,14 +378,27 @@ class _Parser:
             return True
         return tok.kind == "ident" and tok.upper() in _CLAUSE_KEYWORDS
 
+    def _at_subquery(self) -> bool:
+        tok = self.peek()
+        nxt = self.peek(1)
+        return (tok is not None and tok.kind == "lparen" and nxt is not None
+                and nxt.kind == "ident" and nxt.upper() in ("SELECT", "FROM"))
+
     # -- entry --
 
     def parse(self) -> NrqlQuery:
         q = NrqlQuery(raw=self.query.strip())
+        # WITH <expr> AS <alias> may lead the query.
+        if self.at_kw("WITH") and not self._with_is_tail_clause():
+            self.next()
+            q.with_ = self.parse_with_list()
         # NR allows FROM-first form: FROM Txn SELECT ...
         if self.at_kw("FROM"):
             self.next()
             q.from_ = self.parse_from_list()
+            if self.at_kw("WITH") and not self._with_is_tail_clause():
+                self.next()
+                q.with_.update(self.parse_with_list())
             self.expect_kw("SELECT")
             q.select = self.parse_select_list()
         else:
@@ -343,9 +449,15 @@ class _Parser:
                 if self.eat_kw("TIMEZONE"):
                     q.timezone = self.consume_clause_text().strip("'\" ")
                 elif self.eat_kw("METRIC_FORMAT"):
-                    q.metric_format = self.consume_clause_text()
+                    q.metric_format = self.consume_clause_text().strip("'\" ")
                 else:
-                    q.extras.append("WITH " + self.consume_clause_text())
+                    # A trailing WITH ... AS computed attribute list.
+                    save = self.i
+                    try:
+                        q.with_.update(self.parse_with_list())
+                    except NrqlParseError:
+                        self.i = save
+                        q.extras.append("WITH " + self.consume_clause_text())
             elif u == "EXTRAPOLATE":
                 self.next()
                 q.extrapolate = True
@@ -357,11 +469,45 @@ class _Parser:
             else:
                 # Unknown tail clause; capture and stop being clever.
                 q.extras.append(self.consume_clause_text(include_first=True))
+        if q.with_:
+            _substitute_with(q)
+        for item in q.select:
+            _normalize_item(item)
         return q
+
+    def _with_is_tail_clause(self) -> bool:
+        nxt = self.peek(1)
+        return nxt is not None and nxt.kind == "ident" and nxt.upper() in (
+            "TIMEZONE", "METRIC_FORMAT")
 
     # -- clause parsers --
 
+    def parse_with_list(self) -> Dict[str, Any]:
+        out: Dict[str, Any] = {}
+        while True:
+            expr = self.parse_expr()
+            self.expect_kw("AS")
+            tok = self.next()
+            if tok.kind == "string":
+                alias = _unquote_string(tok.text)
+            elif tok.kind in ("ident", "qident"):
+                alias = tok.text.strip("`")
+            else:
+                raise NrqlParseError("bad WITH alias %r" % tok.text, tok.pos,
+                                     self.query)
+            out[alias] = expr
+            if self.peek() is not None and self.peek().kind == "comma":  # type: ignore[union-attr]
+                self.next()
+                continue
+            return out
+
     def parse_from_list(self) -> List[str]:
+        if self._at_subquery():
+            tok = self.peek()
+            raise NrqlParseError(
+                "nested subquery (FROM (SELECT ...)) has no equivalent in "
+                "PromQL/LogQL; rewrite as a single-level query",
+                tok.pos if tok else -1, self.query)
         names = [self.parse_name()]
         while self.peek() is not None and self.peek().kind == "comma":  # type: ignore[union-attr]
             self.next()
@@ -387,45 +533,6 @@ class _Parser:
 
     def parse_select_item(self) -> SelectItem:
         expr = self.parse_expr()
-        multiplier: Optional[float] = None
-        # 1000 * agg(x) — leading unit-conversion factor (the mirror image
-        # of the far more common agg(x) * 1000 form).
-        if isinstance(expr, Lit) and isinstance(expr.value, (int, float)) \
-                and not isinstance(expr.value, bool):
-            tok = self.peek()
-            if tok is not None and tok.kind == "star":
-                self.next()
-                multiplier = float(expr.value)
-                expr = self.parse_expr()
-        # agg(x) * 1000 / agg(x) / 60 style unit-conversion arithmetic.
-        while True:
-            tok = self.peek()
-            nxt = self.peek(1)
-            if tok is not None and tok.kind == "star" and nxt is not None \
-                    and nxt.kind == "number":
-                self.next()
-                factor = float(self.next().text)
-                multiplier = (multiplier or 1.0) * factor
-                continue
-            if tok is not None and tok.kind == "slash" and nxt is not None \
-                    and nxt.kind == "number":
-                self.next()
-                factor = float(self.next().text)
-                if factor != 0:
-                    multiplier = (multiplier or 1.0) / factor
-                continue
-            if tok is not None and tok.kind == "slash" and nxt is not None \
-                    and nxt.kind == "ident" and isinstance(expr, Func) \
-                    and self.peek(2) is not None \
-                    and self.peek(2).kind == "lparen":
-                # agg(x) / agg(y) — a ratio of two aggregations (the
-                # classic error-rate shape); modeled as the pseudo-
-                # function _ratio for the translators.
-                self.next()
-                right = self.parse_func()
-                expr = Func("_ratio", args=[expr, right])
-                continue
-            break
         alias = None
         if self.eat_kw("AS"):
             tok = self.next()
@@ -435,12 +542,78 @@ class _Parser:
                 alias = tok.text.strip("`")
             else:
                 raise NrqlParseError("bad alias %r" % tok.text, tok.pos, self.query)
-        return SelectItem(expr=expr, alias=alias, multiplier=multiplier)
+        return SelectItem(expr=expr, alias=alias)
+
+    # -- expressions (with arithmetic) --
 
     def parse_expr(self) -> Any:
+        return self.parse_additive()
+
+    def parse_additive(self) -> Any:
+        left = self.parse_multiplicative()
+        while True:
+            tok = self.peek()
+            if tok is None:
+                return left
+            if tok.kind == "plus":
+                self.next()
+                left = BinOp("+", left, self.parse_multiplicative())
+                continue
+            if tok.kind == "minus":
+                self.next()
+                left = BinOp("-", left, self.parse_multiplicative())
+                continue
+            if tok.kind == "number" and tok.text.startswith("-"):
+                # `a -1`: the tokenizer folded the sign into the number.
+                self.next()
+                num = float(tok.text[1:]) if "." in tok.text else int(tok.text[1:])
+                left = BinOp("-", left, Lit(num))
+                continue
+            return left
+
+    def parse_multiplicative(self) -> Any:
+        left = self.parse_unary()
+        while True:
+            tok = self.peek()
+            if tok is None:
+                return left
+            if tok.kind == "star":
+                self.next()
+                left = BinOp("*", left, self.parse_unary())
+                continue
+            if tok.kind == "slash":
+                self.next()
+                left = BinOp("/", left, self.parse_unary())
+                continue
+            return left
+
+    def parse_unary(self) -> Any:
+        tok = self.peek()
+        if tok is not None and tok.kind == "minus":
+            self.next()
+            inner = self.parse_unary()
+            if _is_number(inner):
+                return Lit(-inner.value)
+            return BinOp("*", Lit(-1), inner)
+        if tok is not None and tok.kind == "plus":
+            self.next()
+            return self.parse_unary()
+        return self.parse_primary()
+
+    def parse_primary(self) -> Any:
         tok = self.peek()
         if tok is None:
             raise NrqlParseError("unexpected end of query", len(self.query), self.query)
+        if tok.kind == "lparen":
+            if self._at_subquery():
+                raise NrqlParseError(
+                    "subquery (SELECT ...) inside an expression is not "
+                    "supported; no PromQL/LogQL equivalent",
+                    tok.pos, self.query)
+            self.next()
+            inner = self.parse_expr()
+            self.expect("rparen")
+            return inner
         if tok.kind == "star":
             self.next()
             return Star()
@@ -459,6 +632,9 @@ class _Parser:
             self.next()
             return Attr(tok.text)
         if tok.kind == "ident":
+            if tok.upper() in _RESERVED_OPERAND:
+                raise NrqlParseError("unexpected keyword %r" % tok.text,
+                                     tok.pos, self.query)
             nxt = self.peek(1)
             if nxt is not None and nxt.kind == "lparen":
                 return self.parse_func()
@@ -526,8 +702,7 @@ class _Parser:
                 if tok is None:
                     break
                 if tok.kind == "ident" and fn.args \
-                        and isinstance(fn.args[-1], Lit) \
-                        and isinstance(fn.args[-1].value, (int, float)) \
+                        and _is_number(fn.args[-1]) \
                         and tok.text.lower() in _DURATION_UNITS:
                     unit = self.next().text.lower()
                     val = fn.args[-1].value
@@ -544,20 +719,32 @@ class _Parser:
                 break
 
     def parse_func_arg(self, fn: Func) -> Any:
-        # apdex(duration, t: 0.5) — named threshold arg.
         tok = self.peek()
         nxt = self.peek(1)
-        if tok is not None and tok.kind == "ident" and tok.text.endswith(":"):
+        if tok is not None and tok.kind == "ident":
+            # apdex(duration, t: 0.5) — named threshold arg (space form).
+            if tok.text.endswith(":") and len(tok.text) > 1:
+                self.next()
+                val = self.parse_expr()
+                return Lit("%s%s" % (tok.text, getattr(val, "value", "")))
+            # apdex(duration, t:0.3) — the tokenizer glued name:value.
+            m = _NAMED_ARG_RE.match(tok.text)
+            if m and nxt is not None and nxt.kind in ("comma", "rparen"):
+                self.next()
+                return Lit("%s:%s" % (m.group(1), m.group(2)))
+            if nxt is not None and nxt.kind == "op" and nxt.text == "=":
+                # e.g. buckets(x, width = 10)? Rare; keep raw.
+                name = self.next().text
+                self.next()
+                val = self.parse_expr()
+                return Lit("%s=%s" % (name, getattr(val, "value", "")))
+        if tok is not None and tok.kind == "string" and fn.name == "capture":
+            # capture(attr, r'regex') — NR's raw-string prefix is optional.
+            pass
+        if tok is not None and tok.kind == "ident" and tok.text.lower() == "r" \
+                and nxt is not None and nxt.kind == "string":
             self.next()
-            val = self.parse_expr()
-            return Lit("%s%s" % (tok.text, getattr(val, "value", "")))
-        if (tok is not None and nxt is not None and tok.kind == "ident"
-                and nxt.kind == "op" and nxt.text == "="):
-            # e.g. buckets(x, width = 10)? Rare; keep raw.
-            name = self.next().text
-            self.next()
-            val = self.parse_expr()
-            return Lit("%s=%s" % (name, getattr(val, "value", "")))
+            return Lit(_unquote_string(self.next().text))
         return self.parse_expr()
 
     # -- WHERE --
@@ -590,11 +777,16 @@ class _Parser:
     def parse_predicate(self) -> Cond:
         tok = self.peek()
         if tok is not None and tok.kind == "lparen":
-            # Could be a parenthesized condition.
-            self.next()
-            cond = self.parse_condition()
-            self.expect("rparen")
-            return cond
+            # A parenthesized condition ... or a parenthesized arithmetic
+            # operand: (duration * 1000) > 500. Try the condition first.
+            save = self.i
+            try:
+                self.next()
+                cond = self.parse_condition()
+                self.expect("rparen")
+                return cond
+            except NrqlParseError:
+                self.i = save
         left = self.parse_expr()
         tok = self.peek()
         if tok is None:
@@ -603,6 +795,11 @@ class _Parser:
             op = self.next().text
             if op == "<>":
                 op = "!="
+            if self._at_subquery():
+                raise NrqlParseError(
+                    "subquery in WHERE (... = (SELECT ...)) is not "
+                    "supported; no PromQL/LogQL equivalent",
+                    tok.pos, self.query)
             right = self.parse_expr()
             return Cmp(left, op, right)
         if tok.kind == "ident":
@@ -625,6 +822,10 @@ class _Parser:
                 return Cmp(left, "NOT RLIKE" if negated else "RLIKE", right)
             if u == "IN":
                 self.next()
+                if self._at_subquery():
+                    raise NrqlParseError(
+                        "subquery in IN (SELECT ...) is not supported; "
+                        "no PromQL/LogQL equivalent", tok.pos, self.query)
                 self.expect("lparen")
                 values: List[Any] = []
                 while True:
@@ -648,6 +849,11 @@ class _Parser:
                 raise NrqlParseError(
                     "expected NULL/TRUE/FALSE after IS",
                     tok.pos if tok else len(self.query), self.query)
+        # A bare boolean attribute: WHERE error [AND ...]
+        if isinstance(left, Attr) and (
+                self._at_clause_boundary() or self.at_kw("AND", "OR")
+                or tok.kind == "rparen"):
+            return Cmp(left, "=", Lit(True))
         raise NrqlParseError("expected comparison operator, got %r" % tok.text,
                              tok.pos, self.query)
 
@@ -733,6 +939,129 @@ class _Parser:
                 depth -= 1
             parts.append(self.next().text)
         return " ".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Post-parse normalization
+# ---------------------------------------------------------------------------
+
+def _substitute_with(q: NrqlQuery) -> None:
+    """Replace Attr(alias) references with the WITH expression."""
+    table = q.with_
+
+    def sub(node: Any) -> Any:
+        if isinstance(node, Attr) and node.name in table:
+            return copy.deepcopy(table[node.name])
+        if isinstance(node, Func):
+            node.args = [sub(a) for a in node.args]
+            if node.where is not None:
+                node.where = sub(node.where)
+            node.cases = [(sub(c), a) for c, a in node.cases]
+            return node
+        if isinstance(node, BinOp):
+            node.left = sub(node.left)
+            node.right = sub(node.right)
+            return node
+        if isinstance(node, Cmp):
+            node.left = sub(node.left)
+            node.right = sub(node.right)
+            return node
+        if isinstance(node, InList):
+            node.left = sub(node.left)
+            node.values = [sub(v) for v in node.values]
+            return node
+        if isinstance(node, NullCheck):
+            node.left = sub(node.left)
+            return node
+        if isinstance(node, BoolOp):
+            node.items = [sub(i) for i in node.items]
+            return node
+        if isinstance(node, NotOp):
+            node.item = sub(node.item)
+            return node
+        return node
+
+    for item in q.select:
+        item.expr = sub(item.expr)
+    if q.where is not None:
+        q.where = sub(q.where)
+    for f in q.facet:
+        f.expr = sub(f.expr)
+    if q.order_by is not None:
+        q.order_by.expr = sub(q.order_by.expr)
+
+
+def _normalize_item(item: SelectItem) -> None:
+    """Fold arithmetic into the (expr, multiplier) shape the translators
+    consume: scale factors become ``multiplier``, agg/agg becomes
+    ``_ratio``, everything else becomes ``_arith``. A scale factor on the
+    argument of a linear aggregation (average(duration * 1000)) is lifted
+    into the multiplier too."""
+    core, mult = _normalize_expr(item.expr)
+    arg_mult = _lift_arg_scale(core)
+    if arg_mult is not None:
+        mult = (mult or 1.0) * arg_mult
+    item.expr = core
+    if mult is not None and mult != 1.0:
+        item.multiplier = (item.multiplier or 1.0) * mult
+
+
+def _normalize_expr(expr: Any) -> Tuple[Any, Optional[float]]:
+    """-> (core expression, scale factor or None)."""
+    if not isinstance(expr, BinOp):
+        return expr, None
+    lcore, lmul = _normalize_expr(expr.left)
+    rcore, rmul = _normalize_expr(expr.right)
+    lnum = _is_number(lcore)
+    rnum = _is_number(rcore)
+    if expr.op == "*":
+        if lnum and rnum:
+            return Lit(lcore.value * rcore.value), None
+        if rnum:
+            return lcore, (lmul or 1.0) * float(rcore.value)
+        if lnum:
+            return rcore, (rmul or 1.0) * float(lcore.value)
+    if expr.op == "/":
+        if rnum and float(rcore.value) != 0:
+            return lcore, (lmul or 1.0) / float(rcore.value)
+        if isinstance(lcore, Func) and isinstance(rcore, Func) \
+                and lcore.name != "_arith" and rcore.name != "_arith":
+            mult = None
+            if lmul is not None or rmul is not None:
+                mult = (lmul or 1.0) / (rmul or 1.0)
+            return Func("_ratio", args=[lcore, rcore]), mult
+    # General arithmetic; re-attach any operand scale factors.
+    left = _rescale(lcore, lmul)
+    right = _rescale(rcore, rmul)
+    return Func("_arith", args=[Lit(expr.op), left, right]), None
+
+
+def _rescale(core: Any, mult: Optional[float]) -> Any:
+    if mult is None or mult == 1.0:
+        return core
+    if _is_number(core):
+        return Lit(core.value * mult)
+    return Func("_arith", args=[Lit("*"), core, Lit(mult)])
+
+
+def _lift_arg_scale(fn: Any) -> Optional[float]:
+    """average(duration * 1000) -> average(duration), returning 1000, for
+    aggregations that are linear in their argument (also through
+    filter(...) wrappers). Returns None when nothing was lifted."""
+    if not isinstance(fn, Func) or not fn.args:
+        return None
+    if fn.name == "filter":
+        return _lift_arg_scale(fn.args[0])
+    if fn.name not in _LINEAR_AGGS:
+        return None
+    arg = fn.args[0]
+    if not isinstance(arg, BinOp):
+        return None
+    core, mult = _normalize_expr(arg)
+    if isinstance(core, (Attr, Func)) and mult is not None and mult != 1.0:
+        fn.args[0] = core
+        return mult
+    return None
 
 
 def parse_nrql(query: str) -> NrqlQuery:

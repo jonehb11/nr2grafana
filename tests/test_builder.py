@@ -359,3 +359,84 @@ class PassthroughFallbackTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BuilderAdditionsTests(unittest.TestCase):
+    def _convert(self, widgets, variables=None, guid=""):
+        from nr2grafana.config import load_config
+        from nr2grafana.grafana.builder import build_dashboards
+        from nr2grafana.model import parse_nr_dashboard
+        data = {"name": "T", "guid": guid, "pages": [{"name": "P",
+                                                     "widgets": widgets}],
+                "variables": variables or []}
+        return build_dashboards(parse_nr_dashboard(data), load_config(),
+                                source_file="t.json")
+
+    def _widget(self, viz, nrql, title="w"):
+        return {"title": title, "visualization": {"id": viz},
+                "layout": {"column": 1, "row": 1, "width": 4, "height": 3},
+                "rawConfiguration": {"nrqlQueries": [
+                    {"accountId": 1, "query": nrql}]}}
+
+    def test_timeshift_hint_sets_panel_override(self):
+        fn, dash, rep = self._convert([self._widget(
+            "viz.line", "SELECT count(*) FROM Transaction SINCE 1 day ago "
+            "UNTIL 1 hour ago TIMESERIES")])[0]
+        p = dash["panels"][0]
+        self.assertEqual(p["timeShift"], "1h")
+        self.assertEqual(dash["time"]["from"], "now-23h")
+
+    def test_provenance_and_source_link(self):
+        fn, dash, rep = self._convert(
+            [self._widget("viz.line", "SELECT count(*) FROM Transaction")],
+            guid="ABC123")[0]
+        self.assertEqual(dash["nr2grafana"]["source"]["name"], "T")
+        self.assertEqual(dash["nr2grafana"]["source"]["file"], "t.json")
+        self.assertIn("(guid ABC123)", dash["description"])
+        self.assertEqual(dash["links"][0]["url"],
+                         "https://one.newrelic.com/redirect/entity/ABC123")
+
+    def test_service_map_reported_with_reason_and_equivalent(self):
+        fn, dash, rep = self._convert([{
+            "title": "map", "visualization": {"id": "topology.service-map"},
+            "layout": {"column": 1, "row": 1, "width": 4, "height": 3},
+            "rawConfiguration": {}}])[0]
+        entry = rep[0]
+        self.assertEqual(entry["confidence"], "untranslatable")
+        self.assertIn("service maps", entry["reason"])
+        self.assertIn("node graph", entry["equivalent"])
+        self.assertEqual(dash["panels"][0]["type"], "text")
+
+    def test_new_viz_ids(self):
+        outs = self._convert([
+            self._widget("viz.scatter", "SELECT average(duration) FROM "
+                                        "Transaction TIMESERIES", "s"),
+            self._widget("viz.sparkline", "SELECT count(*) FROM Transaction",
+                         "sp"),
+            self._widget("viz.traffic-light", "SELECT count(*) FROM "
+                                              "Transaction", "tl")])
+        dash = outs[0][1]
+        by = {p["title"].split(" [")[0]: p for p in dash["panels"]}
+        self.assertEqual(by["s"]["type"], "timeseries")
+        self.assertEqual(by["s"]["fieldConfig"]["defaults"]["custom"]
+                         ["drawStyle"], "points")
+        self.assertEqual(by["sp"]["type"], "stat")
+        self.assertEqual(by["sp"]["options"]["graphMode"], "area")
+        self.assertEqual(by["tl"]["options"]["colorMode"], "background")
+
+    def test_traceql_metrics_target(self):
+        fn, dash, rep = self._convert([self._widget(
+            "viz.billboard", "SELECT uniqueCount(trace.id) FROM Span WHERE "
+                             "service.name = 'c'")])[0]
+        p = dash["panels"][0]
+        tgt = p["targets"][0]
+        self.assertEqual(tgt["datasource"]["type"], "tempo")
+        self.assertEqual(tgt["metricsQueryType"], "range")
+        self.assertTrue(tgt["query"].endswith("| count_over_time()"))
+        self.assertEqual(p["type"], "stat")
+
+    def test_report_entry_has_panel_title(self):
+        fn, dash, rep = self._convert([self._widget(
+            "viz.line", "SELECT count(*) FROM Transaction FACET name "
+                        "TIMESERIES", "byname")])[0]
+        self.assertEqual(rep[0]["panel_title"], "byname [REVIEW]")

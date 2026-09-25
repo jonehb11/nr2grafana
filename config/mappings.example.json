@@ -26,7 +26,7 @@
     "payment.duration": { "name": "payment_duration_seconds", "type": "histogram", "unit": "s" }
   },
 
-  "_comment_metric_map": "NR metric name -> Prometheus metric. 'type' (gauge|counter|histogram) controls how aggregations translate (rate/increase vs avg_over_time vs histogram_quantile). Anything not listed is name-normalized (dots->underscores) and type-guessed, flagged needs-review.",
+  "_comment_metric_map": "NR metric name -> Prometheus metric. 'type' (gauge|counter|histogram) controls how aggregations translate (rate/increase vs avg_over_time vs histogram_quantile); optional 'unit', fixed 'matchers' ({\"queue\": \"main\"}), or a full 'expr' PromQL template (<AGG> <BY>(m{<SELBARE>})). Legacy timeslice metrics are keyed by metricTimesliceName (\"Custom/foo\"). New Relic's own metric names (apm.service.*, newrelic.goldenmetrics.*, host.*, k8s.*), OTel semconv names and aws.* (YACE naming) are known built-in; anything else is name-normalized (dots->underscores) and type-guessed, flagged needs-review.",
 
   "loki_stream_labels": ["service_name", "namespace", "cluster", "container", "pod", "level", "job", "instance"],
   "loki_parser": "json",
@@ -37,6 +37,15 @@
 
   "http_metrics_flavor": "semconv",
   "_comment_http": "semconv = http_server_request_duration_seconds (current OTel semconv); legacy = http_server_duration_milliseconds (older agents).",
+
+  "span_aggregations": "spanmetrics",
+  "_comment_span_aggregations": "spanmetrics = aggregated FROM Span queries become PromQL over span metrics in Mimir; traceql = TraceQL metrics in Tempo 2.4+ ({ ... } | rate() by (...)). uniqueCount(trace.id) always uses TraceQL metrics (root-span count).",
+
+  "event_map": {
+    "Purchase": { "family": "logs", "labels": { "job": "purchases" } },
+    "OrderMetricEvent": { "family": "metrics", "metric": "orders.completed" }
+  },
+  "_comment_event_map": "Custom NR event types and where that data lives in your stack: a 'logs' entry routes the query to Loki with these stream labels; a 'metrics' entry names the metric (then metric_map applies). Unknown custom event types are reported as untranslatable with this hint.",
 
   "passthrough_fallback": false,
   "page_strategy": "rows",

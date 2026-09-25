@@ -6,6 +6,12 @@ Strategy per the migration spec:
   pipeline label filters (everything else, behind an optional parser stage).
 - SELECT */plain attributes -> log stream query for a Grafana logs panel.
 - Aggregations -> LogQL metric queries (count_over_time, rate, unwrap ...).
+- Numeric comparisons (duration_ms > 500) become numeric label filters
+  after the parser stage.
+- An OR across different attributes becomes a pipeline ``or`` expression
+  behind the stream labels the branches share.
+- Several aggregations in one SELECT become one target each; agg/agg and
+  other arithmetic between aggregations is preserved as LogQL arithmetic.
 """
 
 from __future__ import annotations
@@ -14,11 +20,23 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ..nrql.parser import Attr, BoolOp, Func, Lit, NrqlQuery, SelectItem, Star
 from .common import (
-    APPROXIMATE, EXACT, NEEDS_REVIEW, Matcher, Translation, Untranslatable,
-    cond_to_matchers, facet_labels, legend_for, map_attr, regex_escape, q,
-    worst,
+    APPROXIMATE, EXACT, NEEDS_REVIEW, Matcher, NumericPred, Translation,
+    Untranslatable, cond_to_branches, event_map_entry, expr_text,
+    facet_labels, legend_for, map_attr, regex_escape, q, unwrap_attr, worst,
 )
-from .metrics import nr_duration_to_prom
+from .metrics import _scaled_unit, nr_duration_to_prom
+
+_NUMERIC_OPS = ("<", "<=", ">", ">=")
+
+
+def _fmt_num(n: float) -> str:
+    return str(int(n)) if n == int(n) else ("%f" % n).rstrip("0").rstrip(".")
+
+
+def _render_pipe(m: Matcher) -> str:
+    if m.op in _NUMERIC_OPS:
+        return "%s %s %s" % (m.label, m.op, m.value)
+    return "%s%s%s" % (m.label, m.op, q(m.value))
 
 
 def _split_matchers(matchers: List[Matcher], cfg: Dict[str, Any],
@@ -37,7 +55,9 @@ def _split_matchers(matchers: List[Matcher], cfg: Dict[str, Any],
     meta: List[Matcher] = []
     parsed: List[Matcher] = []
     for m in matchers:
-        if m.label == "message":
+        if m.op in _NUMERIC_OPS:
+            parsed.append(m)
+        elif m.label == "message":
             lines.append(_line_filter(m, t))
         elif m.label in stream_labels:
             stream.append(m)
@@ -75,28 +95,93 @@ def _selector(stream: List[Matcher], t: Translation) -> str:
 
 def _pipeline(meta: List[Matcher], parsed: List[Matcher],
               cfg: Dict[str, Any], t: Translation,
-              need_parser: bool, error_guard: bool = True) -> str:
+              need_parser: bool, error_guard: bool = True,
+              or_groups: Optional[List[List[Matcher]]] = None) -> str:
     parts: List[str] = []
     parser = cfg.get("loki_parser", "json")
     # Structured-metadata filters work without a parser stage; keep them
     # before it so they prune lines early.
     for m in meta:
-        parts.append("| %s%s%s" % (m.label, m.op, q(m.value)))
+        parts.append("| %s" % _render_pipe(m))
     used_parser = False
-    if (parsed or need_parser) and parser:
+    if (parsed or need_parser or or_groups) and parser:
         parts.append("| %s" % parser)
         used_parser = True
     for m in parsed:
-        parts.append("| %s%s%s" % (m.label, m.op, q(m.value)))
-        t.note("filter on %r assumes it is a parsed %s field in Loki"
-               % (m.label, parser or "json"), NEEDS_REVIEW)
+        parts.append("| %s" % _render_pipe(m))
+        if m.op in _NUMERIC_OPS:
+            t.note("numeric filter on %r assumes it is a parsed numeric %s "
+                   "field in Loki" % (m.label, parser or "json"),
+                   NEEDS_REVIEW)
+        else:
+            t.note("filter on %r assumes it is a parsed %s field in Loki"
+                   % (m.label, parser or "json"), NEEDS_REVIEW)
+    if or_groups:
+        alts = []
+        for g in or_groups:
+            inner = " and ".join(_render_pipe(m) for m in g)
+            alts.append("(%s)" % inner if len(g) > 1 else inner)
+        parts.append("| %s" % " or ".join(alts))
     if used_parser and error_guard:
         parts.append('| __error__=""')
     return " ".join(parts)
 
 
+class _Split:
+    """WHERE analysis shared by every aggregation of a query."""
+
+    def __init__(self, nq: NrqlQuery, cfg: Dict[str, Any], t: Translation,
+                 extra_stream: Optional[List[Matcher]] = None):
+        branches = cond_to_branches(nq.where, cfg, t)
+        numeric = [Matcher(p.label, p.op, _fmt_num(p.value))
+                   for p in t.numeric]
+        del t.numeric[:]
+        self.or_groups: List[List[Matcher]] = []
+        if len(branches) == 1:
+            matchers = branches[0] + numeric
+        else:
+            matchers, self.or_groups = _merge_branches(branches, cfg, t)
+            matchers = matchers + numeric
+        matchers = list(extra_stream or []) + matchers
+        self.stream, self.lines, self.meta, self.parsed = \
+            _split_matchers(matchers, cfg, t)
+        self.sel = _selector(self.stream, t)
+        self.line_part = (" " + " ".join(self.lines)) if self.lines else ""
+
+
+def _merge_branches(branches: List[List[Matcher]], cfg: Dict[str, Any],
+                    t: Translation) -> Tuple[List[Matcher],
+                                             List[List[Matcher]]]:
+    """OR across attributes: keep the stream matchers every branch shares
+    as the selector and express the rest as a pipeline ``or``."""
+    stream_labels = set(cfg.get("loki_stream_labels") or [])
+    if any(m.label == "message" for b in branches for m in b):
+        t.note("an OR mixing message predicates with attribute filters "
+               "cannot be expressed in one LogQL query; that OR clause was "
+               "DROPPED — verify filter logic", NEEDS_REVIEW)
+        return [], []
+    keys = [set((m.label, m.op, m.value) for m in b) for b in branches]
+    common = set.intersection(*keys) if keys else set()
+    shared = [m for m in branches[0]
+              if (m.label, m.op, m.value) in common]
+    groups: List[List[Matcher]] = []
+    for b in branches:
+        rest = [m for m in b if (m.label, m.op, m.value) not in common]
+        if rest:
+            groups.append(rest)
+    if not any(m.label in stream_labels for m in shared):
+        t.note("the OR in WHERE spans different stream labels, so the "
+               "query scans all streams and filters in the pipeline "
+               "(stream labels are matched as parsed labels)", NEEDS_REVIEW)
+    else:
+        t.note("the OR in WHERE became a pipeline `or` filter behind the "
+               "shared stream selector", APPROXIMATE)
+    return shared, groups
+
+
 def _logql_filter(nq: NrqlQuery, cfg: Dict[str, Any],
-                  item: SelectItem, n_aggs: int) -> Translation:
+                  item: SelectItem, extra_stream: List[Matcher]) \
+        -> Translation:
     """filter(agg, WHERE cond): merge the embedded WHERE into the query's
     filters and re-translate. Merging BEFORE the selector is built lets
     the embedded predicate contribute stream-selector labels."""
@@ -112,20 +197,19 @@ def _logql_filter(nq: NrqlQuery, cfg: Dict[str, Any],
         combined = fn.where
     else:
         combined = BoolOp("and", [nq.where, fn.where])
-    sub = NrqlQuery(
-        raw=nq.raw, select=[SelectItem(expr=inner, alias=item.alias)],
-        from_=nq.from_, where=combined, facet=nq.facet,
-        facet_limit=nq.facet_limit, timeseries=nq.timeseries,
-        since=nq.since, until=nq.until, compare_with=nq.compare_with,
-        limit=nq.limit)
-    out = translate_to_logql(sub, cfg)
+    sub = _sub_query(nq, SelectItem(expr=inner, alias=item.alias), combined)
+    out = _translate_one(sub, cfg, extra_stream)
     out.note("filter(...) merged its embedded WHERE into the log query "
              "filters")
-    if n_aggs > 1:
-        out.note("multiple aggregations in one log query; only the first "
-                 "was translated — split the others into separate panels",
-                 NEEDS_REVIEW)
     return out
+
+
+def _sub_query(nq: NrqlQuery, item: SelectItem, where: Any) -> NrqlQuery:
+    return NrqlQuery(
+        raw=nq.raw, select=[item], from_=nq.from_, where=where,
+        facet=list(nq.facet), facet_limit=nq.facet_limit,
+        timeseries=nq.timeseries, since=nq.since, until=nq.until,
+        compare_with=nq.compare_with, limit=nq.limit)
 
 
 def _rewrite_if_agg(item: SelectItem) -> Optional[SelectItem]:
@@ -165,35 +249,124 @@ def _rewrite_if_agg(item: SelectItem) -> Optional[SelectItem]:
                       alias=item.alias)
 
 
+def _event_stream_labels(nq: NrqlQuery, cfg: Dict[str, Any],
+                         t: Translation) -> List[Matcher]:
+    """Custom event types routed to Loki via config event_map carry their
+    own stream labels."""
+    if not nq.from_:
+        return []
+    entry = event_map_entry(nq.from_[0], cfg)
+    if not entry or entry.get("family") != "logs":
+        return []
+    labels = entry.get("labels") or {}
+    out = [Matcher(str(k), "=", str(v)) for k, v in labels.items()]
+    t.note("FROM %s routed to Loki per config event_map (stream labels %s)"
+           % (nq.from_[0], ", ".join(m.render() for m in out) or "none"),
+           NEEDS_REVIEW)
+    return out
+
+
 def translate_to_logql(nq: NrqlQuery, cfg: Dict[str, Any]) -> Translation:
+    t0 = Translation(datasource="loki")
+    extra_stream = _event_stream_labels(nq, cfg, t0)
+    items = list(nq.select)
+    aggs = [i for i in items if isinstance(i.expr, Func)]
+    if not aggs:
+        out = _translate_one(nq, cfg, extra_stream)
+        out.notes[:0] = t0.notes
+        out.confidence = worst(out.confidence, t0.confidence)
+        return out
+    # One target per aggregation; the first is the primary.
+    primary: Optional[Translation] = None
+    failures: List[str] = []
+    for item in aggs:
+        try:
+            sub = _translate_one(_sub_query(nq, item, nq.where), cfg,
+                                 extra_stream)
+        except Untranslatable as e:
+            failures.append("%s: %s" % (expr_text(item.expr), e))
+            continue
+        if primary is None:
+            primary = sub
+        else:
+            unit_notes = [n for n in sub.notes if n.startswith("unit:")]
+            primary.confidence = worst(primary.confidence, sub.confidence)
+            for n in sub.notes:
+                if not n.startswith("unit:") and n not in primary.notes:
+                    primary.notes.append(n)
+            sub.notes = unit_notes
+            extra_targets = sub.extra
+            sub.extra = []
+            primary.extra.append(sub)
+            primary.extra.extend(extra_targets)
+    if primary is None:
+        raise Untranslatable("; ".join(failures))
+    for f in failures:
+        primary.note("SELECT item dropped (no LogQL equivalent) — %s" % f,
+                     NEEDS_REVIEW)
+    primary.notes[:0] = t0.notes
+    primary.confidence = worst(primary.confidence, t0.confidence)
+    return primary
+
+
+def _apply_multiplier(t: Translation, item: SelectItem) -> None:
+    if not item.multiplier:
+        return
+    t.expr = "(%s) * %s" % (t.expr, _fmt_num(item.multiplier))
+    unit = next((n.split(":", 1)[1] for n in t.notes
+                 if n.startswith("unit:")), "")
+    t.notes[:] = [n for n in t.notes if not n.startswith("unit:")]
+    scaled = _scaled_unit(unit, item.multiplier) if unit else None
+    if scaled:
+        t.notes.append("unit:%s" % scaled)
+    else:
+        t.note("SELECT arithmetic '* %s' preserved; set the panel unit "
+               "manually" % _fmt_num(item.multiplier), APPROXIMATE)
+    for e in t.extra:
+        e.expr = "(%s) * %s" % (e.expr, _fmt_num(item.multiplier))
+
+
+def _translate_one(nq: NrqlQuery, cfg: Dict[str, Any],
+                   extra_stream: Optional[List[Matcher]] = None) \
+        -> Translation:
+    """Translate a query with at most one aggregation."""
     t = Translation(datasource="loki")
     is_range = nq.timeseries is not None
     window = "$__auto" if is_range else "$__range"
+    extra_stream = list(extra_stream or [])
 
     first_agg = next((i for i in nq.select if isinstance(i.expr, Func)),
                      None)
     if first_agg is not None:
-        n_aggs = sum(1 for i in nq.select if isinstance(i.expr, Func))
+        fn0 = first_agg.expr
+        assert isinstance(fn0, Func)
+        if fn0.name in ("_ratio", "_arith"):
+            out = _arith(nq, cfg, first_agg, extra_stream)
+            _apply_multiplier(out, first_agg)
+            return out
         rewritten = _rewrite_if_agg(first_agg)
         if rewritten is not None:
-            out = _logql_filter(nq, cfg, rewritten, n_aggs)
+            out = _logql_filter(nq, cfg, rewritten, extra_stream)
             out.note("if(...) translated as a filtered aggregation (the "
                      "condition became log filters)", APPROXIMATE)
+            _apply_multiplier(out, first_agg)
             return out
-        if first_agg.expr.name == "filter":
-            return _logql_filter(nq, cfg, first_agg, n_aggs)
+        if fn0.name == "filter":
+            out = _logql_filter(nq, cfg, first_agg, extra_stream)
+            _apply_multiplier(out, first_agg)
+            return out
 
-    matchers = cond_to_matchers(nq.where, cfg, t)
-    stream, lines, meta, parsed = _split_matchers(matchers, cfg, t)
-    sel = _selector(stream, t)
-    line_part = (" " + " ".join(lines)) if lines else ""
+    split = _Split(nq, cfg, t, extra_stream)
+    sel, line_part = split.sel, split.line_part
+    meta, parsed, or_groups = split.meta, split.parsed, split.or_groups
 
     items = [i for i in nq.select]
     aggs = [i for i in items if isinstance(i.expr, Func)]
 
     # --- plain log stream (logs panel) ---
     if not aggs:
-        pipe = _pipeline(meta, parsed, cfg, t, need_parser=False)
+        pipe = _pipeline(meta, parsed, cfg, t, need_parser=False,
+                         or_groups=or_groups)
         t.expr = (sel + line_part + ((" " + pipe) if pipe else "")).strip()
         t.query_type = "range"
         t.notes.append("panel-hint:logs")
@@ -219,7 +392,8 @@ def translate_to_logql(nq: NrqlQuery, cfg: Dict[str, Any]) -> Translation:
 
     def base_stream(extra_pipe: str = "", need_parser: bool = False) -> str:
         pipe = _pipeline(meta, parsed, cfg, t,
-                         need_parser=need_parser or facet_needs_parser)
+                         need_parser=need_parser or facet_needs_parser,
+                         or_groups=or_groups)
         s = sel + line_part
         if pipe:
             s += " " + pipe
@@ -227,9 +401,10 @@ def translate_to_logql(nq: NrqlQuery, cfg: Dict[str, Any]) -> Translation:
             s += " " + extra_pipe
         return s
 
-    fn = aggs[0].expr
+    item = aggs[0]
+    fn = item.expr
     assert isinstance(fn, Func)
-    alias = aggs[0].alias
+    alias = item.alias
     name = fn.name
 
     def finish(expr: str, qtype: Optional[str] = None) -> Translation:
@@ -237,12 +412,8 @@ def translate_to_logql(nq: NrqlQuery, cfg: Dict[str, Any]) -> Translation:
             expr = "topk(%d, %s)" % (nq.limit, expr)
         t.expr = expr
         t.query_type = qtype or ("range" if is_range else "instant")
-        t.legend = legend_for(by, alias)
+        t.legend = legend_for(by, alias, t.legend_template)
         t.group_by = by
-        if len(aggs) > 1:
-            t.note("multiple aggregations in one log query; only the first "
-                   "was translated — split the others into separate panels",
-                   NEEDS_REVIEW)
         if nq.compare_with:
             off = nr_duration_to_prom(nq.compare_with)
             token = "[%s]" % window
@@ -265,9 +436,11 @@ def translate_to_logql(nq: NrqlQuery, cfg: Dict[str, Any]) -> Translation:
                 t.note("COMPARE WITH %r could not become a LogQL offset; "
                        "comparison series dropped" % nq.compare_with,
                        NEEDS_REVIEW)
+        _apply_multiplier(t, item)
         return t
 
     if name == "count":
+        t.notes.append("unit:short")
         return finish("sum%s(count_over_time(%s [%s]))"
                       % (by_clause, base_stream(), window))
 
@@ -282,22 +455,24 @@ def translate_to_logql(nq: NrqlQuery, cfg: Dict[str, Any]) -> Translation:
             mult = " * %d" % int(per_seconds)
         else:
             mult = " * %s" % per_seconds
+        t.notes.append("unit:short")
         return finish("sum%s(rate(%s [%s]))%s"
                       % (by_clause, base_stream(), window, mult))
 
-    def unwrap_attr() -> str:
+    def unwrap_attr_name() -> str:
         arg = fn.args[0] if fn.args else None
-        if not isinstance(arg, Attr):
+        attr, _ = unwrap_attr(arg)
+        if attr is None:
             raise Untranslatable("%s() on logs needs a numeric attribute"
                                  % name)
-        field = arg.name.replace(".", "_")
+        field = attr.name.replace(".", "_")
         t.note("unwrap of %r assumes it is a numeric field after parsing"
                % field, APPROXIMATE)
         return field
 
     def unwrap_stream(field: str) -> str:
         pipe = _pipeline(meta, parsed, cfg, t, need_parser=True,
-                         error_guard=False)
+                         error_guard=False, or_groups=or_groups)
         s = sel + line_part
         if pipe:
             s += " " + pipe
@@ -309,10 +484,11 @@ def translate_to_logql(nq: NrqlQuery, cfg: Dict[str, Any]) -> Translation:
     # one series PER STREAM instead of NR's single series.
     group = " by (%s)" % ", ".join(by) if by else " by ()"
 
-    if name in ("average", "sum", "max", "min"):
-        over = {"average": "avg_over_time", "sum": "sum_over_time",
-                "max": "max_over_time", "min": "min_over_time"}[name]
-        field = unwrap_attr()
+    if name in ("average", "avg", "sum", "max", "min"):
+        over = {"average": "avg_over_time", "avg": "avg_over_time",
+                "sum": "sum_over_time", "max": "max_over_time",
+                "min": "min_over_time"}[name]
+        field = unwrap_attr_name()
         return finish("%s(%s [%s])%s"
                       % (over, unwrap_stream(field), window, group))
 
@@ -321,7 +497,7 @@ def translate_to_logql(nq: NrqlQuery, cfg: Dict[str, Any]) -> Translation:
             float(a.value) for a in fn.args[1:]
             if isinstance(a, Lit) and isinstance(a.value, (int, float))
         ] or [95.0]
-        field = unwrap_attr()
+        field = unwrap_attr_name()
         exprs = ["quantile_over_time(%s, %s [%s])%s"
                  % (_fq(p), unwrap_stream(field), window, group)
                  for p in pcts]
@@ -329,37 +505,67 @@ def translate_to_logql(nq: NrqlQuery, cfg: Dict[str, Any]) -> Translation:
             t.extra.append(Translation(
                 expr=e, datasource="loki",
                 query_type="range" if is_range else "instant",
-                legend=(legend_for(by) + " p%g" % p).strip(),
+                legend=(legend_for(by, template=t.legend_template)
+                        + " p%g" % p).strip(),
                 confidence=APPROXIMATE, group_by=by))
         out = finish(exprs[0])
-        out.legend = (legend_for(by, alias) + " p%g" % pcts[0]).strip()
+        out.legend = (legend_for(by, alias, t.legend_template)
+                      + " p%g" % pcts[0]).strip()
         return out
 
-    if name in ("uniquecount",):
+    if name in ("uniquecount", "cardinality"):
         arg = fn.args[0] if fn.args else None
-        if not isinstance(arg, Attr):
+        attr, _ = unwrap_attr(arg)
+        if attr is None:
             raise Untranslatable("uniqueCount() needs an attribute")
-        label, _ = map_attr(arg.name, cfg)
+        label, _ = map_attr(attr.name, cfg)
         t.note("uniqueCount over logs can be expensive in Loki (series per "
                "value)", NEEDS_REVIEW)
+        t.notes.append("unit:short")
         return finish(
             "count(sum by (%s)(count_over_time(%s [%s])))"
             % (label, base_stream(need_parser=True), window))
 
     if name in ("latest", "earliest"):
+        arg = fn.args[0] if fn.args else None
+        attr, _ = unwrap_attr(arg)
+        if attr is not None and attr.name.lower() in ("message", "timestamp"):
+            # latest(message): the most recent log line — a logs panel
+            # limited to one line is the faithful rendering.
+            t.expr = base_stream().strip()
+            t.query_type = "range"
+            t.notes.append("panel-hint:logs")
+            t.notes.append("maxlines:1")
+            t.note("%s(%s) rendered as a logs panel showing the %s "
+                   "matching line" % (name, attr.name,
+                                      "newest" if name == "latest"
+                                      else "oldest"), APPROXIMATE)
+            return t
         over = "last_over_time" if name == "latest" else "first_over_time"
-        field = unwrap_attr()
+        field = unwrap_attr_name()
         return finish("%s(%s [%s])%s"
                       % (over, unwrap_stream(field), window, group))
 
     if name == "percentage":
         inner = fn.args[0] if fn.args else None
         if isinstance(inner, Func) and inner.name == "count":
-            extra = cond_to_matchers(fn.where, cfg, t)
+            probe = Translation()
+            branches = cond_to_branches(fn.where, cfg, probe)
+            for n in probe.notes:
+                t.note(n)
+            numeric = [Matcher(p.label, p.op, _fmt_num(p.value))
+                       for p in probe.numeric]
+            if len(branches) > 1:
+                t.note("an OR inside percentage(...) could not be honored "
+                       "on logs; only the first alternative was applied",
+                       NEEDS_REVIEW)
+            extra = branches[0] + numeric
             s2, l2, m2, p2 = _split_matchers(extra, cfg, t)
-            sel2 = _selector(stream + s2, t)
-            line2 = (" " + " ".join(lines + l2)) if (lines or l2) else ""
-            pipe2 = _pipeline(meta + m2, parsed + p2, cfg, t, False)
+            sel2 = _selector(split.stream + s2, t)
+            line2 = (" " + " ".join(split.lines + l2)) \
+                if (split.lines or l2) else ""
+            pipe2 = _pipeline(meta + m2, parsed + p2, cfg, t, False,
+                              or_groups=or_groups)
             num_base = sel2 + line2 + ((" " + pipe2) if pipe2 else "")
             t.notes.append("unit:percent")
             return finish(
@@ -369,8 +575,65 @@ def translate_to_logql(nq: NrqlQuery, cfg: Dict[str, Any]) -> Translation:
                    window))
         raise Untranslatable("percentage() on logs supports only count(*)")
 
+    if name in ("funnel",):
+        raise Untranslatable(
+            "funnel() is event-sequence analysis with no LogQL equivalent")
+    if name in ("eventtype", "keyset"):
+        raise Untranslatable("%s() is NRDB introspection" % name)
+
     raise Untranslatable("aggregation %s() is not supported for FROM Log"
                          % name)
+
+
+def _arith(nq: NrqlQuery, cfg: Dict[str, Any], item: SelectItem,
+           extra_stream: List[Matcher]) -> Translation:
+    """agg(x) / agg(y) and other arithmetic between log aggregations."""
+    fn = item.expr
+    assert isinstance(fn, Func)
+    if fn.name == "_ratio":
+        op, left, right = "/", fn.args[0], fn.args[1]
+    else:
+        op = str(getattr(fn.args[0], "value", "+"))
+        left, right = fn.args[1], fn.args[2]
+    out = Translation(datasource="loki")
+
+    def side(node: Any) -> str:
+        if isinstance(node, Func):
+            sub = _translate_one(_sub_query(nq, SelectItem(expr=node),
+                                            nq.where), cfg, extra_stream)
+            out.confidence = worst(out.confidence, sub.confidence)
+            for n in sub.notes:
+                if not n.startswith(("unit:", "panel-hint:", "maxlines:")) \
+                        and n not in out.notes:
+                    out.notes.append(n)
+            out.group_by = sub.group_by
+            out.legend = sub.legend
+            out.query_type = sub.query_type
+            if sub.extra:
+                out.note("only the first target of %s entered the "
+                         "arithmetic" % expr_text(node), NEEDS_REVIEW)
+            return "(%s)" % sub.expr
+        if isinstance(node, Lit) and isinstance(node.value, (int, float)):
+            return _fmt_num(float(node.value))
+        raise Untranslatable("arithmetic operand %s has no LogQL "
+                             "equivalent" % expr_text(node))
+
+    l_expr = side(left)
+    r_expr = side(right)
+    out.expr = "%s %s %s" % (l_expr, op, r_expr)
+    out.legend = item.alias or out.legend
+    out.note("arithmetic between log aggregations preserved as LogQL "
+             "arithmetic (both sides share the stream selector and "
+             "grouping)", APPROXIMATE)
+    if fn.name == "_ratio":
+        def base_name(f: Any) -> str:
+            while isinstance(f, Func) and f.name == "filter" and f.args:
+                f = f.args[0]
+            return f.name if isinstance(f, Func) else ""
+        if base_name(left) in ("count", "rate", "uniquecount") \
+                and base_name(right) in ("count", "rate", "uniquecount"):
+            out.notes.append("unit:percentunit")
+    return out
 
 
 def _fq(p: float) -> str:

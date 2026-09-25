@@ -133,16 +133,65 @@ def _grid_pos(widget: NRWidget, cfg: Dict[str, Any]) -> Dict[str, int]:
             "w": max(1, min(24, width * 2)), "h": max(2, height * hm)}
 
 
+_PANEL_TYPES = {
+    "viz.line": "timeseries", "viz.area": "timeseries",
+    "viz.stacked-bar": "timeseries", "viz.bar": "bargauge",
+    "viz.billboard": "stat", "viz.billboard-comparison": "stat",
+    "viz.bullet": "gauge", "viz.pie": "piechart", "viz.table": "table",
+    "viz.markdown": "text", "viz.heatmap": "heatmap",
+    "viz.histogram": "histogram", "viz.json": "table",
+    "viz.event-feed": "table", "logger.log-table-widget": "logs",
+    "viz.log-table": "logs", "viz.scatter": "timeseries",
+    "viz.sparkline": "stat", "viz.traffic-light": "stat",
+    "viz.timeslice": "timeseries", "viz.event-table": "table",
+}
+
+# NR widget kinds that have no Grafana panel at all (no NRQL to
+# translate, or a visualization Grafana does not have). Value: the reason
+# and the closest Grafana equivalent to rebuild by hand.
+NO_PANEL_WIDGETS = {
+    "viz.funnel": ("funnel charts are per-user step conversion over "
+                   "event sequences", "no Grafana panel; keep the widget "
+                   "in New Relic or rebuild from Faro/frontend events"),
+    "topology.service-map": ("service maps are built from New Relic's "
+                             "entity relationships",
+                             "Grafana node graph panel fed by Tempo's "
+                             "service graph (metrics-generator "
+                             "service-graphs processor)"),
+    "viz.service-map": ("service maps are built from New Relic's entity "
+                        "relationships",
+                        "Grafana node graph panel fed by Tempo's service "
+                        "graph"),
+    "infra.inventory": ("inventory widgets read New Relic's infrastructure "
+                        "inventory, not NRDB",
+                        "table panel over kube_*_info / node_uname_info "
+                        "series"),
+    "viz.inventory": ("inventory widgets read New Relic's infrastructure "
+                      "inventory, not NRDB",
+                      "table panel over kube_*_info / node_uname_info "
+                      "series"),
+    "viz.geo-map": ("geo maps need location attributes New Relic derives "
+                    "from IP", "Grafana geomap panel over a metric with "
+                    "location labels"),
+    "viz.thresholds": ("alert-condition thresholds are New Relic alerting "
+                       "objects", "Grafana Alerting"),
+}
+
+
 def _panel_type_for(viz_id: str) -> str:
-    return {
-        "viz.line": "timeseries", "viz.area": "timeseries",
-        "viz.stacked-bar": "timeseries", "viz.bar": "bargauge",
-        "viz.billboard": "stat", "viz.bullet": "gauge",
-        "viz.pie": "piechart", "viz.table": "table",
-        "viz.markdown": "text", "viz.heatmap": "heatmap",
-        "viz.histogram": "histogram", "viz.json": "table",
-        "viz.event-feed": "table", "logger.log-table-widget": "logs",
-    }.get(viz_id, "")
+    return _PANEL_TYPES.get(viz_id, "")
+
+
+def widget_kind_reason(viz_id: str) -> Tuple[str, str]:
+    """(reason, equivalent) for widget kinds Grafana cannot render."""
+    if viz_id in NO_PANEL_WIDGETS:
+        return NO_PANEL_WIDGETS[viz_id]
+    if viz_id and viz_id not in _PANEL_TYPES and "." in viz_id \
+            and not viz_id.startswith("viz."):
+        return ("custom visualization %r (a New Relic nerdpack) has no "
+                "Grafana equivalent" % viz_id,
+                "rebuild with a Grafana panel or plugin of the same shape")
+    return ("", "")
 
 
 def _apply_notes_to_panel(panel: Dict[str, Any], trans: List[Translation],
@@ -178,6 +227,9 @@ def _apply_notes_to_panel(panel: Dict[str, Any], trans: List[Translation],
                 rng = note.split(":", 1)[1]
                 b.timefroms.append(rng)
                 b.panel_ranges.append((panel, rng))
+            elif note.startswith("timeshift:"):
+                panel["timeShift"] = note.split(":", 1)[1]
+                panel["hideTimeOverride"] = False
 
 
 def _describe(widget: NRWidget, trans: List[Translation]) -> str:
@@ -193,7 +245,8 @@ def _describe(widget: NRWidget, trans: List[Translation]) -> str:
     for t in trans:
         for note in t.notes:
             if ":" in note and note.split(":", 1)[0] in (
-                    "unit", "timefrom", "maxlines", "limit", "panel-hint"):
+                    "unit", "timefrom", "timeshift", "maxlines", "limit",
+                    "panel-hint"):
                 continue
             if note not in seen:
                 seen.add(note)
@@ -210,6 +263,14 @@ def _make_targets(trans: List[Translation], b: _Build) -> List[Dict[str, Any]]:
     for idx, t in enumerate(flat):
         ref = chr(ord("A") + idx) if idx < 26 else "T%d" % idx
         if t.datasource == "tempo":
+            if t.query_type == "traceql-metrics":
+                targets.append({
+                    "refId": ref, "datasource": b.ds_ref("tempo"),
+                    "queryType": "traceql", "query": t.expr,
+                    "metricsQueryType": "range", "filters": [],
+                    "legendFormat": t.legend or "",
+                })
+                continue
             tgt: Dict[str, Any] = {
                 "refId": ref, "datasource": b.ds_ref("tempo"),
                 "queryType": "traceql", "query": t.expr,
@@ -275,6 +336,10 @@ def _panel_options(ptype: str, widget: NRWidget,
         if widget.viz_id == "viz.stacked-bar":
             draw, stacking, fill = "bars", "normal", 80
         defaults["custom"] = _timeseries_custom(fill, draw, stacking)
+        if widget.viz_id == "viz.scatter":
+            defaults["custom"]["drawStyle"] = "points"
+            defaults["custom"]["showPoints"] = "always"
+            defaults["custom"]["fillOpacity"] = 0
         # NR line thresholds -> threshold area lines
         thr = rc.get("thresholds")
         if isinstance(thr, dict) and thr.get("thresholds"):
@@ -313,6 +378,13 @@ def _panel_options(ptype: str, widget: NRWidget,
             "showPercentChange": False,
             "percentChangeColorMode": "standard",
         }
+        if widget.viz_id == "viz.sparkline":
+            options["graphMode"] = "area"
+        elif widget.viz_id == "viz.billboard-comparison":
+            options["showPercentChange"] = True
+        elif widget.viz_id == "viz.traffic-light":
+            options["colorMode"] = "background"
+            options["textMode"] = "none"
 
     elif ptype == "gauge":
         defaults["color"] = {"mode": "thresholds"}
@@ -428,13 +500,26 @@ def _convert_widget(widget: NRWidget, b: _Build,
     queries = [nq.get("query", "") for nq in widget.nrql_queries
                if nq.get("query")]
 
-    # Non-NRQL widgets (service maps, inventory, custom viz, legacy metric
-    # charts) cannot be converted.
+    # Widget kinds Grafana has no panel for (service maps, funnels,
+    # inventory, custom nerdpack visualizations) are reported precisely.
+    kind_reason, equivalent = widget_kind_reason(widget.viz_id)
+    if kind_reason:
+        reasons = ["widget kind %s cannot be migrated: %s"
+                   % (widget.viz_id, kind_reason),
+                   "closest Grafana equivalent: %s" % equivalent]
+        return _fallback_panel(panel, widget, b, page_name, reasons,
+                               queries if widget.viz_id != "viz.funnel"
+                               else queries, equivalent=equivalent)
+
+    # Non-NRQL widgets (legacy metric charts, entity-bound widgets) cannot
+    # be converted.
     if not queries:
-        reason = ("widget type %r has no NRQL queries (service map / "
-                  "inventory / legacy metric chart / custom visualization); "
-                  "recreate manually" % (widget.viz_id or "unknown"))
-        return _fallback_panel(panel, widget, b, page_name, [reason], [])
+        reason = ("widget %r carries no NRQL query (a legacy metric chart "
+                  "or entity-bound widget); recreate it by hand"
+                  % (widget.viz_id or "unknown"))
+        return _fallback_panel(panel, widget, b, page_name, [reason], [],
+                               equivalent=_PANEL_TYPES.get(widget.viz_id,
+                                                           "timeseries"))
 
     trans = [translate_query(qtext, cfg) for qtext in queries]
 
@@ -443,8 +528,13 @@ def _convert_widget(widget: NRWidget, b: _Build,
         conf = worst(conf, t.confidence)
 
     if conf == UNTRANSLATABLE:
-        reasons = [n for t in trans for n in t.notes]
-        return _fallback_panel(panel, widget, b, page_name, reasons, queries)
+        reasons = [n for t in trans for n in t.notes
+                   if t.confidence == UNTRANSLATABLE]
+        reasons += [n for t in trans if t.confidence != UNTRANSLATABLE
+                    for n in t.notes if not _is_hint(n)]
+        return _fallback_panel(panel, widget, b, page_name, reasons, queries,
+                               equivalent=_PANEL_TYPES.get(widget.viz_id,
+                                                           "timeseries"))
 
     # Panel type: NR viz mapping, overridden by translation hints. Known
     # no-panel viz ids (funnel etc.) never reach here — their queries are
@@ -465,6 +555,8 @@ def _convert_widget(widget: NRWidget, b: _Build,
         ptype = "logs"
     if "traces" in hints:
         ptype = "table"
+    if "traceql-metrics" in hints and ptype in ("table", "logs"):
+        ptype = "timeseries"
 
     # Instant table/pie/bar targets from prometheus should come back as table
     # frames for correct rendering.
@@ -509,10 +601,17 @@ def _convert_widget(widget: NRWidget, b: _Build,
     return panel
 
 
+def _is_hint(note: str) -> bool:
+    return ":" in note and note.split(":", 1)[0] in (
+        "unit", "timefrom", "timeshift", "maxlines", "limit", "panel-hint")
+
+
 def _fallback_panel(panel: Dict[str, Any], widget: NRWidget, b: _Build,
                     page_name: str, reasons: List[str],
-                    queries: List[str]) -> Dict[str, Any]:
+                    queries: List[str], equivalent: str = "") \
+        -> Dict[str, Any]:
     cfg = b.cfg
+    reasons = [r for r in reasons if not _is_hint(r)]
     if cfg.get("passthrough_fallback") and queries:
         panel["type"] = "table"
         panel["datasource"] = b.ds_ref("newrelic")
@@ -530,7 +629,8 @@ def _fallback_panel(panel: Dict[str, Any], widget: NRWidget, b: _Build,
             "plugin (install nrgrafanaplugin-newrelic-datasource).\n"
             + "\n".join("- " + r for r in reasons))
         _report(b, page_name, widget, panel, UNTRANSLATABLE, [],
-                fallback="nrql-passthrough", extra_notes=reasons)
+                fallback="nrql-passthrough", extra_notes=reasons,
+                equivalent=equivalent)
         return panel
 
     body = ["### Not automatically translatable", ""]
@@ -547,24 +647,30 @@ def _fallback_panel(panel: Dict[str, Any], widget: NRWidget, b: _Build,
     panel.pop("targets", None)
     panel["title"] = (panel["title"] + " [MANUAL]").strip()
     _report(b, page_name, widget, panel, UNTRANSLATABLE, [],
-            fallback="text-placeholder", extra_notes=reasons)
+            fallback="text-placeholder", extra_notes=reasons,
+            equivalent=equivalent)
     return panel
 
 
 def _report(b: _Build, page: str, widget: NRWidget, panel: Dict[str, Any],
             conf: str, trans: List[Translation], fallback: str = "",
-            extra_notes: Optional[List[str]] = None) -> None:
+            extra_notes: Optional[List[str]] = None,
+            equivalent: str = "") -> None:
     entry = {
         "page": page,
         "widget": widget.title or "(untitled)",
         "visualization": widget.viz_id,
         "panel_id": panel["id"],
+        "panel_title": panel.get("title", ""),
         "panel_type": panel.get("type"),
         "confidence": conf,
         "nrql": [nq.get("query", "") for nq in widget.nrql_queries],
         "queries": [],
         "notes": [],
     }
+    if conf == UNTRANSLATABLE:
+        entry["reason"] = "; ".join(extra_notes or []) or "untranslatable"
+        entry["equivalent"] = equivalent
     account_ids: List[int] = []
     for nq in widget.nrql_queries:
         raw = nq.get("accountIds")
@@ -687,6 +793,27 @@ def _datasource_variables(b: _Build) -> List[Dict[str, Any]]:
 # Dashboard assembly
 # ---------------------------------------------------------------------------
 
+def _source_description(nr: NRDashboard, description: str) -> str:
+    src = "Migrated from New Relic dashboard %r" % nr.name
+    if nr.guid:
+        src += " (guid %s)" % nr.guid
+    if nr.account_id:
+        src += " account %s" % nr.account_id
+    src += " by nr2grafana."
+    return (description.strip() + "\n\n" + src) if description.strip() \
+        else src
+
+
+def _source_links(nr: NRDashboard) -> List[Dict[str, Any]]:
+    if not nr.guid:
+        return []
+    return [{"title": "Original New Relic dashboard", "type": "link",
+             "url": "https://one.newrelic.com/redirect/entity/%s" % nr.guid,
+             "targetBlank": True, "icon": "external link", "tags": [],
+             "asDropdown": False, "includeVars": False, "keepTime": False,
+             "tooltip": "Open the source dashboard in New Relic"}]
+
+
 def _dashboard_shell(title: str, uid: str, description: str,
                      cfg: Dict[str, Any]) -> Dict[str, Any]:
     return {
@@ -752,7 +879,18 @@ def _finish_dashboard(dash: Dict[str, Any], b: _Build,
                 panel["hideTimeOverride"] = False
 
 
-def build_dashboards(nr: NRDashboard, cfg: Dict[str, Any]) \
+def _source_meta(nr: NRDashboard, source_file: str = "") -> Dict[str, Any]:
+    """Provenance block stored in the dashboard JSON (Grafana keeps unknown
+    top-level keys on API import; the UI drops them on save)."""
+    from .. import __version__
+    return {"version": __version__,
+            "source": {"name": nr.name, "guid": nr.guid,
+                       "account_id": nr.account_id, "file": source_file,
+                       "pages": len(nr.pages), "widgets": nr.widget_count()}}
+
+
+def build_dashboards(nr: NRDashboard, cfg: Dict[str, Any],
+                     source_file: str = "") \
         -> List[Tuple[str, Dict[str, Any], List[Dict[str, Any]]]]:
     """Convert one NR dashboard. Returns [(suggested_filename, dashboard
     JSON dict, report entries)]. page_strategy 'rows' emits one dashboard;
@@ -775,22 +913,27 @@ def build_dashboards(nr: NRDashboard, cfg: Dict[str, Any]) \
             b = _Build(cfg)
             title = "%s / %s" % (nr.name, page.name)
             uid = slugify("nr-%s-%s" % (base_slug, page.name))
-            dash = _dashboard_shell(title, uid, nr.description, cfg)
+            dash = _dashboard_shell(title, uid,
+                                    _source_description(nr, nr.description),
+                                    cfg)
             dash["tags"].append(tag)
             dash["links"] = [{"title": "Pages", "type": "dashboards",
                               "tags": [tag], "asDropdown": True,
                               "includeVars": True, "keepTime": True,
                               "icon": "external link", "targetBlank": False,
-                              "url": ""}]
+                              "url": ""}] + _source_links(nr)
             dash["panels"] = _page_panels(page, b)
             _finish_dashboard(dash, b, nr.variables)
+            dash["nr2grafana"] = _source_meta(nr, source_file)
             results.append(("%s--%s.json" % (base_slug, slugify(page.name, 30)),
                             dash, b.report))
         return results
 
     b = _Build(cfg)
     uid = slugify("nr-" + base_slug)
-    dash = _dashboard_shell(nr.name, uid, nr.description, cfg)
+    dash = _dashboard_shell(nr.name, uid,
+                            _source_description(nr, nr.description), cfg)
+    dash["links"] = _source_links(nr)
     if len(nr.pages) <= 1:
         if nr.pages:
             dash["panels"] = _page_panels(nr.pages[0], b)
@@ -819,5 +962,6 @@ def build_dashboards(nr: NRDashboard, cfg: Dict[str, Any]) \
                 y += 1
         dash["panels"] = panels
     _finish_dashboard(dash, b, nr.variables)
+    dash["nr2grafana"] = _source_meta(nr, source_file)
     results.append((base_slug + ".json", dash, b.report))
     return results

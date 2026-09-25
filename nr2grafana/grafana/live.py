@@ -798,6 +798,125 @@ class GrafanaLive(GrafanaClient):
                 put(m.group(1), ds.get("type", ""))
         return out
 
+    # -- datasource needs (dashboard JSON vs. this instance) ---------------
+
+    def datasource_check(self, dash: Dict[str, Any],
+                         overrides: Optional[Dict[str, str]] = None) \
+            -> Dict[str, Any]:
+        """Which datasource types this dashboard needs, whether this
+        instance has them, and which uid each will bind to.
+
+        Returns ``{"needs": [...], "missing": [...], "ds_map": {...},
+        "ok": bool}``; each need is ``{"type", "variable", "purpose",
+        "panels", "candidates", "chosen", "status", "fix"}``.
+        """
+        from ..requirements import datasource_needs
+        overrides = overrides or {}
+        dss = self.datasources()
+        plugin_ids: Optional[set] = None
+        needs = datasource_needs(dash)
+        ds_map: Dict[str, str] = {}
+        missing: List[Dict[str, Any]] = []
+        for need in needs:
+            ds_type = need["type"]
+            cands = [d for d in dss if d.get("type") == ds_type]
+            need["candidates"] = [{"uid": d.get("uid", ""),
+                                   "name": d.get("name", ""),
+                                   "default": bool(d.get("isDefault"))}
+                                  for d in cands]
+            chosen = None
+            want = overrides.get(ds_type) or overrides.get(need["variable"])
+            if want:
+                chosen = next((d for d in cands if want in (
+                    d.get("uid"), d.get("name"))), None)
+                if chosen is None:
+                    need["status"] = "override-not-found"
+                    need["fix"] = ("no %s datasource named/uid %r on %s; "
+                                   "available: %s" % (
+                                       ds_type, want, self.base,
+                                       ", ".join(d.get("uid", "")
+                                                 for d in cands) or "none"))
+                    missing.append(need)
+                    continue
+            elif len(cands) == 1:
+                chosen = cands[0]
+            elif cands:
+                chosen = next((d for d in cands if d.get("isDefault")), None)
+                if chosen is None:
+                    chosen = cands[0]
+                    need["note"] = ("%d %s datasources and none is the "
+                                    "default; picked %r — override with "
+                                    "--datasource %s=<uid>" % (
+                                        len(cands), ds_type,
+                                        chosen.get("name"), ds_type))
+            if chosen is None:
+                need["status"] = "missing"
+                core = need.get("core", True)
+                if not core:
+                    if plugin_ids is None:
+                        try:
+                            plugin_ids = set(p.get("id", "")
+                                             for p in self.plugins())
+                        except GrafanaError:
+                            plugin_ids = set()
+                    if ds_type not in plugin_ids:
+                        need["fix"] = ("install the plugin (grafana-cli "
+                                       "plugins install %s, restart "
+                                       "Grafana), then add a %s datasource"
+                                       % (ds_type, ds_type))
+                    else:
+                        need["fix"] = ("add a %s datasource in Grafana "
+                                       "(Connections -> Data sources)"
+                                       % ds_type)
+                else:
+                    need["fix"] = ("add a %s datasource in Grafana "
+                                   "(Connections -> Data sources -> Add "
+                                   "data source -> %s) pointing at your "
+                                   "%s" % (ds_type, ds_type,
+                                           need.get("purpose", ds_type)))
+                missing.append(need)
+                continue
+            need["status"] = "ok"
+            need["chosen"] = {"uid": chosen.get("uid", ""),
+                              "name": chosen.get("name", "")}
+            ds_map[need["variable"]] = chosen.get("uid", "")
+            ds_map["${%s}" % need["variable"]] = chosen.get("uid", "")
+            if need.get("uid_ref") and not need["uid_ref"].startswith("$"):
+                ds_map[need["uid_ref"]] = chosen.get("uid", "")
+        return {"needs": needs, "missing": missing, "ds_map": ds_map,
+                "ok": not missing}
+
+    def verify_import(self, uid: str, expected: Dict[str, Any]) \
+            -> Dict[str, Any]:
+        """Read the dashboard back by uid after an import and confirm it is
+        the one we sent (title, panel count, version)."""
+        got = self.get_dashboard_by_uid(uid)
+        dash = got.get("dashboard") or {}
+        meta = got.get("meta") or {}
+
+        def count(panels: Any) -> int:
+            n = 0
+            for p in panels or []:
+                if p.get("type") == "row":
+                    n += count(p.get("panels"))
+                else:
+                    n += 1
+            return n
+        problems: List[str] = []
+        if (dash.get("title") or "") != (expected.get("title") or ""):
+            problems.append("title on Grafana is %r, expected %r"
+                            % (dash.get("title"), expected.get("title")))
+        want = count(expected.get("panels"))
+        have = count(dash.get("panels"))
+        if want != have:
+            problems.append("Grafana stored %d panels, expected %d"
+                            % (have, want))
+        return {"uid": dash.get("uid") or uid, "id": dash.get("id"),
+                "title": dash.get("title", ""), "version": dash.get("version"),
+                "url": meta.get("url", ""), "folder": meta.get("folderTitle")
+                or meta.get("folderUid", ""), "panels": have,
+                "ok": not problems, "problems": problems}
+
     # -- requirements ------------------------------------------------------
 
     def check_requirements(self, requirements: Dict[str, Any]) \

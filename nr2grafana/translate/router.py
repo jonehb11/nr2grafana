@@ -2,18 +2,18 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
-from ..nrql.parser import Func, NrqlParseError, Star, parse_nrql
+from ..nrql.parser import Attr, Func, NrqlParseError, Star, parse_nrql
 from .common import (
-    APPROXIMATE, NEEDS_REVIEW, UNTRANSLATABLE, Translation, Untranslatable,
-    route_event_type,
+    APPROXIMATE, EXACT, NEEDS_REVIEW, UNTRANSLATABLE, Translation,
+    Untranslatable, route_event_type,
 )
 from .logs import translate_to_logql
 from .metrics import (
-    nr_duration_to_grafana_range, translate_to_promql,
+    nr_duration_seconds, nr_duration_to_grafana_range, translate_to_promql,
 )
-from .traces import translate_to_traceql
+from .traces import translate_span_metrics_traceql, translate_to_traceql
 
 
 def _interval_text(seconds: float) -> str:
@@ -52,6 +52,73 @@ def _timing_notes(q, t) -> None:
             "value — use panel sorting for other orderings")
 
 
+def _translate_span_aggregation(q, cfg: Dict[str, Any]) -> Translation:
+    """Aggregated FROM Span: span metrics in Mimir by default; TraceQL
+    metrics when configured (span_aggregations: "traceql") or when span
+    metrics cannot express the aggregation (uniqueCount(trace.id))."""
+    mode = str(cfg.get("span_aggregations") or "spanmetrics").lower()
+    aggs = [i.expr for i in q.select if isinstance(i.expr, Func)]
+    first = aggs[0] if aggs else None
+    trace_count = (first is not None
+                   and first.name in ("uniquecount", "cardinality")
+                   and first.args and isinstance(first.args[0], Attr)
+                   and first.args[0].name.lower() in ("trace.id", "traceid",
+                                                      "trace_id"))
+    if mode == "traceql" or trace_count:
+        return translate_span_metrics_traceql(q, cfg)
+    return translate_to_promql(q, cfg)  # span metrics in Mimir
+
+
+def _rel_seconds(text: str) -> Optional[float]:
+    key = (text or "").strip().lower()
+    if key == "now":
+        return 0.0
+    return nr_duration_seconds(text)
+
+
+def _short_duration(seconds: float) -> str:
+    n = int(seconds) if seconds == int(seconds) else seconds
+    if isinstance(n, int):
+        for div, unit in ((86400, "d"), (3600, "h"), (60, "m")):
+            if n % div == 0 and n >= div:
+                return "%d%s" % (n // div, unit)
+        return "%ds" % n
+    return "%gs" % n
+
+
+def _time_hints(q, t: Translation) -> None:
+    """SINCE/UNTIL -> timefrom:/timeshift: hints for the builder.
+
+    SINCE a UNTIL b (both relative) is exactly a Grafana panel with
+    timeFrom = a - b and timeShift = b."""
+    since_s = _rel_seconds(q.since) if q.since else None
+    until_s = _rel_seconds(q.until) if q.until else None
+    if q.until and until_s is not None and until_s > 0:
+        if since_s is not None and since_s > until_s:
+            t.notes.append("timefrom:now-%s" % _short_duration(
+                since_s - until_s))
+            t.notes.append("timeshift:%s" % _short_duration(until_s))
+            t.note("SINCE %s UNTIL %s became a panel time override "
+                   "(timeFrom %s, timeShift %s)"
+                   % (q.since, q.until, _short_duration(since_s - until_s),
+                      _short_duration(until_s)))
+            return
+        t.note("UNTIL %r cannot be expressed per-panel in Grafana without "
+               "a relative SINCE; adjust the dashboard time range manually"
+               % q.until, NEEDS_REVIEW)
+    elif q.until and until_s is None:
+        t.note("UNTIL %r (absolute or non-relative) cannot be expressed "
+               "per-panel in Grafana; adjust the dashboard time range "
+               "manually" % q.until, NEEDS_REVIEW)
+    if q.since:
+        rng = nr_duration_to_grafana_range(q.since)
+        if rng:
+            t.notes.append("timefrom:%s" % rng)
+        else:
+            t.note("SINCE %r could not be mapped to a Grafana range; "
+                   "dashboard default range applies" % q.since, NEEDS_REVIEW)
+
+
 def translate_query(nrql_text: str, cfg: Dict[str, Any]) -> Translation:
     """Translate one NRQL string. Never raises: untranslatable/broken
     queries come back as Translation(confidence='untranslatable')."""
@@ -62,14 +129,14 @@ def translate_query(nrql_text: str, cfg: Dict[str, Any]) -> Translation:
         t.notes.append("NRQL could not be parsed: %s" % e)
         return t
 
-    family = route_event_type(q.from_)
+    family = route_event_type(q.from_, cfg)
     try:
         if family == "logs":
             t = translate_to_logql(q, cfg)
         elif family == "traces":
             has_agg = any(isinstance(i.expr, Func) for i in q.select)
             if has_agg:
-                t = translate_to_promql(q, cfg)  # span metrics in Mimir
+                t = _translate_span_aggregation(q, cfg)
             else:
                 t = translate_to_traceql(q, cfg)
         else:
@@ -78,6 +145,13 @@ def translate_query(nrql_text: str, cfg: Dict[str, Any]) -> Translation:
         t = Translation(confidence=UNTRANSLATABLE)
         t.notes.append(str(e))
         return t
+
+    # Numeric WHERE predicates no translator could express.
+    for p in t.numeric:
+        t.note("numeric comparison %s %s %s cannot be expressed for this "
+               "target; dropped — apply it manually"
+               % (p.attr, p.op, ("%g" % p.value)), NEEDS_REVIEW)
+    del t.numeric[:]
 
     if q.extras:
         t.note("NRQL fragment(s) not understood and DROPPED from the "
@@ -90,17 +164,7 @@ def translate_query(nrql_text: str, cfg: Dict[str, Any]) -> Translation:
                "translated" % (", ".join(q.from_), q.from_[0]), NEEDS_REVIEW)
 
     # Time-range hints for the builder.
-    if q.since:
-        rng = nr_duration_to_grafana_range(q.since)
-        if rng:
-            t.notes.append("timefrom:%s" % rng)
-        else:
-            t.note("SINCE %r could not be mapped to a Grafana range; "
-                   "dashboard default range applies" % q.since, NEEDS_REVIEW)
-    if q.until:
-        t.note("UNTIL %r cannot be expressed per-panel in Grafana; "
-               "adjust the dashboard time range manually" % q.until,
-               NEEDS_REVIEW)
+    _time_hints(q, t)
     if q.extrapolate:
         t.notes.append("EXTRAPOLATE dropped (not applicable to metric data)")
     if q.timezone:

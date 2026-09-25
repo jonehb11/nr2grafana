@@ -46,6 +46,12 @@ them). Relevant env vars:
 
 | Tool | Arguments | What it does |
 |------|-----------|--------------|
+| `inspect` | `path` \| `nr_json`, `config_path?` | deep semantic model of an NR dashboard (widgets, parsed NRQL clauses, translation plan, datasources needed, cannot-migrate list) |
+| `explain` | `nrql`, `config_path?` | parse + translate one NRQL query with every assumption |
+| `import` | `out_dir?`, `guids?`, `name?`, `region?`, `files?` | step 1: NR dashboards to disk (NerdGraph, read-only, or local exports) |
+| `convert_files` | `inputs`, `out_dir?`, `config_path?`, `page_strategy?`, `passthrough?`, `package?` | step 2: convert files/dirs; result names what cannot migrate |
+| `validate_dashboards` | `inputs`, `live?`, `test?`, `datasources?` | step 3: static checks; live datasource-type check; per-panel data test |
+| `export` | `inputs`, `folder?`, `overwrite?`, `test?`, `allow_missing?`, `datasources?` | step 4: create on Grafana, verify, name the NR source |
 | `list_dashboards` | -- | list stored converted dashboards |
 | `get_dashboard` | `slug` | one stored dashboard's Grafana JSON |
 | `get_artifact` | `slug`, `kind` | a stored artifact (widget-report, requirements, parity, ...) |

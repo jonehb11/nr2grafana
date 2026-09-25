@@ -414,8 +414,230 @@ def _t_readiness(arguments: Dict[str, Any], ctx: Ctx) -> Any:
     return res
 
 
+# ---- the migration pipeline (library calls, no web layer) -----------------
+
+def _pipeline():
+    try:
+        return importlib.import_module("nr2grafana.pipeline")
+    except Exception as exc:
+        raise ToolError("nr2grafana pipeline is not importable: %s" % exc,
+                        _ERR_INTERNAL)
+
+
+def _pipeline_call(fn, *args, **kwargs):
+    pipe = _pipeline()
+    try:
+        return fn(*args, **kwargs)
+    except pipe.PipelineError as exc:
+        raise ToolError(str(exc), _ERR_INVALID_PARAMS if exc.code == 2
+                        else _ERR_TOOL)
+
+
+def _grafana_env(arguments: Dict[str, Any]):
+    url = str(arguments.get("grafana_url") or os.environ.get("GRAFANA_URL")
+              or "")
+    token = str(arguments.get("grafana_token")
+                or os.environ.get("GRAFANA_TOKEN") or "")
+    return url, token
+
+
+def _t_inspect(arguments: Dict[str, Any], ctx: Ctx) -> Any:
+    pipe = _pipeline()
+    nr_json = arguments.get("nr_json")
+    config_path = str(arguments.get("config_path") or "")
+    if nr_json is not None:
+        from .config import load_config
+        from .inspect import inspect_dashboard
+        try:
+            cfg = load_config(config_path)
+        except Exception as exc:
+            raise ToolError("config: %s" % exc, _ERR_INVALID_PARAMS)
+        items = nr_json if isinstance(nr_json, list) else [nr_json]
+        out = []
+        for i, item in enumerate(items):
+            try:
+                out.append(inspect_dashboard(item, cfg,
+                                             source="nr_json[%d]" % i))
+            except ValueError as exc:
+                raise ToolError("nr_json[%d] is not a New Relic dashboard: "
+                                "%s" % (i, exc), _ERR_INVALID_PARAMS)
+        return out[0] if len(out) == 1 else out
+    path = _req_str(arguments, "path")
+    models = _pipeline_call(pipe.inspect_inputs, [path], config_path)
+    return models[0] if len(models) == 1 else models
+
+
+def _t_explain(arguments: Dict[str, Any], ctx: Ctx) -> Any:
+    pipe = _pipeline()
+    nrql = _req_str(arguments, "nrql")
+    return _pipeline_call(pipe.explain, nrql,
+                          str(arguments.get("config_path") or ""))
+
+
+def _t_import(arguments: Dict[str, Any], ctx: Ctx) -> Any:
+    pipe = _pipeline()
+    out_dir = str(arguments.get("out_dir") or "./newrelic-dashboards")
+    files = arguments.get("files") or []
+    key = str(arguments.get("api_key") or os.environ.get("NEW_RELIC_API_KEY")
+              or "")
+    return _pipeline_call(
+        pipe.import_dashboards, out_dir, api_key=key,
+        region=str(arguments.get("region") or "US"),
+        guids=list(arguments.get("guids") or []),
+        name_filter=str(arguments.get("name") or ""),
+        files=list(files) if files else None)
+
+
+def _t_convert_files(arguments: Dict[str, Any], ctx: Ctx) -> Any:
+    pipe = _pipeline()
+    inputs = arguments.get("inputs") or []
+    if isinstance(inputs, str):
+        inputs = [inputs]
+    if not inputs:
+        raise ToolError("convert_files needs 'inputs' (NR dashboard JSON "
+                        "files or directories)", _ERR_INVALID_PARAMS)
+    return _pipeline_call(
+        pipe.convert_dashboards, list(inputs),
+        str(arguments.get("out_dir") or "./grafana-dashboards"),
+        config_path=str(arguments.get("config_path") or ""),
+        page_strategy=str(arguments.get("page_strategy") or ""),
+        passthrough=bool(arguments.get("passthrough")),
+        package=bool(arguments.get("package")))
+
+
+def _t_validate_dashboards(arguments: Dict[str, Any], ctx: Ctx) -> Any:
+    pipe = _pipeline()
+    inputs = arguments.get("inputs") or []
+    if isinstance(inputs, str):
+        inputs = [inputs]
+    if not inputs:
+        raise ToolError("validate_dashboards needs 'inputs' (Grafana "
+                        "dashboard JSON files or directories)",
+                        _ERR_INVALID_PARAMS)
+    url, token = _grafana_env(arguments)
+    live = bool(arguments.get("live") or arguments.get("test"))
+    return _pipeline_call(
+        pipe.validate_dashboards, list(inputs),
+        grafana_url=url if live else "", grafana_token=token,
+        insecure=bool(arguments.get("insecure")),
+        test=bool(arguments.get("test")),
+        datasource_overrides=list(arguments.get("datasources") or []),
+        write_results=False)
+
+
+def _t_export(arguments: Dict[str, Any], ctx: Ctx) -> Any:
+    pipe = _pipeline()
+    inputs = arguments.get("inputs") or []
+    if isinstance(inputs, str):
+        inputs = [inputs]
+    if not inputs:
+        raise ToolError("export needs 'inputs' (Grafana dashboard JSON "
+                        "files or directories)", _ERR_INVALID_PARAMS)
+    url, token = _grafana_env(arguments)
+    if not url:
+        raise ToolError("export needs a Grafana URL: pass 'grafana_url' or "
+                        "set GRAFANA_URL", _ERR_INVALID_PARAMS)
+    return _pipeline_call(
+        pipe.export_dashboards, list(inputs), grafana_url=url,
+        grafana_token=token, insecure=bool(arguments.get("insecure")),
+        folder=str(arguments.get("folder") or ""),
+        overwrite=bool(arguments.get("overwrite")),
+        datasource_overrides=list(arguments.get("datasources") or []),
+        test=bool(arguments.get("test")),
+        allow_missing=bool(arguments.get("allow_missing")))
+
+
+_FILES_SCHEMA = {"type": "array", "items": {"type": "string"},
+                 "description": "files or directories"}
+
 # name -> (implementation, description, inputSchema)
 _TOOL_SPECS = [
+    ("inspect", _t_inspect,
+     "Deep, structured understanding of a New Relic dashboard: every "
+     "page/widget, each NRQL parsed into clauses (SELECT/FROM/WHERE/"
+     "FACET/TIMESERIES/SINCE/COMPARE WITH), attributes and variables "
+     "used, the translation plan per query (target datasource, emitted "
+     "PromQL/LogQL/TraceQL, confidence, every assumption), the Grafana "
+     "datasource types needed, and exactly which widgets cannot migrate "
+     "and why. Give 'path' (NR dashboard JSON file) or 'nr_json'.",
+     {"type": "object",
+      "properties": {"path": {"type": "string"},
+                     "nr_json": {"description": "a New Relic dashboard "
+                                                "object (or list)"},
+                     "config_path": {"type": "string"}}}),
+    ("explain", _t_explain,
+     "Parse and translate ONE NRQL query: its clauses, attributes, "
+     "variables, and the emitted PromQL/LogQL/TraceQL with confidence and "
+     "every assumption. Use it to understand or debug a single widget.",
+     {"type": "object",
+      "properties": {"nrql": {"type": "string"},
+                     "config_path": {"type": "string"}},
+      "required": ["nrql"]}),
+    ("import", _t_import,
+     "Step 1: bring New Relic dashboards to disk as NR JSON files (from "
+     "New Relic via NerdGraph — read-only — using NEW_RELIC_API_KEY, or by "
+     "validating local export 'files'). Writes import-manifest.json.",
+     {"type": "object",
+      "properties": {"out_dir": {"type": "string"},
+                     "guids": {"type": "array",
+                               "items": {"type": "string"}},
+                     "name": {"type": "string",
+                              "description": "name substring filter"},
+                     "region": {"type": "string", "enum": ["US", "EU"]},
+                     "files": _FILES_SCHEMA}}),
+    ("convert_files", _t_convert_files,
+     "Step 2: convert NR dashboard JSON files/dirs to Grafana dashboard "
+     "JSON + migration-report.json; the result names every widget that "
+     "cannot be migrated (with reason and closest Grafana equivalent), "
+     "the panels needing review, the datasource types each dashboard "
+     "needs, and static validation results.",
+     {"type": "object",
+      "properties": {"inputs": _FILES_SCHEMA,
+                     "out_dir": {"type": "string"},
+                     "config_path": {"type": "string"},
+                     "page_strategy": {"type": "string",
+                                       "enum": ["rows", "split"]},
+                     "passthrough": {"type": "boolean"},
+                     "package": {"type": "boolean"}},
+      "required": ["inputs"]}),
+    ("validate_dashboards", _t_validate_dashboards,
+     "Step 3: validate converted Grafana dashboards: static checks "
+     "(schema, ids, grid, query-language sanity, variable references); "
+     "with 'live': true also compares the datasource types each dashboard "
+     "needs against the Grafana instance (GRAFANA_URL/GRAFANA_TOKEN) and "
+     "with 'test': true runs every panel query and reports data / no-data "
+     "/ error per panel.",
+     {"type": "object",
+      "properties": {"inputs": _FILES_SCHEMA,
+                     "live": {"type": "boolean"},
+                     "test": {"type": "boolean"},
+                     "grafana_url": {"type": "string"},
+                     "grafana_token": {"type": "string"},
+                     "datasources": {"type": "array",
+                                     "items": {"type": "string"},
+                                     "description": "type=uid bindings"},
+                     "insecure": {"type": "boolean"}},
+      "required": ["inputs"]}),
+    ("export", _t_export,
+     "Step 4: create converted dashboards on the Grafana instance "
+     "(GRAFANA_URL/GRAFANA_TOKEN), binding datasource variables to the "
+     "instance's datasources, verifying each dashboard by reading it "
+     "back, optionally running every panel query ('test'). The result "
+     "names each created dashboard (title, uid, url, folder) and the New "
+     "Relic dashboard it came from. Refuses dashboards with validation "
+     "errors or missing datasource types unless 'allow_missing'.",
+     {"type": "object",
+      "properties": {"inputs": _FILES_SCHEMA,
+                     "folder": {"type": "string"},
+                     "overwrite": {"type": "boolean"},
+                     "test": {"type": "boolean"},
+                     "allow_missing": {"type": "boolean"},
+                     "datasources": {"type": "array",
+                                     "items": {"type": "string"}},
+                     "grafana_url": {"type": "string"},
+                     "grafana_token": {"type": "string"},
+                     "insecure": {"type": "boolean"}},
+      "required": ["inputs"]}),
     ("list_dashboards", _t_list_dashboards,
      "List every converted dashboard in the local store (slug, title, "
      "source, and which artifacts exist for each).",

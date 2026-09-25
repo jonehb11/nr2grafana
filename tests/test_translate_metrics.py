@@ -160,13 +160,29 @@ class MetricEventTests(unittest.TestCase):
             "request_latency_bucket[$__range])))")
         self.assertEqual(t.confidence, NEEDS_REVIEW)
 
-    def test_gauge_sum_with_facet_and_matcher(self):
+    def test_sum_of_unmapped_metric_is_counter_increase(self):
+        # NR sum() is used on count-type metrics: increase of a counter
+        # (with the configured _total suffix), flagged for review.
         t = tr("SELECT sum(checkout.orders.completed) FROM Metric "
                "WHERE deployment.environment = 'prod' "
                "FACET k8s.namespace.name TIMESERIES")
         self.assertEqual(
             t.expr,
-            'sum by (namespace)(avg_over_time(checkout_orders_completed{'
+            'sum by (namespace)(increase(checkout_orders_completed_total{'
+            'deployment_environment="prod"}[$__rate_interval]))')
+        self.assertEqual(t.legend, "{{namespace}}")
+        self.assertEqual(t.confidence, NEEDS_REVIEW)
+
+    def test_gauge_sum_with_facet_and_matcher(self):
+        cfg = load_config()
+        cfg["metric_map"]["queue.depth"] = {"name": "queue_depth",
+                                            "type": "gauge"}
+        t = tr("SELECT sum(queue.depth) FROM Metric "
+               "WHERE deployment.environment = 'prod' "
+               "FACET k8s.namespace.name TIMESERIES", cfg)
+        self.assertEqual(
+            t.expr,
+            'sum by (namespace)(avg_over_time(queue_depth{'
             'deployment_environment="prod"}[$__rate_interval]))')
         self.assertEqual(t.legend, "{{namespace}}")
 
@@ -298,9 +314,35 @@ class WhereOperatorTests(unittest.TestCase):
         self.assertIn('http_response_status_code=~"4..|5.."', t.expr)
 
     def test_numeric_compare_on_plain_label_is_dropped(self):
-        t = tr("SELECT count(*) FROM Transaction WHERE duration > 1")
+        t = tr("SELECT count(*) FROM Transaction WHERE responseSize > 1")
         self.assertEqual(t.confidence, NEEDS_REVIEW)
         self.assertTrue(any("numeric comparison" in n for n in t.notes))
+        self.assertEqual(t.expr, 'sum(increase(%s_count[$__range]))' % HTTP)
+
+    def test_duration_threshold_becomes_bucket_arithmetic(self):
+        # count(*) WHERE duration > 1 on a histogram source is exactly
+        # total - bucket{le="1"} (given a bucket boundary at 1).
+        t = tr("SELECT count(*) FROM Transaction WHERE appName = 'c' "
+               "AND duration > 1 TIMESERIES")
+        self.assertEqual(
+            t.expr,
+            'sum(increase(%s_count{service_name="c"}[$__rate_interval])) - '
+            'sum(increase(%s_bucket{service_name="c",le=~"1|1\\\\.0"}'
+            '[$__rate_interval]))' % (HTTP, HTTP))
+        self.assertEqual(t.confidence, NEEDS_REVIEW)
+        self.assertTrue(any("bucket boundary" in n for n in t.notes))
+
+    def test_duration_band_becomes_bucket_difference(self):
+        t = tr("SELECT count(*) FROM Transaction WHERE duration >= 0.5 "
+               "AND duration < 2")
+        self.assertEqual(
+            t.expr,
+            'sum(increase(%s_bucket{le=~"2|2\\\\.0"}[$__range])) - '
+            'sum(increase(%s_bucket{le="0.5"}[$__range]))' % (HTTP, HTTP))
+
+    def test_duration_threshold_with_arithmetic_folds(self):
+        t = tr("SELECT count(*) FROM Transaction WHERE duration * 1000 > 500")
+        self.assertIn('le="0.5"', t.expr)
 
     def test_nr_variable_equality_becomes_regex_var(self):
         t = tr("SELECT count(*) FROM Transaction WHERE appName = '{{app}}'")
@@ -323,16 +365,38 @@ class WhereOperatorTests(unittest.TestCase):
         # a clean merge does not degrade confidence further
         self.assertEqual(t.confidence, APPROXIMATE)
 
-    def test_or_across_attributes_dropped_with_note(self):
+    def test_or_across_attributes_becomes_union(self):
         t = tr("SELECT count(*) FROM Transaction "
                "WHERE appName = 'a' OR host = 'b'")
-        # neither predicate can be kept as an ANDed matcher
+        # a PromQL `or` union of the two filtered selectors; series are
+        # deduplicated by label set so nothing is double counted.
         self.assertEqual(
             t.expr,
-            'sum(increase(%s_count[$__range]))' % HTTP)
-        self.assertEqual(t.confidence, NEEDS_REVIEW)
-        self.assertTrue(any("could not be merged into a single label matcher" in n
-                            for n in t.notes))
+            'sum((increase(%s_count{service_name="a"}[$__range]) or '
+            'increase(%s_count{instance="b"}[$__range])))' % (HTTP, HTTP))
+        self.assertEqual(t.confidence, APPROXIMATE)
+        self.assertTrue(any("`or` union" in n for n in t.notes))
+
+    def test_or_with_shared_and_distributes(self):
+        t = tr("SELECT count(*) FROM Transaction WHERE appName = 'a' "
+               "AND (host = 'x' OR name = 'y')")
+        self.assertIn('service_name="a",instance="x"', t.expr)
+        self.assertIn('service_name="a",http_route="y"', t.expr)
+        self.assertIn(" or ", t.expr)
+
+    def test_negated_and_becomes_union(self):
+        t = tr("SELECT count(*) FROM Transaction "
+               "WHERE NOT (appName = 'a' AND host = 'b')")
+        self.assertIn('service_name!="a"', t.expr)
+        self.assertIn('instance!="b"', t.expr)
+        self.assertIn(" or ", t.expr)
+
+    def test_too_many_or_branches_dropped_with_note(self):
+        conds = " OR ".join("(a%d = '1' AND b%d = '2')" % (i, i)
+                            for i in range(5))
+        t = tr("SELECT count(*) FROM Transaction WHERE (x = '1' OR y = '2') "
+               "AND (%s)" % conds)
+        self.assertTrue(any("OR alternatives" in n for n in t.notes))
 
     def test_span_error_flag_mapped_to_status_code_label(self):
         t = tr("SELECT count(*) FROM Span WHERE error IS TRUE TIMESERIES")
@@ -401,14 +465,26 @@ class IfCasesTests(unittest.TestCase):
 
     def test_facet_cases_unconvertible_falls_back_with_note(self):
         t = tr("SELECT count(*) FROM Transaction "
-               "FACET cases(WHERE duration > 1 AS slow)")
-        # duration > 1 cannot be a label matcher: single unfiltered query
+               "FACET cases(WHERE responseSize > 1 AS big)")
+        # responseSize > 1 cannot be a label matcher: single unfiltered query
         self.assertEqual(
             t.expr, 'sum(increase(%s_count[$__range]))' % HTTP)
         self.assertEqual(t.extra, [])
         self.assertEqual(t.confidence, NEEDS_REVIEW)
         self.assertTrue(any("could not become label matchers" in n
                             for n in t.notes))
+
+    def test_facet_cases_on_duration_uses_bucket_arithmetic(self):
+        t = tr("SELECT count(*) FROM Transaction "
+               "FACET cases(WHERE duration < 0.1 AS fast, "
+               "WHERE duration >= 0.1 AS slow)")
+        self.assertEqual(
+            t.expr, 'sum(increase(%s_bucket{le="0.1"}[$__range]))' % HTTP)
+        self.assertEqual(t.legend, "fast")
+        self.assertEqual(len(t.extra), 1)
+        self.assertEqual(t.extra[0].legend, "slow")
+        self.assertIn('_count[$__range])) - sum(increase(%s_bucket{le="0.1"}'
+                      % HTTP, t.extra[0].expr)
 
 
 class ConstructCoverageTests(unittest.TestCase):
@@ -550,16 +626,25 @@ class RatioTests(unittest.TestCase):
         self.assertIn("unit:percentunit", t.notes)
 
     def test_ratio_shares_facet_grouping_on_both_operands(self):
+        cfg = load_config()
+        cfg["metric_map"]["bytes_in"] = {"name": "bytes_in", "type": "gauge",
+                                         "unit": "bytes"}
+        cfg["metric_map"]["bytes_out"] = {"name": "bytes_out",
+                                          "type": "gauge", "unit": "bytes"}
         t = tr("SELECT sum(bytes_in)/sum(bytes_out) FROM Metric "
-               "FACET host TIMESERIES")
+               "FACET host TIMESERIES", cfg)
         self.assertEqual(
             t.expr,
             "(sum by (instance)(avg_over_time(bytes_in[$__rate_interval]))) "
             "/ (sum by (instance)(avg_over_time(bytes_out"
             "[$__rate_interval])))")
-        # A sum/sum ratio is not necessarily a percentage: no unit forced.
+        # A ratio of two gauge sums is not a proportion: no unit forced.
         self.assertNotIn("unit:percentunit", t.notes)
         self.assertNotIn("unit:percent", t.notes)
+
+    def test_ratio_of_two_counter_sums_is_a_proportion(self):
+        t = tr("SELECT sum(errors)/sum(requests) FROM Metric TIMESERIES")
+        self.assertIn("unit:percentunit", t.notes)
 
     def test_ratio_confidence_and_note(self):
         t = tr("SELECT count(errors)/count(requests) FROM Metric")

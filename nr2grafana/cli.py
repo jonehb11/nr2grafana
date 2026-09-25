@@ -193,24 +193,38 @@ def cmd_fetch(args: argparse.Namespace) -> int:
     return 0
 
 
+def _log_err(msg: str) -> None:
+    print(msg, file=sys.stderr)
+
+
+def _print_cannot_migrate(result: Dict[str, Any]) -> None:
+    """The exact list of widgets that did not become live panels."""
+    rows = [(d["dashboard"], c) for d in result.get("dashboards", [])
+            for c in d.get("cannot_migrate", [])]
+    if not rows:
+        return
+    print("\nWidgets that cannot be migrated to Grafana (%d):" % len(rows),
+          file=sys.stderr)
+    for title, c in rows:
+        print("  - %s / %s / %s (%s)" % (title, c.get("page"),
+                                         c.get("widget"),
+                                         c.get("visualization")),
+              file=sys.stderr)
+        for nrql in c.get("nrql") or []:
+            print("      NRQL: %s" % nrql, file=sys.stderr)
+        print("      why: %s" % c.get("reason"), file=sys.stderr)
+        if c.get("equivalent"):
+            print("      closest Grafana equivalent: %s" % c["equivalent"],
+                  file=sys.stderr)
+        print("      in the output: %s panel titled '... [MANUAL]'"
+              % ("NRQL passthrough" if c.get("placeholder")
+                 == "nrql-passthrough" else "text placeholder"),
+              file=sys.stderr)
+
+
 def cmd_convert(args: argparse.Namespace) -> int:
-    try:
-        cfg = load_config(args.config)
-    except (FileNotFoundError, json.JSONDecodeError) as e:
-        _err(str(e))
-        return 2
-    if args.page_strategy:
-        cfg["page_strategy"] = args.page_strategy
-    if args.passthrough:
-        cfg["passthrough_fallback"] = True
+    from . import pipeline
     package = bool(getattr(args, "package", False))
-
-    files = _collect_inputs(args.inputs)
-    if not files:
-        _err("no input files")
-        return 2
-    os.makedirs(args.out, exist_ok=True)
-
     store: Optional[Store] = None
     run_id = 0
     if package:
@@ -222,146 +236,71 @@ def cmd_convert(args: argparse.Namespace) -> int:
                     "package": True})
             except (StoreError, ValueError):
                 run_id = 0
-
-    all_reports: List[Dict[str, Any]] = []
-    index_entries: List[Dict[str, Any]] = []
-    failed_inputs: List[Dict[str, str]] = []
-    written: List[str] = []
-    seen_files: Dict[str, int] = {}
-    seen_uids: Dict[str, int] = {}
-    seen_titles: Dict[str, int] = {}
-    had_error = False
-    for path in files:
-        try:
-            data = _load_json(path)
-            nr = parse_nr_dashboard(data)
-            outputs = build_dashboards(nr, cfg)
-        except (json.JSONDecodeError, ValueError) as e:
-            _err("%s: %s" % (path, e))
-            failed_inputs.append({"source": path, "error": str(e)})
-            had_error = True
-            continue
-        except Exception as e:  # a bad file must never kill a batch run
-            _err("%s: conversion failed (%s: %s)"
-                 % (path, type(e).__name__, e))
-            failed_inputs.append({"source": path, "error": "%s: %s"
-                                  % (type(e).__name__, e)})
-            had_error = True
-            continue
-        for filename, dash, report in outputs:
-            # Dedupe filenames, uids AND titles across the batch. Titles
-            # matter because Grafana's overwrite:true import matches by
-            # title within a folder — two dashboards named "Team Dashboard"
-            # would silently overwrite each other even with distinct uids.
-            seen_files[filename] = seen_files.get(filename, 0) + 1
-            if seen_files[filename] > 1:
-                stem = filename[:-len(".json")]
-                filename = "%s-%d.json" % (stem, seen_files[filename])
-            uid = dash.get("uid") or ""
-            seen_uids[uid] = seen_uids.get(uid, 0) + 1
-            if seen_uids[uid] > 1:
-                suffix = "-%d" % seen_uids[uid]
-                dash["uid"] = uid[:40 - len(suffix)] + suffix
-            title = dash.get("title") or ""
-            seen_titles[title] = seen_titles.get(title, 0) + 1
-            if seen_titles[title] > 1:
-                dash["title"] = "%s (%d)" % (title, seen_titles[title])
-                print("note: duplicate dashboard name %r renamed to %r so "
-                      "Grafana imports don't overwrite each other"
-                      % (title, dash["title"]), file=sys.stderr)
-            problems = validate_dashboard(dash)
-            if problems:
-                had_error = True
-                _err("%s -> %s produced invalid output:" % (path, filename))
-                for p in problems:
-                    _err("  " + p)
-            slug = filename[:-len(".json")] \
-                if filename.endswith(".json") else filename
-            out_path = ""
-            extra = ""
-            if package:
-                try:
-                    req = analyze_dashboard(nr, dash, report, cfg)
-                    pkg = package_dashboard(args.out, slug, dash, report,
-                                            req, cfg)
-                except Exception as e:
-                    had_error = True
-                    _err("%s: packaging failed (%s: %s); writing flat "
-                         "file instead" % (slug, type(e).__name__, e))
-                else:
-                    out_path = os.path.join(pkg, "dashboard.json")
-                    extra = "; " + summarize(req)
-                    index_entries.append({
-                        "slug": slug, "title": dash.get("title"),
-                        "dir": pkg, "widget_report": report,
-                        "requirements": req,
-                    })
-                    _persist_package(store, slug, path, nr, dash, report,
-                                     req, pkg)
-            if not out_path:
-                out_path = os.path.join(args.out, filename)
-                _write_json(out_path, dash)
-            written.append(out_path)
-            counts: Dict[str, int] = {}
-            for r in report:
-                counts[r["confidence"]] = counts.get(r["confidence"], 0) + 1
-            summary = ", ".join("%d %s" % (v, k)
-                                for k, v in sorted(counts.items()))
-            print("%s -> %s  (%s%s)" % (os.path.basename(path), out_path,
-                                        summary or "no widgets", extra),
-                  file=sys.stderr)
-            all_reports.append({
-                "source": path,
-                "output": out_path,
-                "slug": slug,
-                "dashboard": dash.get("title"),
-                "widgets": report,
-                "summary": counts,
-            })
-
-    report_path = args.report or os.path.join(args.out,
-                                              "migration-report.json")
-    _write_json(report_path, {"reports": all_reports,
-                              "failed_inputs": failed_inputs})
-    if package:
-        idx = write_index(args.out, index_entries)
-        print("Index: %s" % idx, file=sys.stderr)
-    total = sum(len(r["widgets"]) for r in all_reports)
-    review = sum(1 for r in all_reports for w in r["widgets"]
-                 if w["confidence"] in ("needs-review", "untranslatable"))
+    try:
+        result = pipeline.convert_dashboards(
+            list(args.inputs), args.out, config_path=args.config,
+            page_strategy=args.page_strategy or "",
+            passthrough=bool(args.passthrough), package=package,
+            report_path=getattr(args, "report", "") or "", store=store,
+            log=_log_err)
+    except pipeline.PipelineError as e:
+        msg = str(e)
+        if msg.startswith("no such file") or msg.startswith(
+                "no New Relic dashboard JSON"):
+            msg = "no input files (%s)" % msg
+        _err(msg)
+        if store is not None:
+            store.close()
+        return e.code
+    for f in result["failed_inputs"]:
+        _err("%s: %s" % (f["source"], f["error"]))
+    for d in result["dashboards"]:
+        for e in d["validation"]["errors"]:
+            _err("%s produced invalid output: %s" % (d["output"], e))
+    _print_cannot_migrate(result)
+    t = result["totals"]
+    if result.get("index"):
+        print("Index: %s" % result["index"], file=sys.stderr)
     failure_note = (", %d input file(s) FAILED (see failed_inputs in the "
-                    "report)" % len(failed_inputs)) if failed_inputs else ""
-    print("\n%d dashboards written, %d widgets converted "
-          "(%d need review)%s. Report: %s"
-          % (len(written), total, review, failure_note, report_path),
+                    "report)" % t["failed_inputs"]) if t["failed_inputs"] \
+        else ""
+    print("\n%d dashboards written, %d widgets converted (%d need review, "
+          "%d cannot be migrated)%s. Report: %s"
+          % (t["dashboards"], t["widgets"], t["needs_review"],
+             t["cannot_migrate"], failure_note, result["report"]),
           file=sys.stderr)
+    had_error = bool(t["failed_inputs"] or t["validation_errors"])
     if store is not None:
         try:
             if run_id:
-                store.finish_run(run_id,
-                                 "error" if had_error else "ok",
-                                 {"dashboards": len(written),
-                                  "widgets": total, "review": review,
-                                  "failed_inputs": len(failed_inputs)})
+                store.finish_run(run_id, "error" if had_error else "ok",
+                                 {"dashboards": t["dashboards"],
+                                  "widgets": t["widgets"],
+                                  "review": t["needs_review"],
+                                  "failed_inputs": t["failed_inputs"]})
         except (StoreError, ValueError):
             pass
         store.close()
     if getattr(args, "json_out", False):
         # Machine-readable summary on stdout so an AI driving `--json`
-        # gets the written dashboards (slug/path/title/counts) and any
+        # gets the written dashboards, the cannot-migrate list and any
         # failures, not just the human recap on stderr.
         print(json.dumps({
-            "out_dir": args.out,
-            "report": report_path,
+            "out_dir": result["out_dir"],
+            "report": result["report"],
             "dashboards": [
                 {"slug": r["slug"], "output": r["output"],
-                 "title": r["dashboard"], "source": r["source"],
-                 "confidence": r["summary"]}
-                for r in all_reports],
-            "failed_inputs": failed_inputs,
-            "totals": {"dashboards": len(written), "widgets": total,
-                       "needs_review": review,
-                       "failed": len(failed_inputs)},
+                 "title": r["dashboard"], "uid": r["uid"],
+                 "source": r["source"],
+                 "source_dashboard": r["source_dashboard"],
+                 "confidence": r["confidence"],
+                 "datasources": r["datasources"],
+                 "cannot_migrate": r["cannot_migrate"],
+                 "needs_review": r["needs_review"],
+                 "validation": r["validation"]}
+                for r in result["dashboards"]],
+            "failed_inputs": result["failed_inputs"],
+            "totals": t,
         }, ensure_ascii=False))
     return 1 if had_error else 0
 
@@ -496,30 +435,178 @@ def cmd_analyze(args: argparse.Namespace) -> int:
     return 1 if had_error else 0
 
 
+def _grafana_conn(args: argparse.Namespace):
+    url = getattr(args, "grafana_url", "") or os.environ.get("GRAFANA_URL", "")
+    token = getattr(args, "grafana_token", "") \
+        or os.environ.get("GRAFANA_TOKEN", "")
+    return url, token, bool(getattr(args, "insecure", False))
+
+
 def cmd_validate(args: argparse.Namespace) -> int:
-    files = _collect_inputs(args.inputs)
-    if not files:
-        _err("no input files")
-        return 2
-    bad = 0
-    for path in files:
-        if os.path.basename(path) == "migration-report.json":
+    from . import pipeline
+    url, token, insecure = _grafana_conn(args)
+    live = bool(url or getattr(args, "test", False))
+    try:
+        result = pipeline.validate_dashboards(
+            list(args.inputs), grafana_url=url, grafana_token=token,
+            insecure=insecure, test=bool(getattr(args, "test", False)),
+            datasource_overrides=list(getattr(args, "datasource", []) or []),
+            log=_log_err if live else (lambda m: None))
+    except pipeline.PipelineError as e:
+        _err(str(e))
+        return e.code
+    for d in result["dashboards"]:
+        errs = d["errors"]
+        if len(errs) == 1 and errs[0].startswith("INVALID JSON"):
+            print("%s: %s" % (d["file"], errs[0]))
             continue
-        try:
-            dash = _load_json(path)
-        except json.JSONDecodeError as e:
-            print("%s: INVALID JSON: %s" % (path, e))
-            bad += 1
-            continue
-        problems = validate_dashboard(dash)
-        if problems:
-            bad += 1
-            print("%s: %d problem(s)" % (path, len(problems)))
-            for p in problems:
-                print("  - " + p)
+        if errs:
+            print("%s: %d problem(s)" % (d["file"], len(errs)))
+            for e in errs:
+                print("  - " + e)
         else:
-            print("%s: OK" % path)
-    return 1 if bad else 0
+            print("%s: OK" % d["file"])
+        for w in d.get("warnings") or []:
+            print("  ! " + w)
+        if live and d.get("datasources"):
+            for need in d["datasources"]:
+                chosen = need.get("chosen") or {}
+                print("  datasource %-10s %-8s %s" % (
+                    need["type"], need.get("status", "?"),
+                    ("-> %s (%s)" % (chosen.get("name"), chosen.get("uid")))
+                    if chosen else need.get("fix", "")))
+        if d.get("data_test"):
+            print("  data test: " + ", ".join(
+                "%d %s" % (v, k) for k, v in
+                sorted(d["data_test"]["summary"].items())))
+    t = result["totals"]
+    print("\n%d dashboard(s) validated, %d with problems (%d error(s), %d "
+          "warning(s))" % (t["dashboards"], t["failed"], t["errors"],
+                           t["warnings"]), file=sys.stderr)
+    if getattr(args, "json_out", False):
+        print(json.dumps(result, ensure_ascii=False))
+    return 1 if t["failed"] else 0
+
+
+def cmd_import(args: argparse.Namespace) -> int:
+    from . import pipeline
+    files = list(getattr(args, "files", []) or [])
+    key = ""
+    if not files:
+        key = args.api_key or os.environ.get("NEW_RELIC_API_KEY", "")
+    try:
+        result = pipeline.import_dashboards(
+            args.out, api_key=key, region=(args.region or "US").upper(),
+            guids=list(args.guid or []), name_filter=args.name or "",
+            files=files, log=_log_err)
+    except pipeline.PipelineError as e:
+        _err(str(e))
+        return e.code
+    n = len(result["dashboards"])
+    print("\n%d dashboard(s) imported to %s%s. Manifest: %s"
+          % (n, result["out_dir"],
+             (", %d failed" % len(result["failed"])) if result["failed"]
+             else "", result["manifest"]), file=sys.stderr)
+    print("Next: nr2grafana convert %s -o ./grafana-dashboards"
+          % result["out_dir"], file=sys.stderr)
+    if getattr(args, "json_out", False):
+        print(json.dumps(result, ensure_ascii=False))
+    if result["failed"]:
+        return 1
+    if n == 0:
+        _err("nothing imported")
+        return 1
+    return 0
+
+
+def cmd_export(args: argparse.Namespace) -> int:
+    from . import pipeline
+    url, token, insecure = _grafana_conn(args)
+    try:
+        result = pipeline.export_dashboards(
+            list(args.inputs), grafana_url=url, grafana_token=token,
+            insecure=insecure, folder=args.folder or "",
+            overwrite=bool(args.overwrite),
+            datasource_overrides=list(args.datasource or []),
+            test=bool(args.test), allow_missing=bool(args.allow_missing),
+            log=_log_err)
+    except pipeline.PipelineError as e:
+        _err(str(e))
+        return e.code
+    print("", file=sys.stderr)
+    for d in result["dashboards"]:
+        src = d.get("source") or {}
+        if d.get("url") or d.get("verified"):
+            state = "created" if d["ok"] else "created with problems"
+            print("%s: %r  %s  (uid %s, folder %s)" % (
+                state, d.get("title"), d.get("url") or "", d.get("uid"),
+                d.get("folder") or "General"))
+            print("    sourced from New Relic dashboard %r%s" % (
+                src.get("name") or "?",
+                (" (guid %s)" % src["guid"]) if src.get("guid") else ""))
+            v = d.get("verified") or {}
+            if v:
+                print("    verified: %s (%d panels, version %s)" % (
+                    "yes" if v.get("ok") else "NO",
+                    v.get("panels") or 0, v.get("version")))
+            if d.get("data_test"):
+                print("    data test: " + ", ".join(
+                    "%d %s" % (n, k) for k, n in
+                    sorted(d["data_test"]["summary"].items())))
+        else:
+            print("not exported: %r (%s)" % (d.get("title") or d["file"],
+                                             "; ".join(d["problems"])[:300]))
+        for p in d.get("problems") or []:
+            print("    problem: %s" % p)
+    t = result["totals"]
+    print("\n%d dashboard(s) created on %s, %d failed"
+          % (t["created"], result["grafana_url"], t["failed"]),
+          file=sys.stderr)
+    if getattr(args, "json_out", False):
+        print(json.dumps(result, ensure_ascii=False))
+    return 0 if result["ok"] else 1
+
+
+def cmd_inspect(args: argparse.Namespace) -> int:
+    from . import pipeline
+    from .inspect import render_inspection_text
+    try:
+        models = pipeline.inspect_inputs(list(args.inputs),
+                                         config_path=args.config or "")
+    except pipeline.PipelineError as e:
+        _err(str(e))
+        return e.code
+    if getattr(args, "json_out", False):
+        print(json.dumps(models if len(models) > 1 else models[0],
+                         ensure_ascii=False))
+        return 0
+    for m in models:
+        if m.get("error"):
+            print("%s: %s" % (m.get("source"), m["error"]))
+            continue
+        print(render_inspection_text(m))
+        print()
+    return 0
+
+
+def cmd_explain(args: argparse.Namespace) -> int:
+    from . import pipeline
+    from .inspect import render_explanation_text
+    nrql = " ".join(args.nrql).strip()
+    if not nrql:
+        _err("give the NRQL to explain, e.g. explain \"SELECT count(*) "
+             "FROM Transaction TIMESERIES\"")
+        return 2
+    try:
+        model = pipeline.explain(nrql, config_path=args.config or "")
+    except pipeline.PipelineError as e:
+        _err(str(e))
+        return e.code
+    if getattr(args, "json_out", False):
+        print(json.dumps(model, ensure_ascii=False))
+    else:
+        print(render_explanation_text(model))
+    return 0 if not model.get("parse_error") else 1
 
 
 def cmd_example_config(args: argparse.Namespace) -> int:
@@ -2855,16 +2942,42 @@ def _run_json(command: str, func, args: argparse.Namespace) -> int:
 
 # ---------------------------------------------------------------------------
 
+_PRIMARY_COMMANDS = ("import", "convert", "validate", "export", "inspect",
+                     "explain")
+
+_EPILOG = """\
+workflow:
+  nr2grafana import  -o ./nr            # New Relic -> NR dashboard JSON (or: import -o ./nr file.json)
+  nr2grafana convert ./nr -o ./grafana  # NR JSON -> Grafana JSON + migration-report.json
+  nr2grafana validate ./grafana --grafana-url $GRAFANA_URL --test
+  nr2grafana export   ./grafana --grafana-url $GRAFANA_URL --folder "Migrated"
+  nr2grafana inspect  ./nr/x.json       # deep model of an NR dashboard (for humans and AI agents)
+  nr2grafana explain  "SELECT ... FROM ..."
+
+exit codes: 0 ok, 1 problems found, 2 bad input/usage, 3 cannot reach or
+authenticate with New Relic / Grafana. Add --json before the command for a
+single JSON result on stdout.
+
+advanced (hidden) commands: analyze, fetch, list, grafana (check, test,
+parity, samples, diagnose, heal, datasources, add-datasource, import),
+changes, cost, deepdive, ai-context, ai, mcp, tco, aws, api, web,
+example-config, interactive. Run `nr2grafana <command> -h` for their help.
+"""
+
+
 def main(argv: List[str] = None) -> int:
     ap = argparse.ArgumentParser(
         prog="nr2grafana",
-        description="Convert New Relic dashboards to Grafana (LGTM stack) "
-                    "dashboards.")
+        description="Migrate New Relic dashboards to Grafana (LGTM stack): "
+                    "import, convert, validate, export. New Relic is only "
+                    "ever read.",
+        epilog=_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--json", action="store_true", dest="json_out",
                     help="emit one JSON object result to stdout and route "
                          "all human/log text to stderr (for scripts and "
                          "AI); place before the subcommand")
-    sub = ap.add_subparsers(dest="command")
+    sub = ap.add_subparsers(dest="command", metavar="<command>")
 
     def add_nr_args(p):
         p.add_argument("--api-key", "-k", default="",
@@ -2892,6 +3005,25 @@ def main(argv: List[str] = None) -> int:
             return 2
         return f
 
+    # ---- the four steps + the two understanding commands -----------------
+    p_imp = sub.add_parser(
+        "import",
+        help="step 1: bring New Relic dashboards to disk as NR JSON "
+             "(from New Relic via NerdGraph, or from exported files)")
+    add_nr_args(p_imp)
+    p_imp.add_argument("files", nargs="*",
+                       help="local NR dashboard JSON exports (UI 'Copy "
+                            "JSON' or NerdGraph reads) to validate and "
+                            "normalise instead of fetching from New Relic")
+    p_imp.add_argument("--out", "-o", default="./newrelic-dashboards",
+                       help="output directory (default: %(default)s)")
+    p_imp.add_argument("--guid", "-g", action="append", default=[],
+                       help="import only this dashboard GUID (repeatable)")
+    p_imp.add_argument("--name", default="",
+                       help="import only dashboards whose name contains "
+                            "this text (case-insensitive)")
+    p_imp.set_defaults(func=cmd_import)
+
     p_list = sub.add_parser("list", help="list dashboards in the account")
     add_nr_args(p_list)
     p_list.set_defaults(func=cmd_list)
@@ -2908,7 +3040,9 @@ def main(argv: List[str] = None) -> int:
 
     p_conv = sub.add_parser(
         "convert",
-        help="convert NR dashboard JSON file(s)/dir(s) to Grafana JSON")
+        help="step 2: convert NR dashboard JSON file(s)/dir(s) to Grafana "
+             "JSON + migration-report.json (names every widget that cannot "
+             "be migrated and why)")
     p_conv.add_argument("inputs", nargs="+",
                         help="NR dashboard JSON files or directories")
     p_conv.add_argument("--out", "-o", default="./grafana-dashboards",
@@ -2953,10 +3087,69 @@ def main(argv: List[str] = None) -> int:
     p_ana.set_defaults(func=cmd_analyze)
 
     p_val = sub.add_parser(
-        "validate", help="validate Grafana dashboard JSON file(s)")
+        "validate",
+        help="step 3: validate converted dashboards (static checks; with "
+             "--grafana-url also the datasource types your Grafana has vs. "
+             "needs, and with --test every panel query)")
     p_val.add_argument("inputs", nargs="+",
                        help="Grafana dashboard JSON files or directories")
+    add_grafana_args(p_val)
+    p_val.add_argument("--test", action="store_true",
+                       help="run every panel query through Grafana "
+                            "(/api/ds/query) and report data / no-data / "
+                            "error per panel (needs --grafana-url)")
+    p_val.add_argument("--datasource", action="append", default=[],
+                       metavar="TYPE=UID",
+                       help="bind a datasource type to a specific "
+                            "datasource uid/name (e.g. prometheus=mimir); "
+                            "repeatable")
     p_val.set_defaults(func=cmd_validate)
+
+    p_exp = sub.add_parser(
+        "export",
+        help="step 4: create the converted dashboards on a Grafana "
+             "instance, verify each one after creation, and name the New "
+             "Relic dashboard it came from")
+    p_exp.add_argument("inputs", nargs="+",
+                       help="Grafana dashboard JSON files or directories "
+                            "(convert output)")
+    add_grafana_args(p_exp)
+    p_exp.add_argument("--folder", "-f", default="",
+                       help="Grafana folder title (created if missing)")
+    p_exp.add_argument("--overwrite", action="store_true",
+                       help="replace a dashboard with the same uid/title")
+    p_exp.add_argument("--datasource", action="append", default=[],
+                       metavar="TYPE=UID",
+                       help="bind a datasource type to a specific "
+                            "datasource uid/name; repeatable")
+    p_exp.add_argument("--test", action="store_true",
+                       help="after creating, run every panel query and "
+                            "report data / no-data / error")
+    p_exp.add_argument("--allow-missing", action="store_true",
+                       dest="allow_missing",
+                       help="export even when Grafana lacks a datasource "
+                            "type the dashboard needs")
+    p_exp.set_defaults(func=cmd_export)
+
+    p_ins = sub.add_parser(
+        "inspect",
+        help="deep, structured understanding of a New Relic dashboard: "
+             "every widget and NRQL clause, attributes, variables, the "
+             "translation plan, datasources needed, what cannot migrate")
+    p_ins.add_argument("inputs", nargs="+",
+                       help="NR dashboard JSON files or directories")
+    p_ins.add_argument("--config", "-c", default="",
+                       help="mapping config JSON (see 'example-config')")
+    p_ins.set_defaults(func=cmd_inspect)
+
+    p_expl = sub.add_parser(
+        "explain",
+        help="parse and translate one NRQL query, showing every clause, "
+             "the emitted PromQL/LogQL/TraceQL and every assumption")
+    p_expl.add_argument("nrql", nargs="+", help="the NRQL query (quote it)")
+    p_expl.add_argument("--config", "-c", default="",
+                        help="mapping config JSON (see 'example-config')")
+    p_expl.set_defaults(func=cmd_explain)
 
     p_cfg = sub.add_parser(
         "example-config", help="print the default mapping config as JSON")
@@ -3440,6 +3633,12 @@ def main(argv: List[str] = None) -> int:
         help="guided interactive mode (default when run with no arguments "
              "in a terminal)")
     p_int.set_defaults(func=cmd_interactive)
+
+    # Only the workflow commands are listed in --help; everything else stays
+    # available (see the epilog) but does not clutter the surface.
+    if hasattr(sub, "_choices_actions"):
+        sub._choices_actions = [a for a in sub._choices_actions
+                                if a.dest in _PRIMARY_COMMANDS]
 
     args = ap.parse_args(argv)
     if getattr(args, "region", None):

@@ -22,8 +22,11 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from .config import DEFAULT_CONFIG
 from .model import NRDashboard
 from .nrql.parser import NrqlParseError, parse_nrql
+
+DEFAULT_DATASOURCES = DEFAULT_CONFIG["datasources"]
 
 SCHEMA = "nr2grafana/requirements/v1"
 GENERATED_BY = "nr2grafana 1.1.0"
@@ -466,6 +469,43 @@ def _collect_datasources(dash: Dict[str, Any],
             if pid is not None and pid not in entry["panel_ids"]:
                 entry["panel_ids"].append(pid)
     return sorted(found.values(), key=lambda e: e["family"])
+
+
+def datasource_needs(dash: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """The datasource types a converted dashboard binds to, from its
+    templating datasource variables and panel targets. Each need:
+    ``{"type", "variable", "uid_ref", "purpose", "core", "panels"}``."""
+    fam_of = {v.get("type", k): k for k, v in
+              (DEFAULT_DATASOURCES.items())}
+    needs: Dict[str, Dict[str, Any]] = {}
+    for v in (dash.get("templating") or {}).get("list") or []:
+        if v.get("type") != "datasource":
+            continue
+        ds_type = v.get("query") or ""
+        if not ds_type:
+            continue
+        needs.setdefault(ds_type, {
+            "type": ds_type, "variable": v.get("name", ""), "uid_ref":
+            "${%s}" % v.get("name", ""), "purpose": _FAMILY_PURPOSE.get(
+                fam_of.get(ds_type, ds_type), ds_type),
+            "core": ds_type in _CORE_PLUGINS, "panels": []})
+    for panel in _iter_panels(dash):
+        for target in panel.get("targets") or []:
+            ds = target.get("datasource") or {}
+            ds_type = ds.get("type", "") if isinstance(ds, dict) else ""
+            if not ds_type or ds_type == "datasource":
+                continue
+            uid = ds.get("uid", "")
+            m = re.fullmatch(r"\$\{([A-Za-z0-9_]+)\}", str(uid))
+            need = needs.setdefault(ds_type, {
+                "type": ds_type, "variable": m.group(1) if m else "",
+                "uid_ref": uid, "purpose": _FAMILY_PURPOSE.get(
+                    fam_of.get(ds_type, ds_type), ds_type),
+                "core": ds_type in _CORE_PLUGINS, "panels": []})
+            pid = panel.get("id")
+            if pid is not None and pid not in need["panels"]:
+                need["panels"].append(pid)
+    return sorted(needs.values(), key=lambda n: n["type"])
 
 
 def _collect_plugins(datasources: List[Dict[str, Any]]) \

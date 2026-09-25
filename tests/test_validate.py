@@ -233,3 +233,87 @@ class BalancedHelperTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DeepValidationTests(unittest.TestCase):
+    def _dash(self, **panel):
+        base = {"id": 1, "type": "timeseries", "title": "p",
+                "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+                "targets": [{"refId": "A",
+                             "datasource": {"type": "prometheus",
+                                            "uid": "${datasource}"},
+                             "expr": "up"}]}
+        base.update(panel)
+        return {"title": "d", "uid": "d", "schemaVersion": 39, "id": None,
+                "panels": [base],
+                "templating": {"list": [{"name": "datasource",
+                                         "type": "datasource",
+                                         "query": "prometheus"}]}}
+
+    def test_clean_dashboard_has_no_findings(self):
+        from nr2grafana.grafana.validate import validate_dashboard_full
+        r = validate_dashboard_full(self._dash())
+        self.assertEqual(r, {"errors": [], "warnings": []})
+
+    def test_undefined_variable_in_query(self):
+        from nr2grafana.grafana.validate import validate_dashboard_full
+        d = self._dash(targets=[{"refId": "A", "datasource": {
+            "type": "prometheus", "uid": "${datasource}"},
+            "expr": 'up{job="$svc"}'}])
+        r = validate_dashboard_full(d)
+        self.assertTrue(any("$svc" in e for e in r["errors"]))
+
+    def test_builtin_variables_allowed(self):
+        from nr2grafana.grafana.validate import validate_dashboard_full
+        d = self._dash(targets=[{"refId": "A", "datasource": {
+            "type": "prometheus", "uid": "${datasource}"},
+            "expr": "rate(up[$__rate_interval])"}])
+        self.assertEqual(validate_dashboard_full(d)["errors"], [])
+
+    def test_nrql_leak_and_placeholder(self):
+        from nr2grafana.grafana.validate import validate_dashboard_full
+        d = self._dash(targets=[{"refId": "A", "datasource": {
+            "type": "prometheus", "uid": "${datasource}"},
+            "expr": "sum <BY>(up) SINCE 1 hour ago"}])
+        errs = validate_dashboard_full(d)["errors"]
+        self.assertTrue(any("placeholder" in e for e in errs))
+        self.assertTrue(any("NRQL syntax" in e for e in errs))
+
+    def test_logql_without_unwrap(self):
+        from nr2grafana.grafana.validate import validate_dashboard_full
+        d = self._dash(targets=[{"refId": "A", "datasource": {
+            "type": "loki", "uid": "${datasource}"},
+            "expr": 'avg_over_time({job="x"} [5m])'}])
+        errs = validate_dashboard_full(d)["errors"]
+        self.assertTrue(any("unwrap" in e for e in errs))
+
+    def test_logql_metric_query_with_selector_ok(self):
+        from nr2grafana.grafana.validate import validate_dashboard_full
+        d = self._dash(targets=[{"refId": "A", "datasource": {
+            "type": "loki", "uid": "${datasource}"},
+            "expr": 'sum by (level)(count_over_time({job="x"} [$__auto]))'}])
+        self.assertEqual(validate_dashboard_full(d)["errors"], [])
+
+    def test_bad_time_override(self):
+        from nr2grafana.grafana.validate import validate_dashboard_full
+        d = self._dash(timeFrom="yesterday")
+        self.assertTrue(any("timeFrom" in e
+                            for e in validate_dashboard_full(d)["errors"]))
+        d = self._dash(timeFrom="1h", timeShift="30m")
+        self.assertEqual(validate_dashboard_full(d)["errors"], [])
+
+    def test_unknown_panel_type_is_warning(self):
+        from nr2grafana.grafana.validate import validate_dashboard_full
+        d = self._dash(type="acme-fancy-panel")
+        r = validate_dashboard_full(d)
+        self.assertEqual(r["errors"], [])
+        self.assertTrue(any("acme-fancy-panel" in w for w in r["warnings"]))
+
+    def test_expanded_row_with_nested_panels_is_error(self):
+        from nr2grafana.grafana.validate import validate_dashboard_full
+        d = self._dash(type="row", collapsed=False,
+                       panels=[{"id": 2, "type": "text",
+                                "gridPos": {"x": 0, "y": 1, "w": 1, "h": 1}}])
+        d["panels"][0].pop("targets")
+        self.assertTrue(any("expanded row" in e
+                            for e in validate_dashboard_full(d)["errors"]))

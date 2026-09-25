@@ -1,0 +1,11 @@
+---
+description: How to drive and extend nr2grafana (New Relic -> Grafana dashboard migration)
+alwaysApply: true
+---
+
+Read AGENTS.md at the repository root before doing anything in this repo. It
+defines the four-step workflow (import -> convert -> validate -> export), the
+`inspect` / `explain` commands for understanding a New Relic dashboard, the
+`--json` contract and exit codes, how to fix flagged panels through the
+mapping config (never by hand-editing dashboard JSON), and the New Relic
+semantics every translation must respect.

@@ -26,8 +26,14 @@ class TokenizerTests(unittest.TestCase):
         self.assertEqual(toks[1].pos, 7)
 
     def test_ident_allows_dots_and_specials(self):
-        toks = tokenize("k8s.pod.name deployment.environment a-b/c:d")
+        toks = tokenize("k8s.pod.name deployment.environment a:b")
         self.assertEqual([t.kind for t in toks], ["ident"] * 3)
+
+    def test_hyphen_and_slash_are_operators(self):
+        # a-b / c is arithmetic in NRQL; hyphenated names need backticks.
+        toks = tokenize("a-b/`c-d`")
+        self.assertEqual([t.kind for t in toks],
+                         ["ident", "minus", "ident", "slash", "qident"])
 
     def test_operators(self):
         toks = tokenize("= != <> <= >= < >")
@@ -400,3 +406,98 @@ class ParseErrorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ArithmeticAndSyntaxTests(unittest.TestCase):
+    def test_parenthesised_ratio_times_number(self):
+        q = parse_nrql("SELECT (filter(count(*), WHERE error IS TRUE) / "
+                       "count(*)) * 100 FROM Transaction")
+        item = q.select[0]
+        self.assertEqual(item.expr.name, "_ratio")
+        self.assertEqual(item.multiplier, 100.0)
+
+    def test_leading_number_times_ratio(self):
+        q = parse_nrql("SELECT 100 * filter(count(*), WHERE error IS TRUE) "
+                       "/ count(*) FROM Transaction")
+        self.assertEqual(q.select[0].expr.name, "_ratio")
+        self.assertEqual(q.select[0].multiplier, 100.0)
+
+    def test_difference_becomes_arith(self):
+        q = parse_nrql("SELECT count(*) - filter(count(*), WHERE error IS "
+                       "TRUE) FROM Transaction")
+        fn = q.select[0].expr
+        self.assertEqual(fn.name, "_arith")
+        self.assertEqual(fn.args[0].value, "-")
+
+    def test_argument_scale_is_lifted_for_linear_aggregations(self):
+        q = parse_nrql("SELECT average(duration * 1000) FROM Transaction")
+        self.assertEqual(q.select[0].expr.args[0], Attr("duration"))
+        self.assertEqual(q.select[0].multiplier, 1000.0)
+
+    def test_where_arithmetic_parses(self):
+        q = parse_nrql("SELECT count(*) FROM Transaction WHERE "
+                       "duration * 1000 > 500")
+        self.assertIsInstance(q.where, Cmp)
+        self.assertEqual(q.where.left.op, "*")
+
+    def test_parenthesised_where_operand(self):
+        q = parse_nrql("SELECT count(*) FROM Transaction WHERE "
+                       "(duration * 1000) > 500 AND appName = 'x'")
+        self.assertIsInstance(q.where, BoolOp)
+
+    def test_line_and_block_comments(self):
+        q = parse_nrql("SELECT count(*) FROM Transaction /* c */ WHERE "
+                       "appName = 'x' -- tail\nTIMESERIES")
+        self.assertEqual(q.where, Cmp(Attr("appName"), "=", Lit("x")))
+        self.assertIsNotNone(q.timeseries)
+
+    def test_comment_marker_inside_string_is_kept(self):
+        q = parse_nrql("SELECT count(*) FROM Transaction WHERE "
+                       "name = 'a--b'")
+        self.assertEqual(q.where.right, Lit("a--b"))
+
+    def test_with_clause_substitutes_alias(self):
+        q = parse_nrql("WITH duration * 1000 AS durMs SELECT average(durMs) "
+                       "FROM Transaction WHERE durMs > 500")
+        self.assertEqual(q.select[0].expr.args[0], Attr("duration"))
+        self.assertEqual(q.select[0].multiplier, 1000.0)
+        self.assertIn("durMs", q.with_)
+        self.assertEqual(q.where.left.op, "*")
+
+    def test_named_argument_without_space(self):
+        q = parse_nrql("SELECT apdex(duration, t:0.3) FROM Transaction")
+        self.assertEqual(q.select[0].expr.args[1], Lit("t:0.3"))
+
+    def test_bare_boolean_attribute_predicate(self):
+        q = parse_nrql("SELECT count(*) FROM Transaction WHERE error AND "
+                       "appName = 'x'")
+        self.assertEqual(q.where.items[0], Cmp(Attr("error"), "=", Lit(True)))
+
+    def test_subquery_in_from_rejected_with_reason(self):
+        with self.assertRaises(NrqlParseError) as ctx:
+            parse_nrql("SELECT average(c) FROM (SELECT count(*) AS c FROM "
+                       "Transaction FACET host)")
+        self.assertIn("subquery", str(ctx.exception))
+
+    def test_subquery_in_in_list_rejected_with_reason(self):
+        with self.assertRaises(NrqlParseError) as ctx:
+            parse_nrql("SELECT count(*) FROM Transaction WHERE name IN "
+                       "(SELECT name FROM Transaction)")
+        self.assertIn("subquery", str(ctx.exception))
+
+    def test_metric_format_clause(self):
+        q = parse_nrql("SELECT sum(x) FROM Metric WITH METRIC_FORMAT "
+                       "'cumulative' TIMESERIES")
+        self.assertEqual(q.metric_format, "cumulative")
+
+    def test_capture_raw_string_prefix(self):
+        q = parse_nrql("SELECT count(*) FROM Transaction FACET "
+                       "capture(name, r'a/(?P<x>.*)')")
+        fn = q.facet[0].expr
+        self.assertEqual(fn.name, "capture")
+        self.assertEqual(fn.args[1], Lit("a/(?P<x>.*)"))
+
+    def test_negative_operand_subtraction(self):
+        q = parse_nrql("SELECT count(*) -1 FROM Transaction")
+        self.assertEqual(q.select[0].expr.name, "_arith")
+        self.assertEqual(q.select[0].expr.args[0].value, "-")

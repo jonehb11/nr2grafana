@@ -1,6 +1,6 @@
 # Translation notes: NRQL -> PromQL / LogQL / TraceQL
 
-Honest support matrix for the nr2grafana 1.2 translation layer
+Honest support matrix for the nr2grafana 1.11 translation layer
 (`nr2grafana/nrql/parser.py` + `nr2grafana/translate/`). Every translated
 query carries a confidence level; this document says exactly what each
 construct becomes and where the semantics drift.
@@ -175,3 +175,100 @@ output:
    `COMPARE WITH` is now translated as a second identically-translated
    target with a PromQL/LogQL `offset`, which is a sound mapping.
    Replaced by the `COMPARE WITH` tests asserting the offset target.
+
+
+## 1.11 additions
+
+### Parser
+
+| Construct | Status | Notes |
+| --- | --- | --- |
+| arithmetic in SELECT: `(a / b) * 100`, `100 * a / b`, `a - b`, `average(x * 1000)` | composes | scale factors → multiplier (unit rescaled: s×1000 → ms, ratio×100 → percent, bytes/1024 → kbytes, ...); `agg/agg` → ratio; other arithmetic → PromQL/LogQL arithmetic between the translated aggregations |
+| arithmetic in WHERE: `duration * 1000 > 500` | folds | `(duration, >, 0.5)` |
+| `--` / `/* */` comments | exact | stripped outside strings |
+| `WITH expr AS alias` | exact | substituted before translation |
+| `apdex(x, t:0.3)` (no space) | exact | previously silently used t=0.5 |
+| `WHERE error` (bare boolean) | exact | `error = true` |
+| subqueries | untranslatable | precise message |
+
+### WHERE
+
+| Construct | Status | Notes |
+| --- | --- | --- |
+| OR across different attributes (PromQL) | approximate | DNF (≤ 8 branches); each range/instant selector becomes `(f(m{A}[W]) or f(m{B}[W]))` — series are deduplicated by label set before aggregation, so nothing is double counted |
+| OR across different attributes (LogQL) | approximate / needs-review | shared stream labels stay in the selector, the rest becomes `\| json \| a="x" or b="y"`; an OR spanning stream labels uses the all-streams selector (noted); an OR mixing `message` predicates is dropped (noted) |
+| `NOT (a AND b)` | approximate | De Morgan → union |
+| `count(*)` / `filter(count(*))` / `percentage(count(*))` / `FACET cases()` with `duration > T` on a histogram source | needs-review | bucket arithmetic `_count − _bucket{le="T"}`, bands `_bucket{le=hi} − _bucket{le=lo}`; exact only with a bucket boundary at T |
+| numeric comparison on other attributes | needs-review | dropped with a note (PromQL); LogQL: `\| json \| field > n` |
+| `numeric(x)`, `string(x)`, `toLower(x)`, `toUpper(x)`, `cast(x, ...)` | exact | unwrapped; case functions → `(?i)` |
+| `transactionType = 'Web'` | exact | implicit on HTTP server metrics, dropped |
+| `transactionType = 'Other'` | untranslatable | non-web work has no HTTP metric |
+| attribute = attribute | needs-review | dropped, noted |
+
+### FACET
+
+| Construct | Status | Notes |
+| --- | --- | --- |
+| `concat(a, ':', b)` | approximate | `by (a, b)`, legend `{{a}}:{{b}}` |
+| `capture(attr, r'(?P<name>...)')` / `aparse(attr, 'a/*/b')` | approximate | `label_replace(expr, "name", "$N", label, regex)` + `by (name)` |
+| `if(cond, 'a', 'b')` | approximate | two filtered targets (like `cases`) |
+| `hourOf/dateOf/weekdayOf/...(timestamp)` | needs-review | note suggests the interval to use |
+| `string(x)` etc. | exact | unwrapped |
+
+### FROM Metric — built-in names
+
+| Name | Translation |
+| --- | --- |
+| `apm.service.transaction.duration` | HTTP server histogram (count/sum/percentile) |
+| `apm.service.error.count`, `apm.service.transaction.error.count` | HTTP server `_count` with 5xx matcher (needs-review) |
+| `apm.service.datastore.operation.duration` / `apm.service.external.host.duration` | `db_client_operation_duration_seconds` / `http_client_request_duration_seconds` (needs-review) |
+| `apm.service.cpu.usertime.utilization`, `apm.service.memory.physical`, `apm.service.instance.count`, `apm.service.gc.time`, `apm.service.memory.heap.*`, `apm.service.thread.count` | OTel process/JVM metrics (needs-review) |
+| `apm.service.overview.web` / `.other` | untranslatable (segment breakdown) |
+| `newrelic.goldenmetrics.apm.application.throughput` / `responseTimeMs` / `errorRate` | derived from the HTTP histogram (per minute / ms / percent) |
+| `newrelic.goldenmetrics.infra.host.*` | node_exporter templates |
+| `newrelic.timeslice.value` + `metricTimesliceName` | untranslatable unless `metric_map` has the timeslice name |
+| `host.*`, `k8s.<entity>.*` | alias the SystemSample/StorageSample/NetworkSample/K8s*Sample tables |
+| `aws.<namespace>.<Metric>` | YACE: `aws_<ns>_<snake_metric>_<statistic>` (statistic from the aggregation), dimensions → `dimension_<Name>`, `aws.accountId` → `account_id` (needs-review) |
+| OTel semconv (`http.server.request.duration`, `db.client.operation.duration`, `system.cpu.utilization`, `jvm.*`, ...) | typed with units |
+| `getField(m, count|sum|max|min|average)` | the corresponding aggregation |
+| `WHERE metricName = 'x'` with `count(*)` | selects the metric |
+| unmapped `sum(x)` | counter (`increase`) with `_total` per config, needs-review |
+
+### Infra events (`SystemSample`, `NetworkSample`, `StorageSample`, `ProcessSample`, `ContainerSample`, `K8s*Sample`)
+
+About 200 attributes are mapped onto node_exporter, process-exporter,
+cAdvisor, kube-state-metrics and kubelet metrics (see
+`translate/nrmetrics.py`); every SELECT item is translated (one target
+each); `count(*)` / `uniqueCount(<entity>)` become the entity population
+(`count(kube_pod_info)`, `count(node_uname_info)`, ...); pod `status`
+filters/facets select `kube_pod_status_phase{phase=...}`; `latest(status)
+FACET podName` → `max by (pod, phase)(kube_pod_status_phase == 1)`;
+`cpuCoresUtilization` / `memoryWorkingSetUtilization` join usage with
+limits `on (namespace, pod, container)`. Unknown attributes are
+untranslatable with the exact `metric_map` key to add. Control-plane
+samples, `K8sEvent`, `InfrastructureEvent`, `Deployment`, `NrAiIncident`
+name their LGTM equivalent (control-plane metrics, Loki, annotations,
+Grafana Alerting).
+
+### Transaction attributes
+
+`duration`/`totalTime`/`webDuration` → HTTP server histogram;
+`databaseDuration` → DB client histogram; `externalDuration` → HTTP
+client histogram; `databaseCallCount`/`externalCallCount` → their
+`_count`; `latest(timestamp)` → `max(timestamp(_count)) * 1000`
+(dateTimeAsIso); anything else is untranslatable with the reason (it used
+to become the HTTP histogram silently).
+
+### Logs / traces
+
+`latest(message)` → logs panel limited to one line; several aggregations →
+one target each; `agg/agg` and `agg ± agg` preserved as LogQL arithmetic;
+`event_map` custom events → Loki with stream labels.
+`otel.status_code = 'ERROR'` → `status = error` (was inverted);
+`uniqueCount(trace.id)` → TraceQL metrics root-span count;
+`span_aggregations: "traceql"` → TraceQL metrics for every aggregation.
+
+### Time
+
+`SINCE a UNTIL b` (relative) → `timeFrom = a − b`, `timeShift = b`
+(exact); `SINCE last week` → `now-1w/w`, `last month` → `now-1M/M`.

@@ -126,3 +126,43 @@ class TraceqlTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StatusAndMetricsTests(unittest.TestCase):
+    def test_otel_status_code_error_is_status_error(self):
+        t = tr("SELECT * FROM Span WHERE otel.status_code = 'ERROR'")
+        self.assertEqual(t.expr, "{ status = error }")
+
+    def test_otel_status_code_ok(self):
+        t = tr("SELECT * FROM Span WHERE otel.status_code != 'OK'")
+        self.assertEqual(t.expr, "{ status != ok }")
+
+    def test_unique_trace_count_uses_traceql_metrics_root_spans(self):
+        t = tr("SELECT uniqueCount(trace.id) FROM Span WHERE service.name = "
+               "'checkout' TIMESERIES")
+        self.assertEqual(t.datasource, "tempo")
+        self.assertEqual(t.query_type, "traceql-metrics")
+        self.assertEqual(
+            t.expr,
+            '{ nestedSetParent < 0 && resource.service.name = "checkout" } '
+            '| count_over_time()')
+        self.assertIn("panel-hint:traceql-metrics", t.notes)
+
+    def test_traceql_metrics_mode_for_aggregations(self):
+        cfg = load_config()
+        cfg["span_aggregations"] = "traceql"
+        t = tr("SELECT percentile(duration.ms, 95) FROM Span WHERE "
+               "service.name = 'c' FACET name TIMESERIES", cfg)
+        self.assertEqual(
+            t.expr,
+            '{ resource.service.name = "c" } | quantile_over_time(duration, '
+            '0.95) by (name)')
+        self.assertEqual(t.legend, "{{name}}")
+        t2 = tr("SELECT rate(count(*), 1 second) FROM Span WHERE "
+                "service.name = 'c' TIMESERIES", cfg)
+        self.assertEqual(t2.expr, '{ resource.service.name = "c" } | rate()')
+
+    def test_span_metrics_unknown_attribute_untranslatable(self):
+        t = tr("SELECT average(customAttr) FROM Span WHERE service.name = "
+               "'c' TIMESERIES")
+        self.assertEqual(t.confidence, "untranslatable")

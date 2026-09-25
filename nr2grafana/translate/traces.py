@@ -111,9 +111,18 @@ def _cmp_to_traceql(c: Cmp, t: Translation, cfg: Dict[str, Any]) -> str:
     low = attr.lower()
     field = _field_for(attr, t)
 
-    # error IS TRUE handled by parser as Cmp(error, '=', Lit(True))
+    # error IS TRUE handled by parser as Cmp(error, '=', Lit(True));
+    # otel.status_code = 'ERROR' / 'OK' / 'UNSET' name the status directly.
     if field == "status":
-        truthy = isinstance(c.right, Lit) and c.right.value in (True, "true")
+        raw = c.right.value if isinstance(c.right, Lit) else c.right
+        text = str(raw).strip().lower()
+        if low in ("otel.status_code", "status") and text in (
+                "error", "ok", "unset", "status_code_error",
+                "status_code_ok", "status_code_unset"):
+            code = text.replace("status_code_", "")
+            if c.op in ("=", "!="):
+                return "status %s %s" % (c.op, code)
+        truthy = text in ("true", "1")
         if c.op in ("=", "!="):
             eq = (c.op == "=") == bool(truthy)
             return "status = error" if eq else "status != error"
@@ -153,6 +162,110 @@ def _cmp_to_traceql(c: Cmp, t: Translation, cfg: Dict[str, Any]) -> str:
                              q("^(?:%s)$" % raw_rx))
     t.note("operator %r unsupported in TraceQL; dropped" % c.op, NEEDS_REVIEW)
     return ""
+
+
+_TRACEQL_BY_FIELDS = {
+    "service.name": "resource.service.name", "appname": "resource.service.name",
+    "name": "name", "span.kind": "kind", "http.statuscode":
+    "span.http.response.status_code", "http.status_code":
+    "span.http.response.status_code", "http.method":
+    "span.http.request.method", "db.system": "span.db.system",
+}
+
+
+def translate_span_metrics_traceql(nq: NrqlQuery,
+                                   cfg: Dict[str, Any]) -> Translation:
+    """Aggregation-shaped FROM Span queries as TraceQL metrics (Tempo
+    2.4+): ``{ filters } | rate() by (field)``. Used when the config sets
+    ``span_aggregations: "traceql"`` and always for uniqueCount(trace.id),
+    which span metrics cannot express."""
+    t = Translation(datasource="tempo", query_type="traceql-metrics",
+                    confidence=APPROXIMATE)
+    aggs = [i for i in nq.select if isinstance(i.expr, Func)]
+    if not aggs:
+        raise Untranslatable("TraceQL metrics need an aggregation")
+    fn = aggs[0].expr
+    assert isinstance(fn, Func)
+    body = _cond_to_traceql(nq.where, t, cfg)
+    if body.startswith("(") and body.endswith(")"):
+        body = body[1:-1]
+    arg = fn.args[0] if fn.args else None
+    attr = arg.name.lower() if isinstance(arg, Attr) else ""
+    is_trace_count = fn.name in ("uniquecount", "cardinality") and attr in (
+        "trace.id", "traceid", "trace_id")
+    if is_trace_count:
+        body = ("nestedSetParent < 0" + (" && " + body if body else ""))
+        agg = "count_over_time()"
+        t.note("uniqueCount(trace.id) approximated as the number of root "
+               "spans matching the filters (one root span per trace); "
+               "filters on non-root spans would undercount", NEEDS_REVIEW)
+        t.notes.append("unit:short")
+    elif fn.name == "count":
+        agg = "count_over_time()"
+        t.notes.append("unit:short")
+    elif fn.name == "rate":
+        agg = "rate()"
+        per = 60.0
+        for a in fn.args:
+            if isinstance(a, Lit) and isinstance(a.value, (int, float)):
+                per = float(a.value)
+        if per != 1:
+            t.note("rate(count(*), %g seconds) rendered as a per-second "
+                   "rate; scale the panel by %g" % (per, per), APPROXIMATE)
+        t.notes.append("unit:reqps")
+    elif fn.name in ("average", "avg", "max", "min", "percentile",
+                     "median", "histogram", "sum"):
+        if attr not in _DURATION_ATTRS:
+            raise Untranslatable(
+                "TraceQL metrics aggregate duration only; %s(%s) has no "
+                "equivalent" % (fn.name, attr or "?"))
+        if fn.name in ("average", "avg"):
+            agg = "avg_over_time(duration)"
+        elif fn.name == "max":
+            agg = "max_over_time(duration)"
+        elif fn.name == "min":
+            agg = "min_over_time(duration)"
+        elif fn.name == "sum":
+            agg = "sum_over_time(duration)"
+        elif fn.name == "histogram":
+            agg = "histogram_over_time(duration)"
+            t.notes.append("panel-hint:heatmap")
+        else:
+            pcts = [50.0] if fn.name == "median" else [
+                float(a.value) for a in fn.args[1:]
+                if isinstance(a, Lit) and isinstance(a.value, (int, float))
+            ] or [95.0]
+            agg = "quantile_over_time(duration, %s)" % ", ".join(
+                ("%f" % (p / 100.0)).rstrip("0").rstrip(".") for p in pcts)
+        t.notes.append("unit:s")
+        t.note("TraceQL metrics compute over sampled spans in Tempo's "
+               "metrics-generator window; values are seconds", APPROXIMATE)
+    else:
+        raise Untranslatable(
+            "%s() has no TraceQL metrics equivalent" % fn.name)
+    by = []
+    for item in nq.facet:
+        if isinstance(item.expr, Attr):
+            by.append(_TRACEQL_BY_FIELDS.get(
+                item.expr.name.lower(), "." + item.expr.name))
+        else:
+            t.note("FACET %s has no TraceQL by() equivalent; dropped"
+                   % getattr(item.expr, "name", "?"), NEEDS_REVIEW)
+    t.expr = "{ %s } | %s%s" % (body, agg,
+                                (" by (%s)" % ", ".join(by)) if by else "")
+    t.group_by = by
+    if by:
+        t.legend = " / ".join("{{%s}}" % b for b in by)
+    if len(aggs) > 1:
+        t.note("only the first aggregation was translated to TraceQL "
+               "metrics; add the others as separate panels", NEEDS_REVIEW)
+    if nq.compare_with:
+        t.note("COMPARE WITH is not supported by TraceQL metrics; "
+               "comparison dropped", NEEDS_REVIEW)
+    t.notes.append("panel-hint:traceql-metrics")
+    t.note("requires Tempo 2.4+ with the metrics-generator local-blocks "
+           "processor enabled (TraceQL metrics)", NEEDS_REVIEW)
+    return t
 
 
 def translate_to_traceql(nq: NrqlQuery, cfg: Dict[str, Any]) -> Translation:
