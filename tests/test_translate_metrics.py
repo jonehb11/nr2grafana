@@ -70,17 +70,19 @@ class TransactionTests(unittest.TestCase):
     def test_apdex(self):
         t = tr("SELECT apdex(duration, t: 0.5) FROM Transaction "
                "WHERE appName = 'checkout' SINCE 1 hour ago")
-        # (b(t) + b(4t)) / 2 / total == (satisfied + tolerating/2) / total;
-        # integral bucket bounds match both le="2" and le="2.0" spellings.
+        # (b(t) + b(4t)) / 2 / total == (satisfied + tolerating/2) / total.
+        # 4t=2 is not an OTel default bucket: the smallest existing bucket
+        # among 2 / 2.0 / 2.5 is taken (min over the cumulative counts).
         self.assertEqual(
             t.expr,
-            '(sum(rate(%s_bucket{service_name="checkout",le="0.5"}'
-            '[$__range])) + sum(rate(%s_bucket{service_name="checkout",'
-            'le=~"2|2\\\\.0"}[$__range]))) / 2 / sum(rate(%s_count{'
-            'service_name="checkout"}[$__range]))' % (HTTP, HTTP, HTTP))
+            '(min(sum by (le)(rate(%s_bucket{service_name="checkout",'
+            'le="0.5"}[$__range]))) + min(sum by (le)(rate(%s_bucket{'
+            'service_name="checkout",le=~"2|2\\\\.0|2\\\\.5"}[$__range]))))'
+            ' / 2 / sum(rate(%s_count{service_name="checkout"}[$__range]))'
+            % (HTTP, HTTP, HTTP))
         self.assertEqual(t.query_type, "instant")
-        # apdex bucket-boundary caveat forces needs-review
-        self.assertEqual(t.confidence, NEEDS_REVIEW)
+        self.assertEqual(t.confidence, APPROXIMATE)
+        self.assertTrue(any("2.5 when 2 is absent" in n for n in t.notes))
 
     def test_facet_becomes_by_and_topk(self):
         t = tr("SELECT count(*) FROM Transaction WHERE appName = 'checkout' "
@@ -2048,3 +2050,52 @@ class Iteration15SpellingTests(unittest.TestCase):
         b = tr("SELECT count(*) FROM Transaction WHERE 'x' = appName "
                "AND 1 < duration")
         self.assertEqual((a.expr, a.confidence), (b.expr, b.confidence))
+
+
+class Iteration16ValueChecks(unittest.TestCase):
+    """Fixes from evaluating translated queries on a live Prometheus."""
+
+    def test_transaction_names_become_method_and_route(self):
+        t = tr("SELECT count(*) FROM Transaction WHERE name = "
+               "'WebTransaction/Go/GET /cart'")
+        self.assertEqual(t.expr, 'sum(increase(%s_count{http_request_method='
+                                 '"GET",http_route="/cart"}[$__range]))' % HTTP)
+        self.assertEqual(t.confidence, APPROXIMATE)
+        t = tr("SELECT count(*) FROM Transaction WHERE name LIKE "
+               "'WebTransaction/Go/GET /check%'")
+        self.assertEqual(t.expr, 'sum(increase(%s_count{http_request_method='
+                                 '"GET",http_route=~"(?i)/check.*"}[$__range]))'
+                         % HTTP)
+        t = tr("SELECT count(*) FROM Transaction WHERE name IN "
+               "('WebTransaction/Go/GET /a', 'WebTransaction/Go/POST /b')")
+        self.assertEqual(t.expr, 'sum(increase(%s_count{http_route=~"/a|/b"}'
+                                 '[$__range]))' % HTTP)
+        self.assertEqual(t.confidence, NEEDS_REVIEW)
+        t = tr("SELECT count(*) FROM Transaction WHERE name = "
+               "'WebTransaction/Custom/checkoutJob'")
+        self.assertEqual(t.expr, 'sum(increase(%s_count{http_route='
+                                 '"checkoutJob"}[$__range]))' % HTTP)
+        self.assertEqual(t.confidence, NEEDS_REVIEW)
+
+    def test_framework_only_name_patterns_are_dropped(self):
+        t = tr("SELECT count(*) FROM Transaction WHERE name LIKE "
+               "'WebTransaction/%'")
+        self.assertEqual(t.expr, "sum(increase(%s_count[$__range]))" % HTTP)
+        self.assertTrue(any("by framework, which has no label" in n
+                            for n in t.notes))
+        t = tr("SELECT count(*) FROM Transaction WHERE name NOT LIKE "
+               "'WebTransaction/%'")
+        self.assertEqual(t.confidence, UNTRANSLATABLE)
+
+    def test_apdex_with_non_default_bounds(self):
+        t = tr("SELECT apdex(duration, t: 0.25) FROM Transaction FACET appName")
+        self.assertEqual(
+            t.expr,
+            '(min by (service_name)(sum by (le, service_name)(rate(%s_bucket{'
+            'le="0.25"}[$__range]))) + min by (service_name)(sum by (le, '
+            'service_name)(rate(%s_bucket{le=~"1|1\\\\.0"}[$__range])))) / 2 / '
+            'sum by (service_name)(rate(%s_count[$__range]))'
+            % (HTTP, HTTP, HTTP))
+        t = tr("SELECT apdex(duration, t: 0.3) FROM Transaction")
+        self.assertIn('le=~"0\\\\.3|0\\\\.5"', t.expr)
+        self.assertIn('le=~"1\\\\.2|2\\\\.5"', t.expr)

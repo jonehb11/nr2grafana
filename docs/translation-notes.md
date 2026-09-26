@@ -506,6 +506,21 @@ counts):
 | `average(loadAverageOneMinute) / latest(coreCount)` and other ratios of plain numbers | `percentunit` | no unit; only counts over counts (and sums of counters) are proportions |
 | `allocatableCpuCoresUtilization`, `allocatableMemoryUtilization` on `K8sNodeSample` | unknown | used / allocatable per node (cAdvisor root cgroup over kube-state-metrics allocatable) |
 
+### Iteration 16 — value-level checks on a live stack
+
+Forty translated queries were evaluated on a Prometheus scraping an
+exporter with known rates, latencies and gauges, and compared with the
+number New Relic semantics imply (counts over the window, per-minute
+rates, per-bucket counts, averages, percentages, percentiles, apdex, CPU /
+memory / disk percentages, pod and container populations, `COMPARE WITH`,
+`FACET` breakdowns). Thirty-seven matched to within rounding; the rest:
+
+| Construct | Before | Now |
+| --- | --- | --- |
+| `apdex(duration, t: 0.5)` on an OTel histogram | `le="2"` for 4t — OTel's default buckets have 0.5 but no 2 (2.5 is the next), so the panel had no data | the smallest existing bucket at or above the bound is used (`min` over `le=~"2\|2\.0\|2\.5"`) with a note; bounds that are default buckets stay exact |
+| `WHERE name = 'WebTransaction/Go/GET /cart'` | `http_route="WebTransaction/Go/GET /cart"` (no data) | `http_request_method="GET", http_route="/cart"`; `LIKE 'WebTransaction/Go/GET /check%'` → method + `http_route=~"(?i)/check.*"`; `IN (...)` with mixed methods → the route alternation (needs-review); `LIKE 'WebTransaction/%'` (a framework-only filter) is dropped with a note |
+| widget unit `MS` on a query whose value is in seconds (`average(duration.ms) FROM Span` on a seconds histogram, `average(duration)` on the OTel histogram) | the widget unit won: "0.19 ms" on the panel, thresholds meant as 200 ms read as 200 s | the query's unit wins; thresholds and axis limits written in the widget's unit are converted when the units are of one family (ms↔s, percent↔percentunit, bytes, data rates); otherwise the widget unit is dropped with a needs-review note |
+
 ### Iteration 15 — parser robustness (mutated and oddly spelled NRQL)
 
 Eight hundred generated queries were mutated (characters dropped or

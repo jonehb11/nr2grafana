@@ -155,8 +155,12 @@ class RowsStrategyTests(unittest.TestCase):
 
     def test_needs_review_title_suffix(self):
         dash = self.outputs[0][1]
-        p = panel_by_title(dash, "Apdex")
-        self.assertTrue(p["title"].endswith("[REVIEW]"))
+        # apdex bucket bounds are handled (approximate): no review flag
+        self.assertFalse(
+            panel_by_title(dash, "Apdex")["title"].endswith("[REVIEW]"))
+        flagged = [p["title"] for p in iter_panels(dash)
+                   if (p.get("title") or "").endswith("[REVIEW]")]
+        self.assertTrue(flagged)
 
     def test_untranslatable_without_passthrough_is_text_panel(self):
         dash = self.outputs[0][1]
@@ -903,3 +907,74 @@ class Iteration13BuilderTests(unittest.TestCase):
         self.assertIn("duplicate name", apps[0].get("description", ""))
         self.assertFalse([e for e in validate_dashboard(dash)
                           if "duplicate" in e])
+
+
+class Iteration16UnitTests(unittest.TestCase):
+    """The panel unit is what the query returns; New Relic thresholds and
+    axis limits written in the widget's unit are converted to it."""
+
+    def _panel(self, query, viz="viz.billboard", **rc):
+        cfg = load_config()
+        cfg["spanmetrics_flavor"] = "otel-seconds"
+        widget = {"title": "W", "layout": {"column": 1, "row": 1, "width": 4,
+                                            "height": 3},
+                  "visualization": {"id": viz},
+                  "rawConfiguration": dict({"nrqlQueries": [
+                      {"accountId": 1, "query": query}]}, **rc)}
+        fn, dash, report = build_dashboards(_nr([widget]), cfg)[0]
+        return dash["panels"][0], report[0]
+
+    def test_query_unit_wins_and_thresholds_convert(self):
+        panel, rep = self._panel(
+            "SELECT average(duration.ms) FROM Span WHERE service.name = 'x'",
+            units={"unit": "MS"},
+            thresholds=[{"alertSeverity": "CRITICAL", "value": 200},
+                        {"alertSeverity": "WARNING", "value": 100}])
+        fc = panel["fieldConfig"]["defaults"]
+        self.assertEqual(fc["unit"], "s")
+        self.assertEqual([s["value"] for s in fc["thresholds"]["steps"]],
+                         [None, 0.1, 0.2])
+        self.assertTrue(any("converted (x0.001)" in n for n in rep["notes"]))
+
+    def test_axis_limits_and_line_thresholds_convert(self):
+        panel, rep = self._panel(
+            "SELECT average(duration) FROM Transaction WHERE appName = 'x' "
+            "TIMESERIES", viz="viz.line", units={"unit": "MS"},
+            yAxisLeft={"zero": True, "max": 500},
+            thresholds={"isLabelVisible": True, "thresholds": [
+                {"from": 300, "to": 1000, "name": "slow",
+                 "severity": "WARNING"}]})
+        fc = panel["fieldConfig"]["defaults"]
+        self.assertEqual((fc["unit"], fc["max"], fc["min"]), ("s", 0.5, 0))
+        self.assertEqual(fc["thresholds"]["steps"][1]["value"], 0.3)
+
+    def test_percent_and_incompatible_units(self):
+        panel, rep = self._panel(
+            "SELECT filter(count(*), WHERE error IS TRUE) / count(*) FROM "
+            "Transaction WHERE appName = 'x'", units={"unit": "PERCENTAGE"},
+            thresholds=[{"alertSeverity": "CRITICAL", "value": 5}])
+        fc = panel["fieldConfig"]["defaults"]
+        self.assertEqual(fc["unit"], "percentunit")
+        self.assertEqual(fc["thresholds"]["steps"][1]["value"], 0.05)
+        panel, rep = self._panel(
+            "SELECT count(*) FROM Transaction WHERE appName = 'x'",
+            units={"unit": "BYTES"},
+            thresholds=[{"alertSeverity": "CRITICAL", "value": 5}])
+        fc = panel["fieldConfig"]["defaults"]
+        self.assertEqual(fc["unit"], "short")
+        self.assertEqual(fc["thresholds"]["steps"][1]["value"], 5)
+        self.assertTrue(any("left as written" in n for n in rep["notes"]))
+        self.assertIn("[REVIEW]", panel["title"])
+
+    def test_matching_or_missing_translation_unit_keeps_the_widget_unit(self):
+        panel, rep = self._panel(
+            "SELECT average(duration) * 1000 FROM Transaction WHERE "
+            "appName = 'x'", units={"unit": "MS"},
+            thresholds=[{"alertSeverity": "CRITICAL", "value": 200}])
+        fc = panel["fieldConfig"]["defaults"]
+        self.assertEqual((fc["unit"], fc["thresholds"]["steps"][1]["value"]),
+                         ("ms", 200))
+        panel, rep = self._panel(
+            "SELECT latest(some.gauge) FROM Metric WHERE host.name = 'a'",
+            units={"unit": "BYTES"})
+        self.assertEqual(panel["fieldConfig"]["defaults"]["unit"], "bytes")

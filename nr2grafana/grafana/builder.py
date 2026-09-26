@@ -482,9 +482,39 @@ def _make_targets(trans: List[Translation], b: _Build) -> List[Dict[str, Any]]:
     return targets
 
 
-def _panel_options(ptype: str, widget: NRWidget,
-                   trans: List[Translation]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    """Returns (options, fieldConfig) for the panel type."""
+# Grafana unit id -> (family, size of one unit in the family's base unit);
+# thresholds and axis limits convert between units of one family.
+_UNIT_BASE = {
+    "ns": ("time", 1e-9), "µs": ("time", 1e-6), "ms": ("time", 1e-3),
+    "s": ("time", 1.0), "m": ("time", 60.0), "h": ("time", 3600.0),
+    "d": ("time", 86400.0),
+    "percent": ("ratio", 0.01), "percentunit": ("ratio", 1.0),
+    "bits": ("bytes", 0.125), "bytes": ("bytes", 1.0),
+    "decbytes": ("bytes", 1.0), "kbytes": ("bytes", 1024.0),
+    "mbytes": ("bytes", 1024.0 ** 2), "gbytes": ("bytes", 1024.0 ** 3),
+    "deckbytes": ("bytes", 1e3), "decmbytes": ("bytes", 1e6),
+    "decgbytes": ("bytes", 1e9),
+    "bps": ("datarate", 1.0), "Bps": ("datarate", 8.0),
+    "KBs": ("datarate", 8.0 * 1024), "MBs": ("datarate", 8.0 * 1024 ** 2),
+    "Kbits": ("datarate", 1e3), "Mbits": ("datarate", 1e6),
+    "reqps": ("rate", 1.0), "reqpm": ("rate", 1 / 60.0),
+    "cps": ("rate", 1.0), "cpm": ("rate", 1 / 60.0), "ops": ("rate", 1.0),
+    "mps": ("rate", 1.0), "rps": ("rate", 1.0),
+}
+
+
+def _unit_factor(from_unit: str, to_unit: str) -> Optional[float]:
+    """Multiply a number in from_unit by this to express it in to_unit;
+    None when the units are not of one family."""
+    a, b = _UNIT_BASE.get(from_unit), _UNIT_BASE.get(to_unit)
+    if not a or not b or a[0] != b[0]:
+        return None
+    return a[1] / b[1]
+
+
+def _panel_options(ptype: str, widget: NRWidget, trans: List[Translation]) \
+        -> Tuple[Dict[str, Any], Dict[str, Any], List[Tuple[str, str]]]:
+    """Returns (options, fieldConfig, notes) for the panel type."""
     rc = widget.raw_configuration or {}
     defaults: Dict[str, Any] = {
         "color": {"mode": "palette-classic"},
@@ -493,18 +523,44 @@ def _panel_options(ptype: str, widget: NRWidget,
     }
     options: Dict[str, Any] = {}
     overrides: List[Dict[str, Any]] = []
+    unit_notes: List[Tuple[str, str]] = []
 
-    # NR units override
+    # Units: the query decides what the values are (seconds for an OTel
+    # duration histogram even when the NR widget said MS); the NR widget
+    # unit applies only when the translation has none. NR thresholds and
+    # axis limits were written in the NR unit: convert them when the two
+    # units are of one family, else say so.
     unit = ((rc.get("units") or {}).get("unit") or "").upper()
-    if unit in NR_UNIT_MAP:
-        defaults["unit"] = NR_UNIT_MAP[unit]
+    nr_unit = NR_UNIT_MAP.get(unit, "")
+    trans_unit = next((n.split(":", 1)[1] for t in trans for x in [t] + t.extra
+                       for n in x.notes if n.startswith("unit:")), "")
+    factor = _unit_factor(nr_unit, trans_unit) if nr_unit and trans_unit \
+        else None
+    if trans_unit:
+        defaults["unit"] = trans_unit
+        if nr_unit and nr_unit != trans_unit:
+            if factor is None:
+                unit_notes.append((
+                    "widget unit %s replaced by the query's unit %s; "
+                    "thresholds and axis limits were left as written — "
+                    "check them" % (unit, trans_unit), NEEDS_REVIEW))
+            elif factor != 1:
+                unit_notes.append((
+                    "widget unit %s: the query returns %s, so thresholds "
+                    "and axis limits were converted (x%g)"
+                    % (unit, trans_unit, factor), APPROXIMATE))
+    elif nr_unit:
+        defaults["unit"] = nr_unit
+
+    def conv(v: Any) -> Any:
+        return v * factor if factor not in (None, 1) else v
 
     # y-axis min/max
     y = rc.get("yAxisLeft") or {}
     if isinstance(y.get("min"), (int, float)):
-        defaults["min"] = y["min"]
+        defaults["min"] = conv(y["min"])
     if isinstance(y.get("max"), (int, float)):
-        defaults["max"] = y["max"]
+        defaults["max"] = conv(y["max"])
     if y.get("zero") is True and "min" not in defaults:
         defaults["min"] = 0  # NR "start y-axis at zero"
 
@@ -532,7 +588,7 @@ def _panel_options(ptype: str, widget: NRWidget,
                     key=lambda x: x["from"]):
                 steps.append({"color": _SEVERITY_COLOR.get(
                     item.get("severity", ""), "red"),
-                    "value": item["from"]})
+                    "value": conv(item["from"])})
             if len(steps) > 1:
                 defaults["thresholds"] = {"mode": "absolute", "steps": steps}
                 defaults["custom"]["thresholdsStyle"] = {"mode": "line"}
@@ -567,7 +623,7 @@ def _panel_options(ptype: str, widget: NRWidget,
                     key=lambda x: x["value"]):
                 steps.append({"color": _SEVERITY_COLOR.get(
                     item.get("alertSeverity", ""), "red"),
-                    "value": item["value"]})
+                    "value": conv(item["value"])})
             defaults["thresholds"] = {"mode": "absolute", "steps": steps}
         options = {
             "reduceOptions": {"values": False, "calcs": ["lastNotNull"],
@@ -669,7 +725,7 @@ def _panel_options(ptype: str, widget: NRWidget,
                    "prettifyLogMessage": False, "enableLogDetails": True,
                    "dedupStrategy": "none", "sortOrder": "Descending"}
 
-    return options, {"defaults": defaults, "overrides": overrides}
+    return options, {"defaults": defaults, "overrides": overrides}, unit_notes
 
 
 def _convert_widget(widget: NRWidget, b: _Build,
@@ -769,7 +825,11 @@ def _convert_widget(widget: NRWidget, b: _Build,
     # Instant table/pie/bar targets from prometheus should come back as table
     # frames for correct rendering.
     panel["type"] = ptype
-    options, field_config = _panel_options(ptype, widget, trans)
+    options, field_config, unit_notes = _panel_options(ptype, widget, trans)
+    for msg, level in unit_notes:
+        if trans:
+            trans[0].note(msg, level)
+        conf = worst(conf, level)
     panel["options"] = options
     panel["fieldConfig"] = field_config
     panel["targets"] = _make_targets(trans, b)

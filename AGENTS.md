@@ -108,8 +108,10 @@ create folders). Never print or commit them.
   <alias or expression>`.
 - `FROM Transaction` → OTel HTTP server histogram (`duration`), DB client
   histogram (`databaseDuration`), HTTP client histogram (`externalDuration`);
-  `error IS TRUE` ≈ 5xx; `transactionType = 'Web'` is implicit; other
-  attributes have no metric and are reported, never guessed.
+  `error IS TRUE` ≈ 5xx; `transactionType = 'Web'` is implicit; `name =
+  'WebTransaction/Go/GET /cart'` → `http_request_method` + `http_route`;
+  `apdex(x, t: T)` uses the buckets at T and 4T (or the next OTel default
+  bucket); other attributes have no metric and are reported, never guessed.
 - `FROM Metric` names: New Relic's own (`apm.service.*`,
   `newrelic.goldenmetrics.*`, `host.*`, `k8s.*`), OTel semconv, Micrometer /
   Spring Boot (`jvm.*`, `http.server.requests`, `hikaricp.*`, `tomcat.*`),
@@ -154,6 +156,9 @@ create folders). Never print or commit them.
   units, legend, series colours, right axis, null handling (`preserve`),
   entity links, refresh interval, "ignore time picker" (a panel time
   override). A pie/table/bar with `TIMESERIES` runs as an instant query.
+  The panel unit is the unit the query returns (seconds for OTel
+  histograms); thresholds and axis limits written in the widget's unit are
+  converted (ms↔s, %↔ratio, bytes) or flagged.
 - On-host integration samples (`NginxSample`, `MysqlSample`,
   `PostgresqlDatabaseSample`, `RedisSample`, `KafkaOffsetSample`,
   `ElasticsearchClusterSample`, `RabbitmqQueueSample`, …) map their common

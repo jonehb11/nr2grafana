@@ -422,6 +422,101 @@ def _drop_present_checks(cond: Any, t: Translation) -> Any:
     return cond
 
 
+_NR_TXN_NAME_RE = re.compile(r"^(?:Web|Other)Transaction/[^/]+/(.+)$")
+_NR_TXN_REGEX_RE = re.compile(r"^(\(\?i\))?(?:Web|Other)Transaction/(.*)$")
+_HTTP_METHODS = ("GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS")
+
+
+def _txn_name_matchers(m: Matcher, t: Translation,
+                       cfg: Optional[Dict[str, Any]]) -> List[Matcher]:
+    """A New Relic transaction name ('WebTransaction/Go/GET /cart') against
+    the OTel http_route (and http_request_method) labels: the
+    WebTransaction/<framework>/ prefix has no label, and a leading HTTP
+    method is the method label."""
+    method_label = map_attr("request.method", cfg or {})[0] if cfg \
+        else "http_request_method"
+    value = m.value
+    if m.op in ("=", "!="):
+        mt = _NR_TXN_NAME_RE.match(value)
+        if not mt:
+            t.note("NR transaction `name` mapped to the http_route label; "
+                   "NR names (WebTransaction/...) differ from route "
+                   "patterns — verify the matcher value", NEEDS_REVIEW)
+            return [Matcher("http_route", m.op, value)]
+        rest = mt.group(1)
+        parts = rest.split(" ", 1)
+        if len(parts) == 2 and parts[0].upper() in _HTTP_METHODS:
+            if m.op == "=":
+                t.note("transaction name %r became %s=\"%s\" and "
+                       "http_route=\"%s\" (the WebTransaction/<framework>/ "
+                       "prefix has no label)"
+                       % (value, method_label, parts[0].upper(), parts[1]),
+                       APPROXIMATE)
+                return [Matcher(method_label, "=", parts[0].upper()),
+                        Matcher("http_route", "=", parts[1])]
+            t.note("name != %r excludes the route %r for every method (a "
+                   "method + route pair cannot be negated jointly)"
+                   % (value, parts[1]), NEEDS_REVIEW)
+            return [Matcher("http_route", "!=", parts[1])]
+        t.note("transaction name %r mapped to http_route=\"%s\" (the "
+               "WebTransaction/<framework>/ prefix has no label); verify it "
+               "against your route patterns" % (value, rest), NEEDS_REVIEW)
+        return [Matcher("http_route", m.op, rest)]
+    # LIKE / IN / RLIKE: a regex, possibly an alternation of names.
+    flags = "(?i)" if value.startswith("(?i)") else ""
+    body = value[len(flags):]
+    wrapped = body.startswith("^(?:") and body.endswith(")$")
+    if wrapped:
+        body = body[4:-2]
+    alts = body.split("|")
+    routes: List[str] = []
+    methods: List[str] = []
+    for alt in alts:
+        mt = _NR_TXN_REGEX_RE.match(alt)
+        if not mt:
+            t.note("NR transaction `name` mapped to the http_route label; "
+                   "NR names (WebTransaction/...) differ from route "
+                   "patterns — verify the matcher value", NEEDS_REVIEW)
+            return [Matcher("http_route", m.op, value)]
+        tail = mt.group(2)
+        if "/" not in tail:
+            # 'WebTransaction/%' or 'WebTransaction/Go%': a filter on the
+            # framework segment only, which has no label.
+            if m.op == "=~":
+                t.notes.append("name %s %r selects web transactions by "
+                               "framework, which has no label on HTTP "
+                               "server metrics; filter dropped"
+                               % (m.op, value))
+                return []
+            raise Untranslatable(
+                "name %s %r excludes every web transaction; HTTP server "
+                "metrics have nothing left to show" % (m.op, value))
+        rest = tail.split("/", 1)[1]
+        parts = rest.split(" ", 1)
+        if len(parts) == 2 and parts[0].upper() in _HTTP_METHODS:
+            methods.append(parts[0].upper())
+            routes.append(parts[1])
+        else:
+            methods.append("")
+            routes.append(rest)
+    route_re = flags + ("^(?:%s)$" % "|".join(routes) if wrapped
+                        else "|".join(routes))
+    if m.op == "=~" and all(methods) and len(set(methods)) == 1:
+        t.note("transaction name pattern %r became %s=\"%s\" and "
+               "http_route=~\"%s\" (the WebTransaction/<framework>/ prefix "
+               "has no label)" % (value, method_label, methods[0], route_re),
+               APPROXIMATE)
+        return [Matcher(method_label, "=", methods[0]),
+                Matcher("http_route", "=~", route_re)]
+    t.note("transaction name pattern %r mapped to http_route%s\"%s\" (the "
+           "WebTransaction/<framework>/ prefix has no label%s); verify it "
+           "against your route patterns"
+           % (value, m.op, route_re,
+              "; the HTTP method is not filtered" if any(methods) else ""),
+           NEEDS_REVIEW)
+    return [Matcher("http_route", m.op, route_re)]
+
+
 def _http_fixups(matchers: List[Matcher], t: Translation,
                  cfg: Optional[Dict[str, Any]] = None) -> List[Matcher]:
     """OTel semconv HTTP server metric label conventions for FROM
@@ -439,10 +534,7 @@ def _http_fixups(matchers: List[Matcher], t: Translation,
                    "metrics; adjust if your error definition differs",
                    NEEDS_REVIEW)
         elif m.label == "span_name":
-            out.append(Matcher("http_route", m.op, m.value))
-            t.note("NR transaction `name` mapped to the http_route label; "
-                   "NR names (WebTransaction/...) differ from route "
-                   "patterns — verify the matcher value", NEEDS_REVIEW)
+            out.extend(_txn_name_matchers(m, t, cfg))
         elif m.label.lower() in _TXN_TYPE_ATTRS:
             val = m.value.lower()
             is_web = (val == "web") == (m.op in ("=", "=~"))
@@ -848,6 +940,33 @@ def _scale_text(mult: float) -> str:
     if mult and abs(inv) >= 2 and abs(inv - round(inv)) < 1e-9 * abs(inv):
         return "/ %d" % int(round(inv))
     return "* %s" % _fmt_num(mult)
+
+
+# OTel semconv default explicit buckets for request durations (seconds).
+_OTEL_DEFAULT_BUCKETS_S = [0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5,
+                           0.75, 1, 2.5, 5, 7.5, 10]
+
+
+def _le_candidates(bound: float, unit: str) -> Tuple[Matcher, Optional[float]]:
+    """A le matcher for the bound and, when the bound is not an OTel default
+    bucket, also for the smallest default bucket above it; the caller takes
+    min() so the smallest existing bucket wins. Returns (matcher, the
+    fallback bound or None)."""
+    scale = 1000.0 if unit == "ms" else 1.0
+    defaults = [b * scale for b in _OTEL_DEFAULT_BUCKETS_S]
+    alts = [bound]
+    up = next((b for b in defaults if b > bound + 1e-9), None)
+    if up is not None and not any(abs(bound - b) < 1e-9 for b in defaults):
+        alts.append(up)
+    if len(alts) == 1 and bound != int(bound):
+        return Matcher("le", "=", _fmt_num(bound)), None
+    spell: List[str] = []
+    for v in alts:
+        if v == int(v):
+            spell += ["%d" % int(v), "%d\\.0" % int(v)]
+        else:
+            spell.append(re.escape(_fmt_num(v)))
+    return Matcher("le", "=~", "|".join(spell)), (up if len(alts) > 1 else None)
 
 
 def _le_matcher(bound: float) -> Matcher:
@@ -1282,14 +1401,26 @@ def _agg_expr(ctx: _Ctx, fn: Func, src: MetricSource,
                    "millisecond histogram %r"
                    % (_fmt_num(thr), _fmt_num(thr * 1000), src.base))
             thr = thr * 1000.0
-        t.note("apdex formula requires histogram bucket bounds at exactly "
-               "t=%g and 4t=%g; verify your buckets" % (thr, thr * 4),
-               NEEDS_REVIEW)
-        le1 = hsel("_bucket", fnname="rate", more=[_le_matcher(thr)])
-        le4 = hsel("_bucket", fnname="rate", more=[_le_matcher(thr * 4)])
+        le1_m, alt1 = _le_candidates(thr, src.unit)
+        le4_m, alt4 = _le_candidates(thr * 4, src.unit)
+        for bound, alt in ((thr, alt1), (thr * 4, alt4)):
+            if alt is not None:
+                t.note("apdex bound %s is not an OTel default bucket; the "
+                       "smallest bucket at or above it is used (%s when %s "
+                       "is absent), which counts slightly more requests as "
+                       "satisfied/tolerating"
+                       % (_fmt_num(bound), _fmt_num(alt), _fmt_num(bound)),
+                       APPROXIMATE)
+        t.note("apdex from histogram buckets at t=%g and 4t=%g (the "
+               "cumulative bucket counts; verify the histogram has bounds "
+               "there)" % (thr, thr * 4), APPROXIMATE)
+        inner_by = "le" + "".join(", " + l for l in ctx.by)
+        sat = "min%s(sum by (%s)(%s))" % (
+            by, inner_by, hsel("_bucket", fnname="rate", more=[le1_m]))
+        tol = "min%s(sum by (%s)(%s))" % (
+            by, inner_by, hsel("_bucket", fnname="rate", more=[le4_m]))
         cnt = hsel("_count", fnname="rate")
-        return ("(sum%s(%s) + sum%s(%s)) / 2 / sum%s(%s)"
-                % (by, le1, by, le4, by, cnt))
+        return "(%s + %s) / 2 / sum%s(%s)" % (sat, tol, by, cnt)
 
     if name == "histogram":
         leftover(numeric)
