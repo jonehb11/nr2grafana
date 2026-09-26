@@ -1928,6 +1928,17 @@ def _infra_source(ctx: _Ctx, item: SelectItem, fn: Optional[Func],
         arg = arg.args[0]  # rate(sum(x), 1 second): descend to x
     attr, _ = unwrap_attr(arg)
     attr_name = attr.name if attr is not None else ""
+    # A metric_map entry keyed "<Event>.<attribute>" (or "<Event>.__count__"
+    # for count(*)) overrides the built-in exporter knowledge — the way a
+    # flagged panel is fixed once the real metric name is known.
+    mm = ctx.cfg.get("metric_map") or {}
+    mm_key = "%s.%s" % (ctx.event, attr_name or "__count__")
+    if any(k.lower() == mm_key.lower() for k in mm):
+        src = resolve_metric(mm_key, agg, ctx.cfg, t)
+        t.note("%s FROM %s taken from metric_map (%s)"
+               % (attr_name or "count(*)", ctx.event, mm_key))
+        _drop_implicit(ctx)
+        return src
     count_spec = nrmetrics.infra_count_spec(etl)
     phase = nrmetrics.PHASE_ATTRS.get(etl)
 

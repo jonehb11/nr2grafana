@@ -78,6 +78,9 @@ create folders). Never print or commit them.
    - wrong label name → `label_map` (`"appName": "service_name"`)
    - wrong metric name/type/unit → `metric_map` (`"orders.completed": {"name": "orders_total", "type": "counter"}`; full PromQL templates via `"expr"`)
    - legacy timeslice metric → `metric_map` keyed by its `metricTimesliceName`
+   - a built-in infra mapping that does not match your exporter → `metric_map`
+     keyed `"<Event>.<attribute>"` (`"SystemSample.cpuPercent"`; `"<Event>.__count__"`
+     for the population behind `count(*)`) overrides it
    - Loki index labels / parser → `loki_stream_labels`, `loki_parser`, `loki_metadata_labels`
    - span metrics naming → `spanmetrics_flavor` / `span_metrics`; HTTP semconv generation → `http_metrics_flavor`
    - counters without `_total` → `metric_total_suffix: false`

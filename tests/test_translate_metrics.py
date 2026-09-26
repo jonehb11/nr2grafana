@@ -1973,3 +1973,45 @@ class Iteration13WideFuzzTests(unittest.TestCase):
         self.assertEqual(t.confidence, UNTRANSLATABLE)
         self.assertTrue(any("deploymentName is a label (deployment)" in n
                             for n in t.notes), t.notes)
+
+
+class Iteration14ConfigOverrideTests(unittest.TestCase):
+    """metric_map keyed "<Event>.<attribute>" overrides built-in infra
+    knowledge (the fix path the review notes point at)."""
+
+    def _cfg(self):
+        cfg = load_config()
+        cfg["metric_map"] = dict(cfg["metric_map"], **{
+            "SystemSample.cpuPercent": {"name": "node_cpu_busy_percent",
+                                        "type": "gauge", "unit": "percent"},
+            "ProcessSample.cpuPercent": {"expr": "avg <BY>(proc_cpu{<SELBARE>})",
+                                         "unit": "percent"},
+            "RabbitmqQueueSample.__count__": {"name": "rabbitmq_queue_messages",
+                                              "type": "gauge"},
+        })
+        return cfg
+
+    def test_known_attributes_take_the_override(self):
+        t = tr("SELECT average(cpuPercent) FROM SystemSample WHERE "
+               "hostname = 'h' FACET hostname TIMESERIES", self._cfg())
+        self.assertEqual(t.expr, 'avg by (instance)(avg_over_time('
+                                 'node_cpu_busy_percent{instance="h"}'
+                                 '[$__rate_interval]))')
+        self.assertEqual(t.confidence, EXACT)
+        self.assertIn("unit:percent", t.notes)
+        self.assertTrue(any("taken from metric_map (SystemSample.cpuPercent)"
+                            in n for n in t.notes))
+
+    def test_expression_and_population_overrides(self):
+        t = tr("SELECT max(cpuPercent) FROM ProcessSample WHERE "
+               "hostname = 'h' FACET processDisplayName", self._cfg())
+        self.assertEqual(t.expr, 'avg by (groupname)(proc_cpu{instance="h"})')
+        t = tr("SELECT count(*) FROM RabbitmqQueueSample WHERE "
+               "queue.vhost = '/'", self._cfg())
+        self.assertEqual(t.expr, 'count(rabbitmq_queue_messages{vhost="/"})')
+
+    def test_without_an_override_the_built_in_mapping_stays(self):
+        t = tr("SELECT average(memoryUsedPercent) FROM SystemSample WHERE "
+               "hostname = 'h'", self._cfg())
+        self.assertTrue(t.expr.startswith("100 * (1 - avg("
+                                          "node_memory_MemAvailable_bytes"))

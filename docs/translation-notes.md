@@ -506,6 +506,22 @@ counts):
 | `average(loadAverageOneMinute) / latest(coreCount)` and other ratios of plain numbers | `percentunit` | no unit; only counts over counts (and sums of counters) are proportions |
 | `allocatableCpuCoresUtilization`, `allocatableMemoryUtilization` on `K8sNodeSample` | unknown | used / allocatable per node (cAdvisor root cgroup over kube-state-metrics allocatable) |
 
+### Iteration 14 — mapping-config variations, every `--json` command, browser render
+
+The same generator ran under sixteen mapping configurations (HTTP and
+span-metrics flavors and overrides, Loki parser / stream-label / metadata
+settings, `metric_total_suffix`, `event_map` routing to Loki and to
+metrics, `label_map` and `metric_map` overrides, `span_aggregations:
+traceql`, `page_strategy: split` with `passthrough_fallback`): 2 900
+emitted queries parsed, no crash, no static validation error. Every primary
+command (`import`, `convert`, `inspect`, `explain`, `validate`, `export`,
+including error paths) returned a proper `--json` envelope; exported fuzz
+dashboards rendered in headless Chromium with no panel error. One gap:
+
+| Construct | Before | Now |
+| --- | --- | --- |
+| `metric_map` keyed `"<Event>.<attribute>"` for an attribute the tool already maps (`"SystemSample.cpuPercent"`, `"ProcessSample.cpuPercent"`) | ignored — only unknown attributes and legacy AWS samples consulted it, although the review notes tell you to add exactly that key | overrides the built-in exporter mapping (name/type/unit, `matchers`, or a full `expr` template); `"<Event>.__count__"` overrides the population metric behind `count(*)` |
+
 ### Iteration 13 — wider sweep through the builder and a live Grafana
 
 The generator grew to 40 event types (infra, on-host integrations, legacy
