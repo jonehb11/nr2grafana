@@ -647,3 +647,17 @@ class Iteration17ParsedFieldTests(unittest.TestCase):
                "host = 'host-1'")
         self.assertEqual(t.expr, 'sum(count_over_time({service_name="checkout",'
                                  ' instance="host-1"} [$__range]))')
+
+
+class Iteration17UnwrapTests(unittest.TestCase):
+    def test_unwrap_fields_are_loki_legal_and_follow_user_mappings(self):
+        t = tr("SELECT max(dur}ation_ms) FROM Log WHERE service_name = 'x'")
+        self.assertIn("| unwrap dur_ation_ms |", t.expr)
+        cfg = load_config()
+        cfg["label_map"] = dict(cfg["label_map"], duration_ms="latency")
+        t = tr("SELECT average(duration_ms) FROM Log WHERE service_name = 'x'",
+               cfg)
+        self.assertIn("| unwrap latency |", t.expr)
+        t = tr("SELECT rate(sum(bytes.sent), 1 second) FROM Log WHERE "
+               "service_name = 'x'")
+        self.assertIn("| unwrap bytes_sent |", t.expr)

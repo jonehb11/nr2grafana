@@ -640,7 +640,7 @@ def _translate_one(nq: NrqlQuery, cfg: Dict[str, Any],
         if attr is None:
             raise Untranslatable("%s() on logs needs a numeric attribute"
                                  % name)
-        field = attr.name.replace(".", "_")
+        field, _mapped = map_attr(attr.name, cfg)  # the field's name in the line
         t.note("unwrap of %r assumes it is a numeric field after parsing"
                % field, APPROXIMATE)
         return field
@@ -680,7 +680,7 @@ def _translate_one(nq: NrqlQuery, cfg: Dict[str, Any],
             if attr is None:
                 raise Untranslatable("rate(sum(x)) on logs needs a numeric "
                                      "attribute")
-            field = attr.name.replace(".", "_")
+            field, _mapped = map_attr(attr.name, cfg)
             t.note("unwrap of %r assumes it is a numeric field after parsing"
                    % field, APPROXIMATE)
             t.notes.append("unit:%s" % (
