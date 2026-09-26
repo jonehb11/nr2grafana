@@ -1205,7 +1205,16 @@ def _finish_dashboard(dash: Dict[str, Any], b: _Build,
     tvars: List[Dict[str, Any]] = []
     tvars.extend(_datasource_variables(b))
     tvars.extend(converted)
-    tvars.extend(copy.deepcopy(b.cfg.get("extra_variables") or []))
+    for extra in copy.deepcopy(b.cfg.get("extra_variables") or []):
+        clash = next((v for v in tvars if v.get("name") == extra.get("name")),
+                     None)
+        if clash is not None:
+            # The dashboard's own variable wins: its queries reference it.
+            clash["description"] = ("config extra_variables also defines %r; "
+                                    "the dashboard's variable was kept"
+                                    % extra.get("name"))
+            continue
+        tvars.append(extra)
     _span_variable_values(tvars, b)
     # {{var}} references without a variable definition (a page exported
     # without its dashboard variables): a textbox keeps the dashboard

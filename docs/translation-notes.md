@@ -517,6 +517,8 @@ and legends were right; the log checks found one rule:
 
 | Construct | Before | Now |
 | --- | --- | --- |
+| `span.kind = 'b'` (not a span kind) in a TraceQL filter | `kind = "b"` (Tempo: "binary operations must operate on the same type") | dropped with a note naming the valid kinds |
+| a config `extra_variables` entry named like a dashboard variable | two Grafana variables with one name (validation error) | the dashboard's variable is kept, its description says so |
 | `WHERE host = 'x'`, `FACET host`, `uniqueCount(host)`, `host IS NULL` on `FROM Log` when `instance` is not a configured stream label | the Prometheus-oriented default `host → instance` renamed the *parsed field* too: `\| json \| instance="x"`, `by (instance)` — no such field in the line, so no data | a parsed field keeps its New Relic attribute name (`\| json \| host="x"`, `by (host)`), because that is the field's name in the log line; the label_map applies to stream and structured-metadata labels (the pipeline named those) and to entries you added yourself. With the default `loki_stream_labels` (which lists `instance`) `host` still selects the `instance` stream label — drop `instance` from `loki_stream_labels` when your streams carry no such label |
 
 ### Iteration 16 — value-level checks on a live stack

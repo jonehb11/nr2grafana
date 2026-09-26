@@ -371,3 +371,12 @@ class Iteration13TraceTests(unittest.TestCase):
         self.assertTrue(any(n.startswith("arithmetic between aggregations has "
                                          "no TraceQL metrics equivalent")
                             for n in t.notes), t.notes)
+
+
+class Iteration17KindTests(unittest.TestCase):
+    def test_unknown_span_kind_values_are_dropped_with_a_note(self):
+        t = tr("SELECT * FROM Span WHERE service.name = 'a' AND span.kind = 'b'")
+        self.assertEqual(t.expr, '{ resource.service.name = "a" }')
+        self.assertTrue(any("is not a span kind" in n for n in t.notes))
+        t = tr("SELECT * FROM Span WHERE span.kind = 'server'")
+        self.assertEqual(t.expr, "{ kind = server }")

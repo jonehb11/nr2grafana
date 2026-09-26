@@ -978,3 +978,27 @@ class Iteration16UnitTests(unittest.TestCase):
             "SELECT latest(some.gauge) FROM Metric WHERE host.name = 'a'",
             units={"unit": "BYTES"})
         self.assertEqual(panel["fieldConfig"]["defaults"]["unit"], "bytes")
+
+
+class Iteration17ExtraVariableTests(unittest.TestCase):
+    def test_config_extra_variables_never_duplicate_dashboard_variables(self):
+        cfg = load_config()
+        cfg["extra_variables"] = [{"type": "custom", "name": "env",
+                                   "query": "prod,staging", "options": [],
+                                   "current": {"text": "prod", "value": "prod"}},
+                                  {"type": "custom", "name": "region",
+                                   "query": "eu,us", "options": [],
+                                   "current": {"text": "eu", "value": "eu"}}]
+        var = {"name": "env", "title": "Env", "type": "STRING",
+               "defaultValues": [{"value": {"string": "prod"}}]}
+        fn, dash, report = build_dashboards(
+            _nr([_w("SELECT count(*) FROM Transaction WHERE appName = "
+                    "{{env}} TIMESERIES")], [var]), cfg)[0]
+        names = [v["name"] for v in dash["templating"]["list"]]
+        self.assertEqual(names.count("env"), 1)
+        self.assertIn("region", names)
+        env = next(v for v in dash["templating"]["list"] if v["name"] == "env")
+        self.assertEqual(env["type"], "textbox")
+        self.assertIn("extra_variables also defines", env["description"])
+        self.assertFalse([e for e in validate_dashboard(dash)
+                          if "duplicate" in e])

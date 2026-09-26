@@ -299,6 +299,11 @@ def _cmp_to_traceql(c: Cmp, t: Translation, cfg: Dict[str, Any]) -> str:
         val = str(getattr(c.right, "value", c.right)).lower()
         if val in _KIND_VALUES:
             return "kind %s %s" % (c.op if c.op in ("=", "!=") else "=", val)
+        t.note("WHERE %s %s %r: %r is not a span kind (%s); the TraceQL "
+               "kind field is an enum, so the filter was dropped"
+               % (attr, c.op, val, val, ", ".join(sorted(_KIND_VALUES))),
+               NEEDS_REVIEW)
+        return ""
 
     if field == "duration":
         n = getattr(c.right, "value", None)
