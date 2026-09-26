@@ -105,7 +105,7 @@ class TransactionTests(unittest.TestCase):
             t.extra[0].expr,
             'sum(rate(%s_count{service_name="checkout"}'
             '[$__rate_interval] offset 1w)) * $__interval_ms / 1000' % HTTP)
-        self.assertEqual(t.extra[0].legend, "(1w earlier)")
+        self.assertEqual(t.extra[0].legend, "count(*) (1w earlier)")
         self.assertIn("timefrom:now-1d", t.notes)
 
     def test_multi_select_extra_targets(self):
@@ -1328,7 +1328,7 @@ class Iteration6MetricTests(unittest.TestCase):
         t = self.q("average(duration)", " FACET name TIMESERIES")
         self.assertEqual(t.legend, "{{http_route}}")
         t = self.q("average(duration)")
-        self.assertEqual(t.legend, "")
+        self.assertEqual(t.legend, "average(duration)")
 
     def test_status_code_bands_intersect(self):
         t = self.q("count(*)", " AND httpResponseCode >= 400 AND "
@@ -1396,7 +1396,7 @@ class Iteration6MetricTests(unittest.TestCase):
         t = self.q("average(duration)", " FACET cases(WHERE duration < 1 "
                    "AS 'fast', WHERE duration >= 1 AS 'slow') TIMESERIES")
         self.assertEqual(t.extra, [])
-        self.assertEqual(t.legend, "")
+        self.assertEqual(t.legend, "average(duration)")
         self.assertTrue(any("only count(*) can split" in n for n in t.notes))
         self.assertEqual(t.confidence, NEEDS_REVIEW)
         # count(*) still splits into one bucket-arithmetic target per case
@@ -1449,3 +1449,35 @@ class Iteration6MetricTests(unittest.TestCase):
         self.assertTrue(any("whole number" in n for n in t.notes))
         t = self.q("count(*)", " SINCE {{n}} days ago")
         self.assertIn("timefrom:now-${n}d", t.notes)
+
+
+class Iteration7MetricTests(unittest.TestCase):
+    """Findings from exporting to a real Grafana 12 and rendering."""
+
+    def test_unaliased_single_aggregation_names_its_series(self):
+        t = tr("SELECT count(*) FROM Transaction WHERE appName = 'c' "
+               "TIMESERIES")
+        self.assertEqual(t.legend, "count(*)")
+        t = tr("SELECT rate(count(*), 1 minute) FROM Transaction WHERE "
+               "appName = 'c' TIMESERIES")
+        self.assertEqual(t.legend, "rate(count(*), 1 minute)")
+        t = tr("SELECT rate(sum(bytes), 15 minutes) FROM Metric TIMESERIES")
+        self.assertEqual(t.legend, "rate(sum(bytes), 15 minutes)")
+        t = tr("SELECT filter(count(*), WHERE error IS TRUE) FROM "
+               "Transaction WHERE appName = 'c' TIMESERIES")
+        self.assertEqual(t.legend, "filter(count(*), WHERE error = true)")
+        t = tr("SELECT count(*) AS 'Requests' FROM Transaction WHERE "
+               "appName = 'c' TIMESERIES")
+        self.assertEqual(t.legend, "Requests")
+        t = tr("SELECT count(*) FROM Transaction WHERE appName = 'c' "
+               "TIMESERIES COMPARE WITH 1 day ago")
+        self.assertEqual(t.legend, "count(*)")
+        self.assertEqual(t.extra[0].legend, "count(*) (1d earlier)")
+        # grouped, multi-value and multi-item legends are unchanged
+        t = tr("SELECT count(*) FROM Transaction WHERE appName = 'c' "
+               "FACET name TIMESERIES")
+        self.assertEqual(t.legend, "{{http_route}}")
+        t = tr("SELECT percentile(duration, 50, 95) FROM Transaction WHERE "
+               "appName = 'c' TIMESERIES")
+        self.assertEqual([t.legend] + [x.legend for x in t.extra],
+                         ["p50", "p95"])

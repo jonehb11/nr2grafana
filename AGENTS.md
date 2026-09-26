@@ -55,7 +55,10 @@ create folders). Never print or commit them.
 - `validate --grafana-url` prints, per dashboard, each datasource *type* the
   dashboard needs, whether the instance has one, and which uid it binds to;
   a missing type is an error with the exact fix (add a datasource of that
-  type, or install the plugin for the New Relic passthrough).
+  type, or install the plugin for the New Relic passthrough). `--test` runs
+  every panel query (`data` / `no-data` / `error`); a `no-data` panel is
+  usually a metric or label name to fix in the config, an `error` is a query
+  Grafana rejected.
 - `export` prints `created: 'Title' URL (uid, folder)` and `sourced from New
   Relic dashboard 'Name' (guid …)`, then `verified: yes (N panels)` after
   reading the dashboard back. It refuses dashboards with validation errors or

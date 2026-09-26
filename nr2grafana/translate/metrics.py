@@ -32,7 +32,7 @@ from .common import (
     Matcher, NumericPred, Translation, Untranslatable,
     cond_text, cond_to_branches, expr_text, facet_labels, hoist_rate_filter,
     legend_for, map_attr, merge_status_bands, render_selector,
-    sanitize_label, unwrap_attr, worst,
+    sanitize_label, select_label, unwrap_attr, worst,
 )
 from . import nrmetrics
 from .nrmetrics import Spec
@@ -2124,6 +2124,11 @@ def translate_to_promql(q: NrqlQuery, cfg: Dict[str, Any]) -> Translation:
     t.expr = primary_expr
     t.legend = primary_legend
     t.group_by = list(ctx.by)
+    if not t.legend and not ctx.by and not multi:
+        # One un-aliased aggregation without FACET: name the series the
+        # way New Relic did (Grafana would otherwise show the PromQL).
+        first = next(i for i in items if isinstance(i.expr, Func))
+        t.legend = first.alias or select_label(first.expr)
     _apply_compare_with(ctx, t)
     return t
 

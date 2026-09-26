@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ..model import NRDashboard, NRPage, NRVariable, NRWidget
 from ..nrql.parser import Attr, Func, NrqlParseError, parse_nrql
+from ..translate.common import select_label
 from ..translate.common import (
     APPROXIMATE, EXACT, NEEDS_REVIEW, UNTRANSLATABLE, Translation, map_attr,
     route_event_type, worst, _VAR_RE,
@@ -196,6 +197,45 @@ def widget_kind_reason(viz_id: str) -> Tuple[str, str]:
                 "Grafana equivalent" % viz_id,
                 "rebuild with a Grafana panel or plugin of the same shape")
     return ("", "")
+
+
+_LEGEND_LABEL_RE = re.compile(r"\{\{[^}]*\}\}")
+
+
+def _select_item_labels(queries: List[str]) -> List[str]:
+    """Alias-or-expression label of every aggregation in the widget's NRQL,
+    in SELECT order."""
+    out: List[str] = []
+    for qtext in queries:
+        try:
+            q = parse_nrql(qtext)
+        except NrqlParseError:
+            continue
+        for item in q.select:
+            if isinstance(item.expr, Func):
+                out.append(item.alias or select_label(item.expr))
+    return out
+
+
+def _table_column_names(targets: List[Dict[str, Any]],
+                        queries: List[str]) -> Dict[str, str]:
+    """Names for the value columns of a table built from instant queries.
+    Grafana calls them 'Value' / 'Value #A'; New Relic showed the alias or
+    the aggregation, which the legend (minus its {{label}} parts) or the
+    SELECT item provides."""
+    labels = _select_item_labels(queries)
+    rename: Dict[str, str] = {}
+    for i, tgt in enumerate(targets):
+        legend = _LEGEND_LABEL_RE.sub("", tgt.get("legendFormat") or "")
+        legend = legend.strip(" /:-")
+        if legend in ("", "__auto") and len(labels) == len(targets):
+            legend = labels[i]
+        if not legend or legend == "__auto":
+            continue
+        rename["Value #%s" % (tgt.get("refId") or "")] = legend
+        if len(targets) == 1:
+            rename["Value"] = legend
+    return rename
 
 
 def _apply_notes_to_panel(panel: Dict[str, Any], trans: List[Translation],
@@ -645,7 +685,8 @@ def _convert_widget(widget: NRWidget, b: _Build,
             {"id": "merge", "options": {}},
             {"id": "organize",
              "options": {"excludeByName": {"Time": True},
-                         "renameByName": {}}}]
+                         "renameByName": _table_column_names(
+                             panel["targets"], queries)}}]
 
     # Panel-level datasource: first target's datasource (mixed if several).
     ds_set = {(t["datasource"]["type"], t["datasource"]["uid"])

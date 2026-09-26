@@ -658,9 +658,14 @@ def export_dashboards(inputs: List[str], grafana_url: str,
             hint = ""
             if "name-exists" in msg or "version-mismatch" in msg \
                     or "HTTP 412" in msg:
-                hint = (" — a dashboard with this title/uid already exists "
-                        "in the folder; re-run with --overwrite to replace "
-                        "it")
+                # Grafana's own text ("The dashboard has been changed by
+                # someone else", HTTP 412) misleads here: the uid/title is
+                # simply taken.
+                msg = "a dashboard with uid %r / title %r already exists" % (
+                    dash.get("uid") or "", dash.get("title") or "")
+                hint = (" in Grafana%s; re-run with --overwrite to replace "
+                        "it, or change the title in New Relic and convert "
+                        "again" % ((" folder %r" % folder) if folder else ""))
             elif "HTTP 403" in msg:
                 hint = " — the token cannot create dashboards here (needs " \
                        "the Editor role on the folder)"

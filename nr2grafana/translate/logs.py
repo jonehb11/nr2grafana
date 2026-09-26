@@ -25,7 +25,7 @@ from .common import (
     APPROXIMATE, EXACT, NEEDS_REVIEW, Matcher, NumericPred, Translation,
     Untranslatable, cond_text, cond_to_branches, event_map_entry, expr_text,
     facet_labels, hoist_rate_filter, legend_for, map_attr, regex_escape, q,
-    unwrap_attr, worst,
+    select_label, unwrap_attr, worst,
 )
 from .metrics import (
     _extract_facet_cases, _scaled_unit, note_cases_other, nr_duration_to_prom,
@@ -404,6 +404,8 @@ def _translate_log_cases(nq: NrqlQuery, cfg: Dict[str, Any],
                 continue
             raise
         label = alias or cond_text(cond)
+        if sub.legend == select_label(item.expr):
+            sub.legend = ""  # the case name replaces the expression label
         sub.legend = (label + " " + sub.legend).strip() if sub.legend \
             else label
         if primary is None:
@@ -554,6 +556,8 @@ def _translate_one(nq: NrqlQuery, cfg: Dict[str, Any],
         t.expr = expr
         t.query_type = qtype or ("range" if is_range else "instant")
         t.legend = legend_for(by, alias, t.legend_template)
+        if not t.legend and not by:
+            t.legend = select_label(fn)  # the NRQL expression, as New Relic
         t.group_by = by
         if nq.compare_with:
             off = nr_duration_to_prom(nq.compare_with)

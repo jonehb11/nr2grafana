@@ -429,3 +429,30 @@ findings:
 | `duration IS NOT NULL`, `name IS NOT NULL`, `error IS NOT NULL` on Transaction | a "not in label_map" review note | dropped as always true (approximate); `databaseDuration IS NOT NULL` is refused with the reason (the histogram cannot tell transactions with DB calls apart) |
 | `WHERE appName = 'x' AND {{filter}}` (a variable standing for a whole condition) | `$filter="true"` label matcher | dropped with a note |
 | `earliest(cpuPercent)` on infra samples | silently the current value | refused (no `first_over_time` in PromQL), like `FROM Metric` |
+
+### Iteration 7 — the export path against a real Grafana 12.1 stack
+
+The converted fixtures were exported to a local Grafana 12.1 with
+Prometheus 2.53, Loki 3.1 and Tempo 2.7 datasources (synthetic OTel / node /
+kube-state metrics and JSON logs), validated with `--test`, read back, and
+every dashboard rendered in headless Chromium. All eleven dashboards were
+created, verified and rendered with no panel errors. What the live run
+changed:
+
+| Construct | Before | Now |
+| --- | --- | --- |
+| `validate --test` / `export --test` on a TraceQL search panel | `error` — Grafana's Tempo backend refuses TraceQL searches on `/api/ds/query` ("backend TraceQL search queries are not supported"; the browser runs them) | the search runs through Tempo's `/api/search` via the datasource proxy and is classified `data` / `no-data` by the traces returned |
+| a single un-aliased aggregation without FACET (`SELECT count(*) …`) | Grafana's `__auto` legend, which shows the whole PromQL / LogQL for label-less results | the series is named the way New Relic did: the NRQL expression (`count(*)`, `rate(count(*), 1 minute)`, `average(duration)`) or the alias; COMPARE WITH targets become `count(*) (1w earlier)` |
+| value columns of a table built from instant queries | `Value`, `Value #A`, `Value #B` | the alias or the aggregation (`Avg`, `p95`, `count(*)`) through the `organize` transformation |
+| `export` on a uid that already exists | Grafana's misleading "The dashboard has been changed by someone else" (HTTP 412) | "a dashboard with uid … / title … already exists in Grafana folder …; re-run with --overwrite" |
+
+Verified unchanged on the live stack: datasource variables are pinned to the
+chosen instances on export, the `Migrated from New Relic dashboard …`
+provenance survives in the description and tag (Grafana 12 drops unknown
+top-level keys, so the `nr2grafana` block is only kept in the local JSON and
+`*.export-results.json`), collapsed rows, stat / gauge / bargauge / pie /
+table / heatmap / logs / text panels, and panel time overrides (`Last 1 day`
+etc.) all render. The `PromQL info: input to histogram_quantile needed to
+be fixed for monotonicity` notice Prometheus attaches to a
+`histogram_quantile` over non-monotonic synthetic buckets appears as a
+panel warning; it comes from the data, not the query.

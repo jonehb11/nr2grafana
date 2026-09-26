@@ -284,6 +284,24 @@ def build_datasource_payload(ds_type: str, name: str,
     return payload
 
 
+# TraceQL metrics queries (`{...} | rate()` etc.) do run on Grafana's Tempo
+# backend; plain searches do not.
+_TRACEQL_METRICS_RE = re.compile(
+    r"\|\s*(rate|count_over_time|quantile_over_time|histogram_over_time|"
+    r"avg_over_time|min_over_time|max_over_time|sum_over_time|compare)\s*\(")
+
+
+def is_traceql_search(target: Dict[str, Any]) -> bool:
+    """A Tempo target that is a TraceQL search (not a trace-id lookup, not
+    a TraceQL metrics query)."""
+    qt = target.get("queryType") or "traceql"
+    if qt not in ("traceql", "traceqlSearch"):
+        return False
+    if target.get("metricsQueryType"):
+        return False
+    return not _TRACEQL_METRICS_RE.search(str(target.get("query") or ""))
+
+
 def _epoch_ms(spec: Any, now: Optional[float] = None) -> int:
     """Convert "now-1h"-style or epoch-millisecond input to epoch ms."""
     if now is None:
@@ -1044,11 +1062,27 @@ class GrafanaLive(GrafanaClient):
                 "to": str(_epoch_ms(to))}
         return self._req("POST", "/api/ds/query", body)
 
+    def tempo_search(self, uid: str, query: str, limit: int = 20,
+                     frm: str = "now-1h", to: str = "now") -> Dict[str, Any]:
+        """GET /api/search on Tempo through the datasource proxy.
+
+        Grafana's Tempo backend refuses TraceQL *search* queries on
+        /api/ds/query ("backend TraceQL search queries are not
+        supported": the browser runs them), so the data test asks Tempo
+        itself the way the panel will."""
+        path = "/api/search?" + urllib.parse.urlencode(
+            {"q": query, "limit": limit,
+             "start": int(_epoch_ms(frm) / 1000),
+             "end": int(_epoch_ms(to) / 1000)})
+        return self._req("GET", "/api/datasources/proxy/uid/%s%s"
+                         % (uid, path))
+
     def test_dashboard(self, dash: Dict[str, Any],
                        ds_map: Optional[Dict[str, str]] = None,
                        log: Optional[Callable[[str], None]] = None) \
             -> List[Dict[str, Any]]:
-        """Run every panel target through /api/ds/query.
+        """Run every panel target through /api/ds/query (TraceQL searches
+        through Tempo's own /api/search, see :meth:`tempo_search`).
 
         Substitutes template variables via :func:`livecheck.substitute`
         and datasource refs via ``ds_map`` (``resolve_ds_map`` output by
@@ -1093,6 +1127,24 @@ class GrafanaLive(GrafanaClient):
                 target["expr"] = substitute(tgt["expr"])
             if isinstance(tgt.get("query"), str):
                 target["query"] = substitute(tgt["query"])
+            if ds_type == "tempo" and is_traceql_search(target):
+                try:
+                    resp = self.tempo_search(
+                        uid, target.get("query") or "{}",
+                        int(target.get("limit") or 20))
+                except GrafanaError as e:
+                    row["error"] = str(e)
+                    emit("  ERROR %s: %s" % (row["panel_title"], row["error"]))
+                    continue
+                traces = resp.get("traces") if isinstance(resp, dict) else None
+                traces = traces if isinstance(traces, list) else []
+                row["frames"] = 1 if traces else 0
+                row["points"] = len(traces)
+                row["status"] = "data" if traces else "no-data"
+                emit("  %-7s %s [%s] %d trace(s) (TraceQL search via Tempo "
+                     "/api/search)" % (row["status"], row["panel_title"],
+                                       row["refId"], len(traces)))
+                continue
             try:
                 resp = self.ds_query(uid, ds_type, target)
             except GrafanaError as e:

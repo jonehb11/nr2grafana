@@ -746,3 +746,39 @@ class Iteration6BuilderTests(Iteration2BuilderTests):
         self.assertEqual(
             self._panel(dash, "Tp")["fieldConfig"]["defaults"]["unit"],
             "reqpm")
+
+
+class Iteration7BuilderTests(Iteration2BuilderTests):
+    def test_table_value_columns_are_named_like_new_relic(self):
+        dash = self._build([
+            self._widget("Lat", "viz.table",
+                         "SELECT average(duration) AS 'Avg', "
+                         "percentile(duration, 95) AS 'p95' FROM Transaction "
+                         "WHERE appName = 'c' FACET name"),
+            self._widget("Cnt", "viz.table",
+                         "SELECT count(*) FROM Transaction WHERE "
+                         "appName = 'c' FACET name", col=5),
+            self._widget("Multi", "viz.table",
+                         "SELECT count(*), average(duration) FROM "
+                         "Transaction WHERE appName = 'c' FACET name", col=9),
+        ])
+        lat = self._panel(dash, "Lat")
+        organize = lat["transformations"][1]["options"]
+        self.assertEqual(organize["renameByName"],
+                         {"Value #A": "Avg", "Value #B": "p95"})
+        self.assertEqual(organize["excludeByName"], {"Time": True})
+        cnt = self._panel(dash, "Cnt")
+        self.assertEqual(cnt["transformations"][1]["options"]["renameByName"],
+                         {"Value #A": "count(*)", "Value": "count(*)"})
+        multi = self._panel(dash, "Multi")
+        self.assertEqual(
+            multi["transformations"][1]["options"]["renameByName"],
+            {"Value #A": "count(*)", "Value #B": "average(duration)"})
+
+    def test_series_legend_is_the_nrql_expression_not_promql(self):
+        dash = self._build([self._widget(
+            "Tp", "viz.line",
+            "SELECT rate(count(*), 1 minute) FROM Transaction WHERE "
+            "appName = 'c' TIMESERIES")])
+        tgt = self._panel(dash, "Tp")["targets"][0]
+        self.assertEqual(tgt["legendFormat"], "rate(count(*), 1 minute)")

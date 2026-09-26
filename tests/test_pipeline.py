@@ -34,6 +34,7 @@ class FakeGrafana(live_mod.GrafanaLive):
     ]
     fail_import = ""
     query_errors = {}
+    tempo_traces = [{"traceID": "t1"}]
 
     def __init__(self, url, token="", insecure=False, timeout=30):
         super().__init__(url, token=token, insecure=insecure)
@@ -69,6 +70,9 @@ class FakeGrafana(live_mod.GrafanaLive):
             return {"dashboard": dict(self.stored[uid], version=1, id=42),
                     "meta": {"url": "/d/%s/slug" % uid,
                              "folderTitle": body or "General"}}
+        if path.startswith("/api/datasources/proxy/uid/tempo1/api/search?"):
+            return {"traces": list(self.tempo_traces),
+                    "metrics": {"completedJobs": 1}}
         if path == "/api/ds/query":
             q = body["queries"][0]
             expr = q.get("expr") or q.get("query") or ""
@@ -85,6 +89,7 @@ class _FakeMixin:
         self._patch.start()
         FakeGrafana.fail_import = ""
         FakeGrafana.query_errors = {}
+        FakeGrafana.tempo_traces = [{"traceID": "t1"}]
         FakeGrafana.datasources_state = [
             {"uid": "mimir", "type": "prometheus", "name": "Mimir",
              "isDefault": True},
@@ -434,3 +439,44 @@ class InspectExplainTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TraceqlSearchDataTestTests(_FakeMixin, unittest.TestCase):
+    def test_traceql_searches_go_through_tempo_search_api(self):
+        from nr2grafana.grafana.live import is_traceql_search
+        self.assertTrue(is_traceql_search(
+            {"queryType": "traceql", "query": '{ status = error }'}))
+        self.assertTrue(is_traceql_search({"query": "{}"}))
+        self.assertFalse(is_traceql_search(
+            {"queryType": "traceql", "query": "{} | rate()",
+             "metricsQueryType": "range"}))
+        self.assertFalse(is_traceql_search(
+            {"queryType": "traceql",
+             "query": '{ span.http.route = "/x" } | quantile_over_time('
+                      'duration, 0.95)'}))
+        self.assertFalse(is_traceql_search(
+            {"queryType": "traceId", "query": "abc"}))
+        FakeGrafana.tempo_traces = []
+        inst = FakeGrafana("http://g", token="t")
+        dash = {"panels": [{"id": 1, "type": "table", "title": "Traces",
+                            "targets": [{"refId": "A",
+                                         "datasource": {"type": "tempo",
+                                                        "uid": "tempo1"},
+                                         "queryType": "traceql",
+                                         "query": '{ status = error }',
+                                         "limit": 7}]}],
+                "templating": {"list": []}}
+        rows = inst.test_dashboard(dash, ds_map={})
+        self.assertEqual(rows[0]["status"], "no-data")
+        self.assertEqual(rows[0]["error"], "")
+        paths = [p for m, p, _b in inst.requests if "/api/search" in p]
+        self.assertEqual(len(paths), 1)
+        self.assertIn("limit=7", paths[0])
+        self.assertIn("q=%7B+status+%3D+error+%7D", paths[0])
+        self.assertFalse(any(p == "/api/ds/query" for _m, p, _b
+                             in inst.requests))
+        FakeGrafana.tempo_traces = [{"traceID": "abc"}]
+        rows = FakeGrafana("http://g", token="t").test_dashboard(
+            dash, ds_map={})
+        self.assertEqual(rows[0]["status"], "data")
+        self.assertEqual(rows[0]["points"], 1)

@@ -902,6 +902,44 @@ def expr_text(node: Any) -> str:
     return "*" if node.__class__.__name__ == "Star" else str(node)
 
 
+_DURATION_UNITS = [(604800, "week"), (86400, "day"), (3600, "hour"),
+                   (60, "minute"), (1, "second")]
+
+
+def duration_text(seconds: float) -> str:
+    """60 -> '1 minute', 900 -> '15 minutes' (the way New Relic wrote it)."""
+    for n, unit in _DURATION_UNITS:
+        if seconds >= n and seconds % n == 0:
+            k = int(seconds // n)
+            return "%d %s%s" % (k, unit, "" if k == 1 else "s")
+    return "%g seconds" % seconds
+
+
+def select_label(node: Any) -> str:
+    """The series / column name New Relic showed for an un-aliased SELECT
+    item: the expression as written, with rate()/derivative() periods as
+    durations ('rate(count(*), 1 minute)', not the parser's 60)."""
+    if isinstance(node, Func) and node.name in ("rate", "derivative",
+                                                "predictlinear") \
+            and node.args:
+        parts = [select_label(node.args[0])]
+        for a in node.args[1:]:
+            if isinstance(a, Lit) and isinstance(a.value, (int, float)) \
+                    and not isinstance(a.value, bool):
+                parts.append(duration_text(float(a.value)))
+            else:
+                parts.append(expr_text(a))
+        return "%s(%s)" % (node.name, ", ".join(parts))
+    if isinstance(node, Func) and node.name in ("_ratio", "_arith"):
+        return expr_text(node)
+    if isinstance(node, Func):
+        inner = ", ".join(select_label(a) for a in node.args)
+        if node.where is not None:
+            inner += (", " if inner else "") + "WHERE " + cond_text(node.where)
+        return "%s(%s)" % (node.name, inner)
+    return expr_text(node)
+
+
 def cond_text(cond: Optional[Cond]) -> str:
     """Human-readable rendering of a WHERE condition (legends, notes)."""
     if cond is None:

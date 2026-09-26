@@ -1415,6 +1415,18 @@ class GrafanaHandler(_JSONHandler):
                                  "data": state.loki_labels.get(label,
                                                                [])})
                 return
+        elif ds_type == "tempo":
+            if rest == ["api", "search"]:
+                # TraceQL search (Grafana's backend does not run these;
+                # nr2grafana asks Tempo through the proxy).
+                self._send(200, {"traces": [
+                    {"traceID": "4bf92f3577b34da6a3ce929d0e0e4736",
+                     "rootServiceName": "checkout",
+                     "rootTraceName": "GET /cart",
+                     "startTimeUnixNano": "1700000000000000000",
+                     "durationMs": 812}],
+                    "metrics": {"completedJobs": 1, "totalJobs": 1}})
+                return
         self._send(404, {"message": "no proxy route for %s"
                                     % "/".join(rest)})
 

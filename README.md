@@ -111,9 +111,11 @@ does it for one query.
   default of that type, or `--datasource prometheus=<uid|name>`), and — when
   missing — the exact fix (add a datasource of that type, or install the
   plugin) and how many panels need it.
-- **Data** (`--test`): every panel query through Grafana's `/api/ds/query`,
-  classified `data` / `no-data` (the metric or labels do not exist in your
-  stack yet) / `error` (with Grafana's error text).
+- **Data** (`--test`): every panel query through Grafana's `/api/ds/query`
+  (TraceQL searches through Tempo's own search API, which Grafana runs in
+  the browser rather than on its backend), classified `data` / `no-data`
+  (the metric or labels do not exist in your stack yet) / `error` (with
+  Grafana's error text).
 - **After creation** (`export`): the dashboard is read back by uid and its
   title and panel count compared with what was sent; datasource variables
   are pinned to the chosen instances so the dashboard works without a

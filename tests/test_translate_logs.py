@@ -174,7 +174,7 @@ class AggregationTests(unittest.TestCase):
         self.assertEqual(
             t.extra[0].expr,
             'sum(count_over_time({service_name="x"} [$__auto] offset 1d))')
-        self.assertEqual(t.extra[0].legend, "(1d earlier)")
+        self.assertEqual(t.extra[0].legend, "count(*) (1d earlier)")
         # flagged for review: LogQL offsets need Loki 2.3+
         self.assertEqual(t.confidence, NEEDS_REVIEW)
         self.assertTrue(any("COMPARE WITH" in n for n in t.notes))
@@ -503,3 +503,18 @@ class Iteration6LogTests(unittest.TestCase):
         self.assertTrue(any("OR 'rest': the catch-all bucket" in n
                             for n in t.notes))
         self.assertFalse(any("not understood" in n for n in t.notes))
+
+
+class Iteration7LogTests(unittest.TestCase):
+    def test_unaliased_single_aggregation_names_its_series(self):
+        t = tr("SELECT count(*) FROM Log WHERE service_name = 'x' TIMESERIES")
+        self.assertEqual(t.legend, "count(*)")
+        t = tr("SELECT rate(count(*), 1 minute) FROM Log WHERE "
+               "service_name = 'x' TIMESERIES")
+        self.assertEqual(t.legend, "rate(count(*), 1 minute)")
+        t = tr("SELECT count(*) AS 'Lines' FROM Log WHERE service_name = 'x' "
+               "TIMESERIES")
+        self.assertEqual(t.legend, "Lines")
+        t = tr("SELECT count(*) FROM Log WHERE service_name = 'x' FACET level "
+               "TIMESERIES")
+        self.assertEqual(t.legend, "{{level}}")
