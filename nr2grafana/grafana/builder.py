@@ -77,6 +77,7 @@ class _Build:
         self.used_ds: List[str] = []
         self.report: List[Dict[str, Any]] = []
         self.timefroms: List[str] = []
+        self.refresh_ms: List[int] = []  # widget refreshInterval values
         # (panel, range) pairs so differing panels get timeFrom overrides
         # once the dashboard-level range is decided.
         self.panel_ranges: List[Tuple[Dict[str, Any], str]] = []
@@ -224,8 +225,26 @@ def _apply_notes_to_panel(panel: Dict[str, Any], trans: List[Translation],
                 "matcher": {"id": "byFrameRefID", "options": ref},
                 "properties": [{"id": "unit", "value": unit}],
             })
+    rc = widget.raw_configuration or {}
+    for guid in rc.get("linkedEntityGuids") or []:
+        if isinstance(guid, str) and guid:
+            panel.setdefault("links", []).append({
+                "title": "New Relic entity", "targetBlank": True,
+                "url": "https://one.newrelic.com/redirect/entity/%s" % guid})
+    refresh = rc.get("refreshInterval")
+    if isinstance(refresh, (int, float)) and refresh > 0:
+        b.refresh_ms.append(int(refresh))
+    ignore_picker = bool((rc.get("platformOptions") or {}).get(
+        "ignoreTimeRange"))
     for t in trans:
         for note in t.notes:
+            if note.startswith("timefrom:") and ignore_picker:
+                # NR "ignore time picker": the query's SINCE always applies.
+                rng = note.split(":", 1)[1]
+                panel["timeFrom"] = rng[len("now-"):] if (
+                    rng.startswith("now-") and "/" not in rng) else rng
+                panel["hideTimeOverride"] = False
+                continue
             if note.startswith("timefrom:"):
                 rng = note.split(":", 1)[1]
                 if rng.startswith("$"):
@@ -325,6 +344,7 @@ def _panel_options(ptype: str, widget: NRWidget,
         "mappings": [],
     }
     options: Dict[str, Any] = {}
+    overrides: List[Dict[str, Any]] = []
 
     # NR units override
     unit = ((rc.get("units") or {}).get("unit") or "").upper()
@@ -370,6 +390,23 @@ def _panel_options(ptype: str, widget: NRWidget,
                 defaults["custom"]["thresholdsStyle"] = {"mode": "line"}
         options = {"legend": _legend(show=bool(legend_enabled)),
                    "tooltip": {"mode": "multi", "sort": "desc"}}
+        # NR "null values" handling: "preserve" connects gaps; "zero" has
+        # no panel option (PromQL returns no sample rather than 0).
+        null_mode = str((rc.get("nullValues") or {}).get("nullValue") or "")
+        if null_mode == "preserve":
+            defaults["custom"]["spanNulls"] = True
+        for so in (rc.get("colors") or {}).get("seriesOverrides") or []:
+            if isinstance(so, dict) and so.get("seriesName") and so.get("color"):
+                overrides.append({
+                    "matcher": {"id": "byName", "options": so["seriesName"]},
+                    "properties": [{"id": "color", "value": {
+                        "mode": "fixed", "fixedColor": so["color"]}}]})
+        for name in (rc.get("yAxisRight") or {}).get("series") or []:
+            if isinstance(name, str) and name:
+                overrides.append({
+                    "matcher": {"id": "byName", "options": name},
+                    "properties": [{"id": "custom.axisPlacement",
+                                    "value": "right"}]})
 
     elif ptype == "stat":
         defaults["color"] = {"mode": "thresholds"}
@@ -484,7 +521,7 @@ def _panel_options(ptype: str, widget: NRWidget,
                    "prettifyLogMessage": False, "enableLogDetails": True,
                    "dedupStrategy": "none", "sortOrder": "Descending"}
 
-    return options, {"defaults": defaults, "overrides": []}
+    return options, {"defaults": defaults, "overrides": overrides}
 
 
 def _convert_widget(widget: NRWidget, b: _Build,
@@ -636,6 +673,11 @@ def _widget_config_notes(widget: NRWidget, trans: List[Translation]) -> None:
         ok[0].note("New Relic grouped the facets beyond the limit into an "
                    "'Other' series; topk() has no remainder bucket, so the "
                    "panel shows the top groups only", APPROXIMATE)
+    null_mode = str((rc.get("nullValues") or {}).get("nullValue") or "")
+    if null_mode == "zero":
+        ok[0].note("NR showed missing values as zero; PromQL/LogQL return no "
+                   "sample instead — append `or vector(0)` to the query or "
+                   "use the panel's 'Connect null values' option", APPROXIMATE)
     if widget.viz_id == "viz.billboard-comparison":
         ok[0].note("billboard comparison: the stat panel shows the current "
                    "value and the COMPARE WITH target as a second value; "
@@ -947,6 +989,10 @@ def _finish_dashboard(dash: Dict[str, Any], b: _Build,
     tvars.extend(converted)
     tvars.extend(copy.deepcopy(b.cfg.get("extra_variables") or []))
     dash["templating"]["list"] = tvars
+    if b.refresh_ms:
+        secs = max(5, min(b.refresh_ms) // 1000)
+        dash["refresh"] = ("%dm" % (secs // 60) if secs % 60 == 0
+                           else "%ds" % secs)
     # Most common SINCE across widgets becomes the dashboard range; panels
     # whose SINCE differs get a relative timeFrom override (Grafana accepts
     # "30m"/"1h" as well as its own now/d, now-1d/d, now/w spellings).

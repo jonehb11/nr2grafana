@@ -225,13 +225,20 @@ def like_to_regex(pattern: str) -> str:
     """NRQL LIKE pattern (%, _) -> RE2 regex (unanchored NR semantics ->
     fully anchored regex, since Prom regex matchers are anchored)."""
     out = []
-    for ch in pattern:
+    i = 0
+    while i < len(pattern):
+        ch = pattern[i]
+        if ch == "\\" and i + 1 < len(pattern) and pattern[i + 1] in "%_\\":
+            out.append(regex_escape(pattern[i + 1]))  # escaped wildcard
+            i += 2
+            continue
         if ch == "%":
             out.append(".*")
         elif ch == "_":
             out.append(".")
         else:
             out.append(regex_escape(ch))
+        i += 1
     return "".join(out)
 
 
@@ -428,6 +435,18 @@ def _try_merge_or(cond: BoolOp, cfg: Dict[str, Any],
 def _leaf_matchers(cond: Any, negate: bool, cfg: Dict[str, Any],
                    t: Translation, allow_numeric: bool = True) \
         -> List[Matcher]:
+    if isinstance(cond, Cmp) and isinstance(cond.left, Lit) \
+            and isinstance(cond.right, Lit):
+        # WHERE true / 1 = 1: a constant predicate.
+        same = cond.left.value == cond.right.value
+        truth = same if cond.op == "=" else (not same if cond.op == "!="
+                                              else None)
+        if truth is not None and negate:
+            truth = not truth
+        if truth is False:
+            t.note("a WHERE condition is always false (%s); no data can match"
+                   % cond_text(cond), NEEDS_REVIEW)
+        return []
     if isinstance(cond, Cmp):
         return _cmp_to_matcher(cond, cfg, t, negate, allow_numeric)
     if isinstance(cond, InList):

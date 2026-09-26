@@ -195,6 +195,7 @@ _TOKEN_RE = re.compile(
     r"""
     (?P<ws>\s+)
   | (?P<string>'(?:[^'\\]|\\.|'')*')
+  | (?P<dstring>"(?:[^"\\]|\\.)*")
   | (?P<qident>`[^`]*`)
   | (?P<var>\{\{\{?\s*[A-Za-z_][A-Za-z0-9_]*\s*\}?\}\})
   | (?P<number>-?\d+(?:\.\d+)?(?![\w.]))
@@ -278,8 +279,13 @@ def tokenize(query: str) -> List[Tok]:
         if not m:
             raise NrqlParseError("unexpected character %r" % query[i], i, query)
         kind = m.lastgroup or ""
+        text = m.group()
+        if kind == "dstring":
+            # "double quoted" strings are accepted leniently as strings.
+            kind = "string"
+            text = "'" + text[1:-1].replace('\\"', '"').replace("'", "''") + "'"
         if kind != "ws":
-            toks.append(Tok(kind, m.group(), i))
+            toks.append(Tok(kind, text, i))
         i = m.end()
     return toks
 
@@ -801,6 +807,16 @@ class _Parser:
                 self.i = save
         left = self.parse_expr()
         tok = self.peek()
+        is_bool = (isinstance(left, Lit) and isinstance(left.value, bool)) or (
+            isinstance(left, Attr) and left.name.lower() in ("true", "false"))
+        if is_bool and (tok is None or tok.kind == "rparen"
+                        or (tok.kind == "ident"
+                            and (tok.upper() in ("AND", "OR")
+                                 or self._at_clause_boundary()))):
+            # WHERE true / WHERE false: a boolean literal predicate.
+            value = left.value if isinstance(left, Lit) \
+                else left.name.lower() == "true"
+            return Cmp(Lit(bool(value)), "=", Lit(True))
         if tok is None:
             raise NrqlParseError("dangling predicate", len(self.query), self.query)
         if tok.kind == "op":

@@ -649,3 +649,51 @@ class Iteration3BuilderTests(Iteration2BuilderTests):
         self.assertEqual(dash["time"], {"from": "now-1h", "to": "now"})
         from nr2grafana.grafana.validate import validate_dashboard_full
         self.assertEqual(validate_dashboard_full(dash)["errors"], [])
+
+
+class Iteration4BuilderTests(Iteration2BuilderTests):
+    def test_widget_configuration_knobs(self):
+        T = "SELECT count(*) FROM Transaction WHERE appName = 'c'"
+        TS = T + " TIMESERIES"
+        dash = self._build([
+            self._widget("Preserve", "viz.line", TS,
+                         {"nullValues": {"nullValue": "preserve"}}),
+            self._widget("Zero", "viz.line", TS,
+                         {"nullValues": {"nullValue": "zero"}}, col=5),
+            self._widget("Colors", "viz.line", TS + " FACET name",
+                         {"colors": {"seriesOverrides": [
+                             {"color": "#ff0000", "seriesName": "a"}]}},
+                         col=9),
+            self._widget("Ignore", "viz.billboard", T + " SINCE 1 week ago",
+                         {"platformOptions": {"ignoreTimeRange": True}},
+                         col=13),
+            self._widget("Linked", "viz.line", TS,
+                         {"linkedEntityGuids": ["MjUy"],
+                          "refreshInterval": 30000}, col=17),
+            self._widget("Right", "viz.line", TS,
+                         {"yAxisRight": {"series": ["count"]}}, col=21),
+        ])
+        p = self._panel(dash, "Preserve")
+        self.assertTrue(p["fieldConfig"]["defaults"]["custom"]["spanNulls"])
+        self.assertIn("vector(0)", self._panel(dash, "Zero")["description"])
+        colours = self._panel(dash, "Colors")["fieldConfig"]["overrides"]
+        self.assertEqual(colours[0]["matcher"]["options"], "a")
+        self.assertEqual(colours[0]["properties"][0]["value"]["fixedColor"],
+                         "#ff0000")
+        self.assertEqual(self._panel(dash, "Ignore")["timeFrom"], "1w")
+        self.assertEqual(dash["time"], {"from": "now-1h", "to": "now"})
+        linked = self._panel(dash, "Linked")
+        self.assertTrue(linked["links"][0]["url"].endswith("/entity/MjUy"))
+        self.assertEqual(dash["refresh"], "30s")
+        right = self._panel(dash, "Right")["fieldConfig"]["overrides"]
+        self.assertEqual(right[0]["properties"][0],
+                         {"id": "custom.axisPlacement", "value": "right"})
+
+    def test_pie_with_timeseries_runs_instant(self):
+        dash = self._build([self._widget(
+            "Pie", "viz.pie",
+            "SELECT count(*) FROM Transaction WHERE appName = 'c' FACET name "
+            "TIMESERIES")])
+        tgt = self._panel(dash, "Pie")["targets"][0]
+        self.assertTrue(tgt["instant"])
+        self.assertFalse(tgt["range"])

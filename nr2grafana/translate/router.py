@@ -145,7 +145,15 @@ _TIME_CHART_VIZ = {"viz.line", "viz.area", "viz.stacked-bar", "viz.sparkline",
                    "viz.scatter"}
 
 
+# Widgets that show one value per series: a TIMESERIES query behind them
+# would put every bucket into the pie / table / bar.
+_SNAPSHOT_VIZ = {"viz.table", "viz.pie", "viz.bar", "viz.bullet"}
+
+
 def _imply_timeseries(q, widget_viz: str) -> bool:
+    if widget_viz in _SNAPSHOT_VIZ and q.timeseries is not None:
+        q.timeseries = None
+        return False
     if widget_viz not in _TIME_CHART_VIZ or q.timeseries is not None:
         return False
     if not any(isinstance(i.expr, Func) for i in q.select):
@@ -167,7 +175,9 @@ def translate_query(nrql_text: str, cfg: Dict[str, Any],
         t = Translation(confidence=UNTRANSLATABLE)
         t.notes.append("NRQL could not be parsed: %s" % e)
         return t
+    had_timeseries = q.timeseries is not None
     implied = _imply_timeseries(q, widget_viz)
+    snapshot = had_timeseries and q.timeseries is None
 
     family = route_event_type(q.from_, cfg)
     try:
@@ -204,6 +214,10 @@ def translate_query(nrql_text: str, cfg: Dict[str, Any],
                    "over time; translated as a range query (one point per "
                    "Grafana interval) — add TIMESERIES in New Relic to make "
                    "this exact" % widget_viz, APPROXIMATE)
+        if snapshot:
+            t.note("TIMESERIES dropped: a %s widget shows one value per "
+                   "series, so the query runs as an instant query over the "
+                   "range" % widget_viz, APPROXIMATE)
     if len(q.from_) > 1:
         t.note("query selects FROM multiple event types (%s); only %r was "
                "translated" % (", ".join(q.from_), q.from_[0]), NEEDS_REVIEW)

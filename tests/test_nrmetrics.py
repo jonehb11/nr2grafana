@@ -674,3 +674,59 @@ class OnHostIntegrationTests(unittest.TestCase):
         self.assertEqual(t.confidence, UNTRANSLATABLE)
         self.assertTrue(any("elasticsearch_cluster_health_status" in n
                             for n in t.notes))
+
+
+class Iteration4KnowledgeTests(unittest.TestCase):
+    def test_pod_status_facet_uses_the_phase_metric(self):
+        t = tr("SELECT uniqueCount(podName) FROM K8sPodSample FACET status "
+               "TIMESERIES")
+        self.assertEqual(t.expr, "sum by (phase)(kube_pod_status_phase == 1)")
+        self.assertEqual(t.legend, "{{phase}}")
+
+    def test_restart_count_is_a_counter(self):
+        t = tr("SELECT rate(sum(restartCount), 1 hour) FROM K8sContainerSample "
+               "FACET podName TIMESERIES")
+        self.assertEqual(
+            t.expr,
+            "sum by (pod)(rate(kube_pod_container_status_restarts_total"
+            "[$__rate_interval])) * 3600")
+        t = tr("SELECT latest(restartCount) FROM K8sContainerSample FACET podName")
+        self.assertEqual(t.expr,
+                         "max by (pod)(kube_pod_container_status_restarts_total)")
+
+    def test_compare_with_offsets_derived_instant_selectors(self):
+        t = tr("SELECT latest(podsDesired) FROM K8sDeploymentSample "
+               "FACET deploymentName COMPARE WITH 1 hour ago")
+        self.assertEqual(t.extra[0].expr,
+                         "max by (deployment)(kube_deployment_spec_replicas "
+                         "offset 1h)")
+
+    def test_nested_aggregations_on_infra_events(self):
+        t = tr("SELECT rate(sum(readBytesPerSecond), 1 second) FROM StorageSample "
+               "FACET hostname TIMESERIES")
+        self.assertEqual(
+            t.expr,
+            "sum by (instance)(rate(node_disk_read_bytes_total"
+            "[$__rate_interval]))")
+
+    def test_derivative_of_a_rate_is_refused(self):
+        t = tr("SELECT derivative(receiveBytesPerSecond, 1 minute) "
+               "FROM NetworkSample FACET interfaceName TIMESERIES")
+        self.assertEqual(t.confidence, UNTRANSLATABLE)
+        self.assertTrue(any("second derivative" in n for n in t.notes))
+
+    def test_lambda_events(self):
+        t = tr("SELECT count(*) FROM AwsLambdaInvocation "
+               "FACET aws.lambda.functionName TIMESERIES")
+        self.assertEqual(
+            t.expr,
+            "sum by (dimension_FunctionName)(sum_over_time("
+            "aws_lambda_invocations_sum[$__interval]))")
+        t = tr("SELECT count(*) FROM AwsLambdaInvocationError "
+               "WHERE aws.lambda.functionName = 'f'")
+        self.assertEqual(
+            t.expr,
+            'sum(sum_over_time(aws_lambda_errors_sum{dimension_FunctionName="f"}'
+            '[$__range]))')
+        t = tr("SELECT average(duration) FROM AwsLambdaInvocation TIMESERIES")
+        self.assertIn("aws_lambda_duration_average", t.expr)

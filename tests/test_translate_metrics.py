@@ -249,10 +249,12 @@ class InfraMapTests(unittest.TestCase):
         t = tr("SELECT sum(restartCount) FROM K8sContainerSample "
                "WHERE clusterName = 'prod' FACET podName LIMIT 15 "
                "SINCE 1 day ago")
+        # restartCount is a cumulative counter: sum() over the range is the
+        # number of restarts in it (latest() would be the running total).
         self.assertEqual(
             t.expr,
-            'topk(15, sum by (pod)(kube_pod_container_status_restarts_total{'
-            'cluster="prod"}))')
+            'topk(15, sum by (pod)(increase(kube_pod_container_status_'
+            'restarts_total{cluster="prod"}[$__range])))')
         self.assertEqual(t.query_type, "instant")
         self.assertIn("unit:short", t.notes)
 
@@ -1081,3 +1083,109 @@ class MetricNameHandlingTests(unittest.TestCase):
                "FROM Span WHERE service.name = 'checkout' FACET name")
         self.assertIn('status_code="STATUS_CODE_ERROR"', t.expr)
         self.assertNotIn('status_code="ERROR"', t.expr)
+
+
+class Iteration4MetricTests(unittest.TestCase):
+    AVG = ('sum(rate(%s_sum{service_name="c"}[$__rate_interval])) / '
+           'sum(rate(%s_count{service_name="c"}[$__rate_interval]))'
+           % (HTTP, HTTP))
+
+    def test_boolean_predicates(self):
+        t = tr("SELECT count(*) FROM Transaction WHERE true TIMESERIES")
+        self.assertEqual(t.expr, "sum(rate(%s_count[$__rate_interval])) * "
+                         "$__interval_ms / 1000" % HTTP)
+        t = tr("SELECT count(*) FROM Transaction WHERE appName = 'c' AND false")
+        self.assertTrue(any("always false" in n for n in t.notes))
+
+    def test_multiplier_scales_every_percentile_target(self):
+        t = tr("SELECT percentile(duration * 1000, 50, 95) FROM Transaction "
+               "WHERE appName = 'c' TIMESERIES")
+        self.assertTrue(t.expr.endswith(") * 1000"))
+        self.assertTrue(t.extra[0].expr.endswith(") * 1000"), t.extra[0].expr)
+        self.assertEqual(t.extra[0].legend, "p95")
+
+    def test_predict_linear_over_a_histogram_average(self):
+        t = tr("SELECT predictLinear(average(duration), 1 hour) "
+               "FROM Transaction WHERE appName = 'c' TIMESERIES")
+        self.assertEqual(t.expr,
+                         "predict_linear((%s)[$__range:], 3600)" % self.AVG)
+
+    def test_bucket_percentile_and_cdf(self):
+        t = tr("SELECT bucketPercentile(duration, 95) FROM Transaction "
+               "WHERE appName = 'c' TIMESERIES")
+        self.assertTrue(t.expr.startswith("histogram_quantile(0.95, "))
+        t = tr("SELECT getCdfValue(duration, 0.5) FROM Transaction "
+               "WHERE appName = 'c'")
+        self.assertEqual(
+            t.expr,
+            'sum(rate(%s_bucket{service_name="c",le="0.5"}[$__range])) / '
+            'sum(rate(%s_count{service_name="c"}[$__range]))' % (HTTP, HTTP))
+        self.assertIn("unit:percentunit", t.notes)
+
+    def test_rate_of_a_non_count_is_refused(self):
+        t = tr("SELECT rate(uniqueCount(host), 1 minute) FROM Transaction "
+               "WHERE appName = 'c' TIMESERIES")
+        self.assertEqual(t.confidence, UNTRANSLATABLE)
+        self.assertTrue(any("only rate(count(...))" in n for n in t.notes))
+
+    def test_order_by_asc_is_bottomk(self):
+        t = tr("SELECT count(*) FROM Transaction WHERE appName = 'c' "
+               "FACET name ORDER BY count(*) ASC LIMIT 5")
+        self.assertTrue(t.expr.startswith("bottomk(5, "), t.expr)
+
+    def test_compare_with_is_not_emitted_for_cases(self):
+        t = tr("SELECT count(*) FROM Transaction WHERE appName = 'c' "
+               "FACET cases(WHERE error IS TRUE AS 'err', "
+               "WHERE error IS FALSE AS 'ok') COMPARE WITH 1 day ago")
+        self.assertEqual([e.legend for e in t.extra], ["ok"])
+        self.assertFalse(any("offset" in e.expr for e in t.extra))
+
+    def test_nested_if_facets(self):
+        t = tr("SELECT count(*) FROM Transaction WHERE appName = 'c' FACET "
+               "if(httpResponseCode LIKE '5%', 'server-error', "
+               "if(httpResponseCode LIKE '4%', 'client-error', 'ok'))")
+        self.assertEqual(t.legend, "server-error")
+        self.assertEqual([e.legend for e in t.extra],
+                         ["client-error", "ok"])
+        self.assertIn('http_response_status_code!~"(?i)5.*",'
+                      'http_response_status_code=~"(?i)4.*"', t.extra[0].expr)
+        self.assertIn('http_response_status_code!~"(?i)5.*",'
+                      'http_response_status_code!~"(?i)4.*"', t.extra[1].expr)
+
+    def test_always_present_http_attributes(self):
+        t = tr("SELECT count(*) FROM Transaction WHERE appName = 'c' AND host "
+               "IS NOT NULL AND host != '' AND duration IS NOT NULL AND error "
+               "IS NOT NULL")
+        self.assertEqual(
+            t.expr,
+            'sum(increase(%s_count{service_name="c",instance!=""}[$__range]))'
+            % HTTP)
+
+    def test_unique_count_of_name_groups_by_route(self):
+        t = tr("SELECT count(*) / uniqueCount(name) FROM Transaction "
+               "WHERE appName = 'c' FACET host")
+        self.assertIn("count by (http_route, instance)", t.expr)
+        self.assertNotIn("span_name", t.expr)
+
+    def test_latest_of_a_label_attribute_lists_values(self):
+        t = tr("SELECT latest(host) FROM Transaction WHERE appName = 'c'")
+        self.assertEqual(
+            t.expr, 'group by (instance)(%s_count{service_name="c"})' % HTTP)
+        self.assertTrue(any("every value" in n for n in t.notes))
+
+    def test_like_escapes(self):
+        t = tr("SELECT count(*) FROM Transaction WHERE appName = 'c' "
+               "AND name LIKE '%\\_%' AND request.uri LIKE '50\\%'")
+        self.assertIn('http_route=~"(?i).*_.*"', t.expr)
+        self.assertIn('=~"(?i)50%"', t.expr)
+
+    def test_byte_count_estimate_is_introspection(self):
+        t = tr("SELECT bytecountestimate() FROM Transaction")
+        self.assertEqual(t.confidence, UNTRANSLATABLE)
+
+    def test_snapshot_widgets_drop_timeseries(self):
+        t = translate_query("SELECT count(*) FROM Transaction WHERE appName = "
+                            "'c' FACET name TIMESERIES", load_config(),
+                            "viz.pie")
+        self.assertEqual(t.query_type, "instant")
+        self.assertTrue(any("TIMESERIES dropped" in n for n in t.notes))

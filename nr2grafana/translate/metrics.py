@@ -24,7 +24,8 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..nrql.parser import (
-    Attr, BinOp, Cmp, Func, Lit, NotOp, NrqlQuery, SelectItem, Star,
+    Attr, BinOp, BoolOp, Cmp, Func, Lit, NotOp, NrqlQuery, SelectItem,
+    Star,
 )
 from .common import (
     APPROXIMATE, EXACT, NEEDS_REVIEW, UNTRANSLATABLE,
@@ -386,6 +387,12 @@ def _http_fixups(matchers: List[Matcher], t: Translation,
                     "HTTP-server metric equivalent; rebuild this panel on "
                     "the messaging.* / rpc.* OTel metrics your background "
                     "workers emit" % (m.op, m.value))
+        elif m.op == "!=" and m.value == "" and m.label.lower() in (
+                "error", "duration", "totaltime", "webduration",
+                "databaseduration", "externalduration", "name",
+                "transactionname", "http_route", "span_name"):
+            # `x IS NOT NULL` on a value every request carries: no filter.
+            continue
         else:
             out.append(m)
     return out
@@ -534,6 +541,8 @@ class _Ctx:
         self.numeric: List[NumericPred] = list(t.numeric)
         del t.numeric[:]
         self.branches = [self._fixups(b) for b in self.branches]
+        self.branches = [list({(m.label, m.op, m.value): m for m in b}.values())
+                         for b in self.branches]
         if self.is_metric_event:
             for b in self.branches:
                 for i, m in enumerate(b):
@@ -658,11 +667,15 @@ def _wrap_topk(ctx: _Ctx, expr: str) -> str:
     limit = ctx.q.limit
     is_var = isinstance(limit, str) and limit.startswith("$")
     if ctx.q.facet and (isinstance(limit, int) or is_var):
+        fn = "topk"
+        if ctx.q.order_by is not None \
+                and str(ctx.q.order_by.direction).upper() == "ASC":
+            fn = "bottomk"  # ORDER BY ... ASC keeps the smallest groups
         if ctx.is_range:
-            ctx.t.note("FACET LIMIT %s became topk(%s, ...); on range queries "
-                       "topk is evaluated per step so series may flicker"
-                       % (limit, limit), APPROXIMATE)
-        return "topk(%s, %s)" % (limit, expr)
+            ctx.t.note("FACET LIMIT %s became %s(%s, ...); on range queries "
+                       "%s is evaluated per step so series may flicker"
+                       % (limit, fn, limit, fn), APPROXIMATE)
+        return "%s(%s, %s)" % (fn, limit, expr)
     return expr
 
 
@@ -873,6 +886,24 @@ def _agg_expr(ctx: _Ctx, fn: Func, src: MetricSource,
         base = hsel("", window=None)
         return base if not ctx.by else "max%s(%s)" % (by, base)
 
+    if name == "bucketpercentile":
+        name = "percentile"  # NR's histogram-bucket percentile
+    if name == "getcdfvalue":
+        leftover(numeric)
+        thr = next((float(a.value) for a in fn.args[1:]
+                    if isinstance(a, Lit) and isinstance(a.value,
+                                                         (int, float))), None)
+        if src.mtype != "histogram" or thr is None:
+            raise Untranslatable(
+                "getCdfValue() needs a histogram-backed attribute and a "
+                "numeric threshold")
+        t.note("getCdfValue(x, %s) rendered as the share of observations in "
+               "buckets up to %s; exact only with a bucket boundary there"
+               % (_fmt_num(thr), _fmt_num(thr)), NEEDS_REVIEW)
+        t.notes.append("unit:percentunit")
+        return "sum%s(%s) / sum%s(%s)" % (
+            by, hsel("_bucket", fnname="rate", more=[_le_matcher(thr)]),
+            by, hsel("_count", fnname="rate"))
     if name in ("percentile", "median"):
         leftover(numeric)
         # (quantile text for PromQL, legend suffix) per requested percentile
@@ -938,6 +969,13 @@ def _agg_expr(ctx: _Ctx, fn: Func, src: MetricSource,
     if name == "rate":
         leftover(numeric)
         # rate(inner_agg(x), 1 unit)
+        inner_fn = fn.args[0] if fn.args and isinstance(fn.args[0], Func) \
+            else None
+        if inner_fn is not None and inner_fn.name not in ("count", "sum",
+                                                          "filter"):
+            raise Untranslatable(
+                "rate(%s(...)) has no metric equivalent: only rate(count(...))"
+                " and rate(sum(...)) map to PromQL rate()" % inner_fn.name)
         per_seconds = 60.0
         for a in fn.args:
             if isinstance(a, Lit) and isinstance(a.value, (int, float)):
@@ -970,7 +1008,13 @@ def _agg_expr(ctx: _Ctx, fn: Func, src: MetricSource,
             raise Untranslatable(
                 "derivative() on a histogram-backed source has no PromQL "
                 "equivalent (only _bucket/_sum/_count series exist)")
-        if src.mtype in ("counter", "rate"):
+        if src.mtype == "rate":
+            raise Untranslatable(
+                "derivative() of %s, which is already a per-second rate, "
+                "would be a second derivative; PromQL has no sound form for "
+                "it (deriv() over a subquery of rate() at best) — plot the "
+                "rate itself" % src.base)
+        if src.mtype == "counter":
             return "sum%s(%s)%s" % (by, hsel("", fnname="rate"), mult)
         t.note("derivative() mapped to deriv() (linear regression)",
                APPROXIMATE)
@@ -986,9 +1030,20 @@ def _agg_expr(ctx: _Ctx, fn: Func, src: MetricSource,
             if isinstance(a, Lit) and isinstance(a.value, (int, float)):
                 horizon = float(a.value)
         if src.mtype == "histogram":
-            raise Untranslatable(
-                "predictLinear() on a histogram-backed source has no "
-                "PromQL equivalent")
+            # Regress the derived average over the range with a subquery.
+            inner_fn = fn.args[0] if fn.args and isinstance(fn.args[0], Func) \
+                else Func("average", args=list(fn.args[:1]))
+            if inner_fn.name in ("percentile", "median", "average", "avg",
+                                 "max", "min", "count", "sum"):
+                base = _agg_expr(ctx, inner_fn, src, extra, numeric)
+            else:
+                base = _agg_expr(ctx, Func("average", args=list(fn.args[:1])),
+                                 src, extra, numeric)
+            t.note("predictLinear() over a histogram-derived value is a "
+                   "linear regression of that value across the dashboard "
+                   "range (a PromQL subquery)", APPROXIMATE)
+            return "predict_linear((%s)[$__range:], %s)" % (
+                base, _fmt_num(horizon))
         if src.mtype == "counter":
             t.note("predictLinear() of a counter predicts the raw counter "
                    "value (resets skew the regression); NR predicts the "
@@ -1006,6 +1061,8 @@ def _agg_expr(ctx: _Ctx, fn: Func, src: MetricSource,
         if attr is None:
             raise Untranslatable("uniqueCount needs an attribute argument")
         label, mapped = map_attr(attr.name, ctx.cfg)
+        if ctx.is_apm_http and label == "span_name":
+            label = "http_route"
         if not mapped:
             t.note("uniqueCount attribute %r not in label_map; used %r"
                    % (attr.name, label), NEEDS_REVIEW)
@@ -1083,7 +1140,8 @@ def _agg_expr(ctx: _Ctx, fn: Func, src: MetricSource,
         raise Untranslatable(
             "earliest() has no PromQL equivalent (PromQL lacks a "
             "first_over_time function)")
-    if name in ("eventtype", "keyset", "aggregationendtime"):
+    if name in ("eventtype", "keyset", "aggregationendtime",
+                "bytecountestimate"):
         raise Untranslatable("%s() is NRDB introspection" % name)
 
     raise Untranslatable("aggregation %s() is not supported by the "
@@ -1116,6 +1174,7 @@ def _derived_expr(ctx: _Ctx, fn: Func, src: DerivedSource,
     by = ctx.by_clause().lstrip() if ctx.by else ""
     expr = (src.expr
             .replace("<W>", window)
+            .replace("<STEP>", "$__interval" if ctx.is_range else "$__range")
             .replace("<BY>", by)
             .replace("<AGG>", agg)
             .replace("<AGGINV>", _AGG_INV.get(agg, agg))
@@ -1127,7 +1186,14 @@ def _derived_expr(ctx: _Ctx, fn: Func, src: DerivedSource,
     expr = re.sub(r"(\b(?:avg|sum|max|min|count)) \(", r"\1(", expr)
     if ctx.offset:
         # Offset every range/instant selector in the template.
-        expr = re.sub(r"(\[[^\]]+\])", r"\1" + ctx.offset, expr)
+        if "[" in expr:
+            expr = re.sub(r"(\[[^\]]+\])", r"\1" + ctx.offset, expr)
+        elif "{" in expr:
+            expr = re.sub(r"(\{[^{}]*\})", r"\1" + ctx.offset, expr)
+        else:
+            t.note("COMPARE WITH could not be applied to this derived "
+                   "expression (no selector to offset); the comparison "
+                   "target repeats the current values", NEEDS_REVIEW)
     if fn.name == "count" and not src.expr.startswith("count"):
         t.note("count(*) on %s counts the exporter's series, not New Relic "
                "samples" % ctx.event, APPROXIMATE)
@@ -1160,6 +1226,9 @@ _EVENT_EQUIVALENTS = {
     "nrconsumption": _NR_ONLY_HINT, "nrusage": _NR_ONLY_HINT,
     "nrauditevent": _NR_ONLY_HINT, "nrdailyusage": _NR_ONLY_HINT,
     "nrmtdconsumption": _NR_ONLY_HINT,
+    "nrintegrationerror": ("New Relic ingest/integration error records; the "
+                           "LGTM analogue is the collector's or agent's own "
+                           "error logs in Loki"),
 }
 
 
@@ -1454,6 +1523,9 @@ def _infra_source(ctx: _Ctx, item: SelectItem, fn: Optional[Func],
     if whole is not None and whole.kind == "none" \
             and not nrmetrics.has_attr_specs(etl):
         raise Untranslatable(whole.reason)
+    while isinstance(arg, Func) and arg.args \
+            and arg.name not in ("_ratio", "_arith"):
+        arg = arg.args[0]  # rate(sum(x), 1 second): descend to x
     attr, _ = unwrap_attr(arg)
     attr_name = attr.name if attr is not None else ""
     count_spec = nrmetrics.infra_count_spec(etl)
@@ -1549,6 +1621,15 @@ def _apply_phase(ctx: _Ctx, src: Any, metric: str, label: str,
     if label:
         ctx.by = [label if l.lower() in [n.lower() for n in names] else l
                   for l in ctx.by]
+    if not found and label and label in ctx.by and src is not None \
+            and "%s" not in metric:
+        # FACET status: group the phase metric (only the active phase is 1).
+        expr = "sum <BY>(%s{<SELBARE>} == 1)" % metric
+        if isinstance(src, DerivedSource):
+            src.expr = expr
+            src.confidence = EXACT
+            return src
+        return DerivedSource(expr, "short", EXACT, nrmetrics.KSM_NOTE)
     if not found:
         return None
     if src is None:
@@ -1596,6 +1677,30 @@ def _if_parts(fn: Func) -> Tuple[Any, List[Any]]:
     return None, list(fn.args)
 
 
+def _if_cases(fn: Func, negated: List[Any]) \
+        -> Optional[List[Tuple[Any, Optional[str]]]]:
+    """if(c1, 'a', if(c2, 'b', 'c')) -> [(c1, a), (!c1 & c2, b), (!c1 & !c2, c)]."""
+    cond, vals = _if_parts(fn)
+    if cond is None or not vals:
+        return None
+
+    def with_prior(c: Any) -> Any:
+        return c if not negated else BoolOp("and", list(negated) + [c])
+    then = vals[0]
+    els = vals[1] if len(vals) > 1 else None
+    specs: List[Tuple[Any, Optional[str]]] = [
+        (with_prior(cond), str(getattr(then, "value", "true")))]
+    if isinstance(els, Func) and els.name == "if":
+        nested = _if_cases(els, negated + [NotOp(cond)])
+        if nested is None:
+            return None
+        specs.extend(nested)
+    elif els is not None:
+        specs.append((with_prior(NotOp(cond)),
+                      str(getattr(els, "value", "false"))))
+    return specs
+
+
 def _extract_facet_cases(q: NrqlQuery) -> Optional[List[Tuple[Any, Optional[str]]]]:
     """Pop the FACET cases(...) / if(...) item (other FACET attributes stay
     as the grouping); return its (cond, alias) list."""
@@ -1609,14 +1714,7 @@ def _extract_facet_cases(q: NrqlQuery) -> Optional[List[Tuple[Any, Optional[str]
     if fn.name == "cases" and fn.cases:
         specs = list(fn.cases)
     elif fn.name == "if":
-        cond, vals = _if_parts(fn)
-        if cond is not None and vals:
-            then = vals[0]
-            els = vals[1] if len(vals) > 1 else None
-            specs = [(cond, str(getattr(then, "value", "true")))]
-            if els is not None:
-                specs.append((NotOp(cond), str(getattr(els, "value",
-                                                        "false"))))
+        specs = _if_cases(fn, [])
     if specs is None:
         return None
     q.facet = q.facet[:idx] + q.facet[idx + 1:]
@@ -1726,7 +1824,6 @@ def translate_to_promql(q: NrqlQuery, cfg: Dict[str, Any]) -> Translation:
     if case_specs:
         out = _translate_facet_cases(ctx, items, case_specs)
         if out is not None:
-            _apply_compare_with(ctx, out)
             return out
         t.note("FACET cases(...) conditions could not become label "
                "matchers; grouping dropped — split the cases into "
@@ -1758,6 +1855,8 @@ def translate_to_promql(q: NrqlQuery, cfg: Dict[str, Any]) -> Translation:
             continue
         if item.multiplier:
             expr = "(%s) %s" % (expr, _scale_text(item.multiplier))
+            for e in t.extra[extras_before:]:
+                e.expr = "(%s) %s" % (e.expr, _scale_text(item.multiplier))
             new = t.notes[notes_before:]
             unit = next((n.split(":", 1)[1] for n in new
                          if n.startswith("unit:")), "")
@@ -1970,12 +2069,24 @@ def _translate_item(ctx: _Ctx, fn: Func,
                 "getField(..., %s) has no metric equivalent" % fname)
         return _translate_item(ctx, Func(agg, args=[fn.args[0]]), extra,
                                numeric)
+    if fn.name == "latest" and ctx.is_apm_http and fn.args:
+        lattr, _ = unwrap_attr(fn.args[0])
+        lkey = lattr.name.lower() if lattr is not None else ""
+        if lattr is not None and lkey not in nrmetrics.TRANSACTION_ATTRS \
+                and lkey != "timestamp" and map_attr(lattr.name, ctx.cfg)[1]:
+            t.note("latest(%s) has no metric value; rendered as the %r label "
+                   "values seen in the range (every value, not only the "
+                   "latest)" % (lattr.name, map_attr(lattr.name, ctx.cfg)[0]),
+                   APPROXIMATE)
+            fn = Func("uniques", args=[lattr])
     if fn.name == "uniques":
         arg0 = fn.args[0] if fn.args else None
         uattr, _ = unwrap_attr(arg0)
         if uattr is None:
             raise Untranslatable("uniques() needs an attribute argument")
         label, mapped = map_attr(uattr.name, ctx.cfg)
+        if ctx.is_apm_http and label == "span_name":
+            label = "http_route"
         if not mapped:
             t.note("uniques attribute %r not in label_map; used %r"
                    % (uattr.name, label), NEEDS_REVIEW)

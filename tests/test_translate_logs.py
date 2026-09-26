@@ -428,3 +428,33 @@ class Iteration3LogTests(unittest.TestCase):
         self.assertEqual(
             t.expr, 'sum(count_over_time({service_name="checkout"} [$__range]))')
         self.assertTrue(any("timestamp dropped" in n for n in t.notes))
+
+
+class Iteration4LogTests(unittest.TestCase):
+    def test_empty_message_filters_are_dropped(self):
+        t = tr("SELECT count(*) FROM Log WHERE service.name = 'a' "
+               "AND message != '' AND message IS NOT NULL TIMESERIES")
+        self.assertEqual(t.expr,
+                         'sum(count_over_time({service_name="a"} [$__auto]))')
+        self.assertTrue(any("always true" in n for n in t.notes))
+
+    def test_aparse_regexp_has_a_named_group(self):
+        t = tr("SELECT count(*) FROM Log WHERE service.name = 'a' "
+               "FACET aparse(message, 'user=* %')")
+        self.assertIn('| regexp "user=(?P<aparse>.*) .*"', t.expr)
+
+    def test_kubernetes_log_labels(self):
+        t = tr("SELECT count(*) FROM Log WHERE kubernetes.pod_name LIKE "
+               "'checkout-%' FACET kubernetes.namespace_name TIMESERIES")
+        self.assertEqual(
+            t.expr,
+            'sum by (namespace)(count_over_time({pod=~"(?i)checkout-.*"} '
+            '[$__auto]))')
+
+    def test_nested_if_facets_on_logs(self):
+        t = tr("SELECT count(*) FROM Log WHERE service.name = 'a' FACET "
+               "if(status >= 500, 'error', if(status >= 400, 'client', 'ok')) "
+               "TIMESERIES")
+        self.assertEqual([t.legend] + [e.legend for e in t.extra],
+                         ["error", "client", "ok"])
+        self.assertIn("| status < 500 | status >= 400 |", t.extra[0].expr)

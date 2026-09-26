@@ -110,6 +110,12 @@ def _split_matchers(matchers: List[Matcher], cfg: Dict[str, Any],
 
 
 def _line_filter(m: Matcher, t: Translation) -> str:
+    if m.value == "" and m.op in ("=", "!="):
+        # message != '' / IS NOT NULL: every line has a message. (A `!= ""`
+        # line filter would exclude EVERY line, since all contain "".)
+        t.note("message %s '' is always %s for log lines; filter dropped"
+               % (m.op, "false" if m.op == "=" else "true"), APPROXIMATE)
+        return ""
     if m.op == "=":
         t.note("equality on message became a substring line filter "
                "(|= %s)" % q(m.value), APPROXIMATE)
@@ -188,6 +194,7 @@ class _Split:
         self.stream, self.lines, self.meta, self.parsed = \
             _split_matchers(matchers, cfg, t)
         self.sel = _selector(self.stream, t)
+        self.lines = [l for l in self.lines if l]
         self.line_part = (" " + " ".join(self.lines)) if self.lines else ""
 
 
@@ -495,9 +502,10 @@ def _translate_one(nq: NrqlQuery, cfg: Dict[str, Any],
     # (PromQL would use label_replace; Loki extracts the label directly).
     regexp_labels = {new for new, _ref, src, _rx in t.label_replace
                      if src == "message"}
-    regexp_stage = " ".join("| regexp %s" % q(rx)
-                            for _new, _ref, src, rx in t.label_replace
-                            if src == "message")
+    regexp_stage = " ".join(
+        "| regexp %s" % q(rx if "(?P<" in rx
+                          else rx.replace("(", "(?P<%s>" % new, 1))
+        for new, _ref, src, rx in t.label_replace if src == "message")
     if regexp_stage:
         t.notes[:] = [n for n in t.notes if "became label_replace(" not in n]
         t.note("FACET capture(message, ...) became a `| regexp` parser stage "

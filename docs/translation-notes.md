@@ -330,3 +330,37 @@ The produced dashboards were audited as JSON (grid overlaps, panel
 datasources, `$variables` used vs. defined, legends on grouped queries,
 `interval`/`timeFrom` syntax, units on duration panels): no findings
 beyond the translations above.
+
+### Iteration 4 — a third corpus (205 shapes) and every widget-configuration knob
+
+| Construct | Before | Now |
+| --- | --- | --- |
+| `percentile(x * 1000, 50, 95)` | only the first percentile target was scaled | every target carries the SELECT multiplier |
+| `predictLinear(average(duration), 1 hour)` on a histogram | untranslatable | `predict_linear((<average>)[$__range:], 3600)` (a subquery over the range) |
+| `bucketPercentile(x, 95)`, `getCdfValue(x, 0.5)` | unsupported | `histogram_quantile(0.95, …)`; share of observations ≤ 0.5 (`_bucket{le}` / `_count`, percentunit) |
+| `rate(uniqueCount(x), 1 minute)` | rendered as the request rate | refused with the reason (only `rate(count())` / `rate(sum())` map) |
+| `derivative(<per-second attribute>)` | rendered as the rate itself | refused (a second derivative has no sound PromQL form) |
+| `FACET … ORDER BY x ASC LIMIT n` | `topk` | `bottomk` |
+| `FACET cases(…) … COMPARE WITH` | a comparison target without the case filter was still emitted | not emitted (the note already said so) |
+| `FACET if(c1, 'a', if(c2, 'b', 'c'))` | second target labelled `false` | one target per branch: `c1`, `!c1 ∧ c2`, `!c1 ∧ !c2` (PromQL and LogQL) |
+| `host IS NOT NULL`, `duration IS NOT NULL`, `error IS NOT NULL` on Transaction | `duration!=""`, `error!=""` label matchers | dropped (every request carries them); duplicate matchers collapse |
+| `uniqueCount(name)` / `uniques(name)` on Transaction | `span_name` | `http_route` (consistent with FACET name) |
+| `latest(host)` and other label attributes on Transaction | untranslatable | the label values seen in the range (a table; noted as every value, not only the latest) |
+| `LIKE '%\\_%'`, `LIKE '50\\%'` | the escape became a regex `\\` | `\\_` / `\\%` are literal `_` / `%` |
+| `WHERE true`, `AND false`, `1 = 1` | parse error / matcher on a label named `true` | no filter (a constant false predicate is noted) |
+| `AS "Total"`, `name = "quoted"` | parse error | double-quoted strings accepted |
+| `bytecountestimate()` | generic "unsupported" | NRDB introspection, refused with the reason |
+| `FACET status` on `K8sPodSample` | `kube_pod_info` grouped by a `phase` label it does not have | `sum by (phase)(kube_pod_status_phase == 1)` |
+| `restartCount` on container samples | an expression template (rate/COMPARE WITH impossible) | a counter: `latest()` is the count, `rate(sum(restartCount), 1 hour)` → restarts per hour, COMPARE WITH offsets |
+| COMPARE WITH on derived infra expressions without a range selector | the comparison target repeated the current values | instant selectors get the `offset` (or the note says it could not be applied) |
+| `rate(sum(x), 1 second)` on infra events | "needs an attribute argument" | nested aggregations descend to the attribute |
+| `AwsLambdaInvocation` / `AwsLambdaInvocationError` (the Lambda layer) | unknown event | `aws_lambda_invocations_sum` / `aws_lambda_errors_sum` (`sum_over_time` per step), `duration` → `aws_lambda_duration_average` |
+| `NrIntegrationError` | "custom or unknown" | named as New Relic ingest data |
+| LogQL `message != ''` / `message IS NOT NULL` | `!= ""` (which excludes every line) | dropped with a note |
+| LogQL `FACET aparse(message, 'user=* %')` | `\| regexp "user=(.*) .*"` (Loki requires a named group) | `\| regexp "user=(?P<aparse>.*) .*"` |
+| `kubernetes.pod_name` / `namespace_name` / `container_name` / `node_name` / `cluster_name` log attributes | parsed fields | the `pod` / `namespace` / `container` / `node` / `cluster` stream labels |
+| `viz.table` / `viz.pie` / `viz.bar` / `viz.bullet` with `TIMESERIES` | a range query behind a pie or table (one slice or row per bucket) | instant over the range, noted |
+| widget `nullValues` | ignored | `preserve` → `spanNulls`; `zero` → a note (PromQL returns no sample; `or vector(0)`) |
+| widget `colors.seriesOverrides`, `yAxisRight.series` | ignored | fixed-colour and right-axis field overrides by series name |
+| widget `linkedEntityGuids`, `refreshInterval` | ignored | a panel link to the New Relic entity; the smallest interval becomes the dashboard refresh |
+| widget `platformOptions.ignoreTimeRange` | the SINCE only voted for the dashboard range | the SINCE is always a panel time override (Grafana's picker does not affect it) |

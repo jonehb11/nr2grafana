@@ -386,9 +386,10 @@ _add("containersample", {
                                    "short", note=CADV_NOTE, conf=EXACT),
     "networkTxErrorsPerSecond": _r("container_network_transmit_errors_total",
                                    "short", note=CADV_NOTE, conf=EXACT),
-    "restartCount": _e("<AGG> <BY>(kube_pod_container_status_restarts_total"
-                       "{<SELBARE>})", "short",
-                       KSM_NOTE + " (Kubernetes only)", APPROXIMATE),
+    "restartCount": _c("kube_pod_container_status_restarts_total", "short",
+                       note=KSM_NOTE + " (Kubernetes only; a cumulative "
+                       "counter: latest() is the count, rate() restarts per "
+                       "unit of time)", conf=APPROXIMATE),
     "__count__": Spec("count", name="container_last_seen",
                       matchers=list(_CONT),
                       entity_attrs=["containerId", "containerName", "name",
@@ -399,10 +400,10 @@ _add("containersample", {
 })
 
 _add("k8scontainersample", {
-    "restartCount": _e("<AGG> <BY>(kube_pod_container_status_restarts_total"
-                       "{<SELBARE>})", "short",
-                       "kube-state-metrics cumulative restart count (current "
-                       "value, as New Relic reports it)", EXACT),
+    "restartCount": _c("kube_pod_container_status_restarts_total", "short",
+                       note="kube-state-metrics cumulative restart count "
+                       "(latest() is the count New Relic reports; rate() "
+                       "gives restarts per unit of time)", conf=EXACT),
     "cpuUsedCores": _e(
         "<AGG> <BY>(rate(container_cpu_usage_seconds_total{container!=\"\""
         "<SEL>}[<W>]))", "short", CADV_NOTE, EXACT),
@@ -1968,4 +1969,48 @@ EVENT_LABELS.update({
                             "queue.node": "node"},
     "rabbitmqnodesample": {"node.name": "instance", "entityName": "instance",
                            "displayName": "instance"},
+})
+
+
+# ---------------------------------------------------------------------------
+# AWS Lambda instrumentation events (the New Relic Lambda layer)
+# ---------------------------------------------------------------------------
+
+_LAMBDA_NOTE = ("CloudWatch Lambda metrics via YACE (aws_lambda_*); one "
+                "datapoint per CloudWatch period")
+_add("awslambdainvocation", {
+    "__count__": Spec("expr", expr="<AGG> <BY>(sum_over_time("
+                      "aws_lambda_invocations_sum{<SELBARE>}[<STEP>]))",
+                      unit="short", conf=NEEDS_REVIEW, note=_LAMBDA_NOTE,
+                      entity_attrs=["aws.lambda.functionName", "functionName",
+                                    "entityGuid", "entityName"]),
+    "duration": _g("aws_lambda_duration_average", "ms", note=_LAMBDA_NOTE),
+    "aws.lambda.duration": _g("aws_lambda_duration_average", "ms",
+                              note=_LAMBDA_NOTE),
+    "aws.lambda.coldStart": _no("cold starts are not a CloudWatch metric; "
+                                "use the Lambda Insights / OTel "
+                                "faas.coldstarts metric if collected"),
+    "aws.lambda.memoryUsed": _no("memory used per invocation is a Lambda "
+                                 "Insights metric (lambda_insights_*), not "
+                                 "a CloudWatch Lambda metric"),
+})
+_add("awslambdainvocationerror", {
+    "__count__": Spec("expr", expr="<AGG> <BY>(sum_over_time("
+                      "aws_lambda_errors_sum{<SELBARE>}[<STEP>]))",
+                      unit="short", conf=NEEDS_REVIEW, note=_LAMBDA_NOTE,
+                      entity_attrs=["aws.lambda.functionName", "functionName",
+                                    "entityGuid", "entityName"]),
+    "duration": _g("aws_lambda_duration_average", "ms", note=_LAMBDA_NOTE),
+})
+EVENT_LABELS.update({
+    "awslambdainvocation": {"aws.lambda.functionName": "dimension_FunctionName",
+                            "functionName": "dimension_FunctionName",
+                            "aws.region": "region", "aws.accountId":
+                            "account_id", "entityName":
+                            "dimension_FunctionName"},
+    "awslambdainvocationerror": {"aws.lambda.functionName":
+                                 "dimension_FunctionName", "functionName":
+                                 "dimension_FunctionName", "aws.region":
+                                 "region", "aws.accountId": "account_id",
+                                 "entityName": "dimension_FunctionName"},
 })

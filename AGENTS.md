@@ -123,7 +123,13 @@ create folders). Never print or commit them.
   datasource family their FROM maps to (Prometheus / Loki / Tempo).
 - Math around an aggregation (`round`, `abs`, `floor`, `ceil`, `sqrt`, `exp`,
   `log`, `clamp_max`, `pow`, …) becomes the PromQL function; `uniques(attr)`
-  becomes a `group by (label)` table.
+  becomes a `group by (label)` table; `predictLinear`, `bucketPercentile`,
+  `getCdfValue` map; `rate()` of anything but `count()`/`sum()` and
+  `derivative()` of a per-second attribute are refused with the reason.
+- Widget settings that Grafana can express are carried over: thresholds,
+  units, legend, series colours, right axis, null handling (`preserve`),
+  entity links, refresh interval, "ignore time picker" (a panel time
+  override). A pie/table/bar with `TIMESERIES` runs as an instant query.
 - On-host integration samples (`NginxSample`, `MysqlSample`,
   `PostgresqlDatabaseSample`, `RedisSample`, `KafkaOffsetSample`,
   `ElasticsearchClusterSample`, `RabbitmqQueueSample`, …) map their common

@@ -511,3 +511,16 @@ class VariableClauseTests(unittest.TestCase):
         self.assertEqual(q.limit, "$limit")
         self.assertEqual(q.timeseries.interval_var, "interval")
         self.assertFalse(q.timeseries.auto)
+
+
+class LenientSyntaxTests(unittest.TestCase):
+    def test_double_quoted_strings_and_boolean_predicates(self):
+        from nr2grafana.nrql.parser import Cmp, Lit, parse_nrql
+        q = parse_nrql('SELECT count(*) AS "Total" FROM Transaction '
+                       'WHERE name = "quoted" AND true')
+        self.assertEqual(q.select[0].alias, "Total")
+        self.assertEqual(q.where.items[0].right, Lit("quoted"))
+        self.assertEqual(q.where.items[1], Cmp(Lit(True), "=", Lit(True)))
+        q = parse_nrql("SELECT count(*) FROM Transaction WHERE true TIMESERIES")
+        self.assertEqual(q.where, Cmp(Lit(True), "=", Lit(True)))
+        self.assertIsNotNone(q.timeseries)
