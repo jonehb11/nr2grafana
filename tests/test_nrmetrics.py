@@ -396,8 +396,10 @@ class SelectArithmeticTests(unittest.TestCase):
 
     def test_named_apdex_threshold_without_space(self):
         t = tr("SELECT apdex(duration, t:0.3) FROM Transaction")
-        self.assertIn('le="0.3"', t.expr)
-        self.assertIn('le="1.2"', t.expr)
+        # 0.3 and 1.2 are not OTel default buckets: the next defaults
+        # (0.5, 2.5) are accepted as fallbacks
+        self.assertIn('le=~"0\\.3|0\\.5"', t.expr)
+        self.assertIn('le=~"1\\.2|2\\.5"', t.expr)
 
 
 class FacetFunctionTests(unittest.TestCase):
