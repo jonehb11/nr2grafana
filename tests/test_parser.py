@@ -567,3 +567,29 @@ class NestedSubqueryParseTests(unittest.TestCase):
         with self.assertRaises(NrqlParseError):
             parse_nrql("SELECT average(c) FROM (SELECT count(*) AS c FROM "
                        "Transaction FACET host")
+
+
+class Iteration15SpellingTests(unittest.TestCase):
+    """Odd but valid spellings parse like their canonical form."""
+
+    def test_numeric_literal_forms(self):
+        q = parse_nrql("SELECT count(*) FROM Transaction WHERE duration > .5 "
+                       "AND totalTime < 1e3 AND apdex >= -0.25")
+        cmps = q.where.items
+        self.assertEqual([c.right.value for c in cmps], [0.5, 1000.0, -0.25])
+        self.assertEqual(parse_nrql("SELECT count(*) FROM T WHERE x = 12")
+                         .where.right.value, 12)
+
+    def test_literal_on_the_left_is_flipped(self):
+        q = parse_nrql("SELECT count(*) FROM Transaction WHERE 'x' = appName "
+                       "AND 1 < duration AND 2 >= totalTime")
+        got = [(c.left.name, c.op, c.right.value) for c in q.where.items]
+        self.assertEqual(got, [("appName", "=", "x"), ("duration", ">", 1),
+                               ("totalTime", "<=", 2)])
+
+    def test_shorthand_duration_units(self):
+        q = parse_nrql("SELECT rate(count(*), 1m) FROM Transaction "
+                       "TIMESERIES 5m SINCE 1h ago")
+        self.assertEqual(q.timeseries.interval_seconds, 300.0)
+        self.assertEqual(q.select[0].expr.args[1].value, 60.0)
+        self.assertEqual(q.since.strip().lower(), "1 h ago")

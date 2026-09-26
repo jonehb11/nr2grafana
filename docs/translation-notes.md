@@ -506,6 +506,22 @@ counts):
 | `average(loadAverageOneMinute) / latest(coreCount)` and other ratios of plain numbers | `percentunit` | no unit; only counts over counts (and sums of counters) are proportions |
 | `allocatableCpuCoresUtilization`, `allocatableMemoryUtilization` on `K8sNodeSample` | unknown | used / allocatable per node (cAdvisor root cgroup over kube-state-metrics allocatable) |
 
+### Iteration 15 — parser robustness (mutated and oddly spelled NRQL)
+
+Eight hundred generated queries were mutated (characters dropped or
+inserted, case flipped, quotes swapped, whitespace and comments added,
+truncation) and forty-two odd-but-valid spellings were compared with their
+canonical form. No mutation crashed the translator; every rejection carries
+a parse error or a reason. Fixed:
+
+| Construct | Before | Now |
+| --- | --- | --- |
+| numeric literals `.5`, `1e3`, `2.5e1` | parse error | accepted (`.5` → 0.5, `1e3` → 1000) |
+| the literal on the left: `WHERE 'x' = appName`, `WHERE 1 < duration` | "predicate on 'x' cannot become a label matcher; dropped" | flipped to `appName = 'x'`, `duration > 1` |
+| shorthand duration units `SINCE 1h ago`, `TIMESERIES 5m`, `rate(count(*), 1m)` | parse error | accepted (`ms`, `s`, `m`, `h`, `d`, `w`) |
+| `SINCE 60 minutes ago`, `SINCE 3600 seconds ago`, `SINCE 14 days ago`, `COMPARE WITH 1440 minutes ago` | `now-60m`, `now-3600s`, `now-14d`, `offset 1440m` | whole multiples are written in the larger unit: `now-1h`, `now-2w`, `offset 1d` (the same range, a readable Grafana picker) |
+| `FACET cases(WHERE metricName = 'a' …)` (or any `metricName` filter) next to a named metric | `jvm_gc_pause_seconds_bucket{__name__="a"}` — PromQL: "metric name must not be set twice" | `{__name__="jvm_gc_pause_seconds_bucket", __name__="a"}` (valid; a different name matches nothing, as in New Relic) |
+
 ### Iteration 14 — mapping-config variations, every `--json` command, browser render
 
 The same generator ran under sixteen mapping configurations (HTTP and

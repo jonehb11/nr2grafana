@@ -326,8 +326,14 @@ def spanmetrics_source(cfg: Dict[str, Any], want: str) -> MetricSource:
 
 _AGO_RE = re.compile(
     r"^\s*(\d+(?:\.\d+)?)\s*"
-    r"(millisecond|second|minute|hour|day|week|month)s?\s*(ago)?\s*$",
+    r"(millisecond|second|minute|hour|day|week|month|ms|s|m|h|d|w)s?\s*(ago)?\s*$",
     re.IGNORECASE)
+_SHORT_UNITS = {"ms": "millisecond", "s": "second", "m": "minute",
+                "h": "hour", "d": "day", "w": "week"}
+# Whole multiples are written in the larger unit (60 minutes -> 1h), so
+# Grafana shows "Last 1 hour" rather than "Last 60 minutes".
+_PROMOTE = [("millisecond", 1000, "second"), ("second", 60, "minute"),
+            ("minute", 60, "hour"), ("hour", 24, "day"), ("day", 7, "week")]
 
 _UNIT_TO_PROM = {"millisecond": "ms", "second": "s", "minute": "m",
                  "hour": "h", "day": "d", "week": "w", "month": "d"}
@@ -341,10 +347,13 @@ def nr_duration_to_prom(text: str) -> Optional[str]:
     if not m:
         return None
     n = float(m.group(1))
-    unit = m.group(2).lower()
+    unit = _SHORT_UNITS.get(m.group(2).lower(), m.group(2).lower())
     if unit == "month":
         n = n * 30
         unit = "day"
+    for small, factor, big in _PROMOTE:
+        if unit == small and n and n % factor == 0:
+            n, unit = n / factor, big
     if n == int(n):
         n = int(n)
     return "%s%s" % (n, _UNIT_TO_PROM[unit])
@@ -354,7 +363,8 @@ def nr_duration_seconds(text: str) -> Optional[float]:
     m = _AGO_RE.match(text or "")
     if not m:
         return None
-    return float(m.group(1)) * _UNIT_SECONDS[m.group(2).lower()]
+    unit = _SHORT_UNITS.get(m.group(2).lower(), m.group(2).lower())
+    return float(m.group(1)) * _UNIT_SECONDS[unit]
 
 
 _SPECIAL_RANGES = {

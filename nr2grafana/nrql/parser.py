@@ -201,7 +201,7 @@ _TOKEN_RE = re.compile(
   | (?P<dstring>"(?:[^"\\]|\\.)*")
   | (?P<qident>`[^`]*`)
   | (?P<var>\{\{\{?\s*[A-Za-z_][A-Za-z0-9_]*\s*\}?\}\})
-  | (?P<number>-?\d+(?:\.\d+)?(?![\w.]))
+  | (?P<number>-?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?(?![\d.]))
   | (?P<op><>|!=|<=|>=|=|<|>)
   | (?P<lparen>\()
   | (?P<rparen>\))
@@ -338,6 +338,14 @@ _LINEAR_AGGS = {
 }
 
 _NAMED_ARG_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*):(\S+)$")
+
+
+def _number_value(text: str) -> Union[int, float]:
+    """'12' -> 12, '1.5' / '.5' / '1e3' -> float (1e3 stays a float so the
+    written form is preserved in reports)."""
+    if re.fullmatch(r"-?\d+", text):
+        return int(text)
+    return float(text)
 
 
 def _is_number(v: Any) -> bool:
@@ -667,7 +675,7 @@ class _Parser:
             return Lit(_unquote_string(tok.text))
         if tok.kind == "number":
             self.next()
-            return Lit(float(tok.text) if "." in tok.text else int(tok.text))
+            return Lit(_number_value(tok.text))
         if tok.kind == "qident":
             self.next()
             return Attr(tok.text[1:-1])
@@ -856,6 +864,10 @@ class _Parser:
                     "supported; no PromQL/LogQL equivalent",
                     tok.pos, self.query)
             right = self.parse_expr()
+            if isinstance(left, Lit) and isinstance(right, Attr):
+                # 'x' = appName / 1 < duration: the attribute goes left.
+                left, right = right, left
+                op = {"<": ">", ">": "<", "<=": ">=", ">=": "<="}.get(op, op)
             return Cmp(left, op, right)
         if tok.kind == "ident":
             u = tok.upper()

@@ -772,6 +772,11 @@ def offset_selectors(expr: str, offset: str) -> str:
 
 
 def render_selector(metric: str, matchers: List[Matcher]) -> str:
+    if metric and any(m.label == "__name__" for m in matchers):
+        # A metricName filter next to a named metric: PromQL forbids
+        # naming the metric twice, but allows several __name__ matchers.
+        matchers = [Matcher("__name__", "=", metric)] + list(matchers)
+        metric = ""
     inner = ",".join(m.render() for m in matchers)
     if metric:
         return "%s{%s}" % (metric, inner) if inner else metric

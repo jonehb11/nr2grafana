@@ -2015,3 +2015,36 @@ class Iteration14ConfigOverrideTests(unittest.TestCase):
                "hostname = 'h'", self._cfg())
         self.assertTrue(t.expr.startswith("100 * (1 - avg("
                                           "node_memory_MemAvailable_bytes"))
+
+
+class Iteration15SpellingTests(unittest.TestCase):
+    """Parser robustness sweep: spellings and a PromQL naming rule."""
+
+    def test_durations_are_written_in_the_largest_whole_unit(self):
+        for since, want in (("60 minutes ago", "now-1h"),
+                            ("3600 seconds ago", "now-1h"),
+                            ("1h ago", "now-1h"), ("90 minutes ago", "now-90m"),
+                            ("14 days ago", "now-2w"), ("36 hours ago", "now-36h")):
+            t = tr("SELECT count(*) FROM Transaction WHERE appName = 'x' "
+                   "SINCE " + since)
+            self.assertIn("timefrom:" + want, t.notes, since)
+        t = tr("SELECT count(*) FROM Transaction WHERE appName = 'x' "
+               "TIMESERIES 5m COMPARE WITH 1440 minutes ago")
+        self.assertIn("interval:5m", t.notes)
+        self.assertTrue(t.extra[0].expr.endswith("offset 1d)) * "
+                                                 "$__interval_ms / 1000"),
+                        t.extra[0].expr)
+
+    def test_metric_name_filters_never_name_the_metric_twice(self):
+        t = tr("SELECT bucketPercentile(jvm.gc.pause, 50) FROM Metric WHERE "
+               "jvm.gc.pause = 0 FACET cases(WHERE metricName = 'a' AS 'x')")
+        self.assertEqual(t.expr, 'histogram_quantile(0.5, sum by (le)(rate('
+                                 '{__name__="jvm_gc_pause_seconds_bucket",'
+                                 'jvm_gc_pause="0",__name__="a"}[$__range])))')
+
+    def test_reversed_comparisons_translate_like_the_usual_form(self):
+        a = tr("SELECT count(*) FROM Transaction WHERE appName = 'x' "
+               "AND duration > 1")
+        b = tr("SELECT count(*) FROM Transaction WHERE 'x' = appName "
+               "AND 1 < duration")
+        self.assertEqual((a.expr, a.confidence), (b.expr, b.confidence))
