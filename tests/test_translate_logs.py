@@ -458,3 +458,48 @@ class Iteration4LogTests(unittest.TestCase):
         self.assertEqual([t.legend] + [e.legend for e in t.extra],
                          ["error", "client", "ok"])
         self.assertIn("| status < 500 | status >= 400 |", t.extra[0].expr)
+
+
+class Iteration6LogTests(unittest.TestCase):
+    def test_rate_units_and_rate_of_filter(self):
+        t = tr("SELECT rate(count(*), 1 minute) FROM Log WHERE "
+               "service_name = 'x' TIMESERIES")
+        self.assertEqual(t.expr, 'sum(rate({service_name="x"} [$__auto])) * 60')
+        self.assertIn("unit:cpm", t.notes)
+        t = tr("SELECT rate(count(*), 1 second) FROM Log WHERE "
+               "service_name = 'x' TIMESERIES")
+        self.assertIn("unit:cps", t.notes)
+        t = tr("SELECT rate(filter(count(*), WHERE level = 'error'), "
+               "1 minute) FROM Log WHERE service_name = 'x' TIMESERIES")
+        self.assertEqual(
+            t.expr,
+            'sum(rate({service_name="x", level=~"(?i)error"} [$__auto])) * 60')
+
+    def test_rate_of_sum_unwraps_the_field(self):
+        t = tr("SELECT rate(sum(bytes), 1 second) FROM Log WHERE "
+               "service_name = 'x' TIMESERIES")
+        self.assertEqual(
+            t.expr,
+            'sum(rate({service_name="x"} | json | unwrap bytes | '
+            '__error__="" [$__auto]))')
+        self.assertIn("unit:Bps", t.notes)
+        self.assertEqual(t.confidence, APPROXIMATE)
+        t = tr("SELECT rate(sum(bytes), 1 minute) FROM Log WHERE "
+               "service_name = 'x' FACET level TIMESERIES")
+        self.assertEqual(
+            t.expr,
+            'sum by (level)(rate({service_name="x"} | json | unwrap bytes | '
+            '__error__="" [$__auto])) * 60')
+        self.assertIn("unit:short", t.notes)
+        t = tr("SELECT rate(uniqueCount(host), 1 minute) FROM Log WHERE "
+               "service_name = 'x' TIMESERIES")
+        self.assertEqual(t.confidence, "untranslatable")
+        self.assertTrue(any("only rate(count(*))" in n for n in t.notes))
+
+    def test_facet_cases_or_other_bucket_note(self):
+        t = tr("SELECT count(*) FROM Log WHERE service_name = 'x' FACET "
+               "cases(WHERE level = 'error' AS 'err') OR 'rest' TIMESERIES")
+        self.assertEqual(t.legend, "err")
+        self.assertTrue(any("OR 'rest': the catch-all bucket" in n
+                            for n in t.notes))
+        self.assertFalse(any("not understood" in n for n in t.notes))

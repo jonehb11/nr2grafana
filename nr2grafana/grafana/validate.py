@@ -71,7 +71,8 @@ _VAR_USE_RE = re.compile(
     r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::[A-Za-z]+)?\}|\$([A-Za-z_][A-Za-z0-9_]*)"
     r"|\[\[([A-Za-z_][A-Za-z0-9_]*)\]\]")
 _TIME_OVERRIDE_RE = re.compile(r"^(now-)?\d+[smhdwMy](/[smhdwMy])?$|^now/[smhdwMy]$"
-    r"|^\$[A-Za-z_][A-Za-z0-9_]*$")
+    r"|^\$[A-Za-z_][A-Za-z0-9_]*$"
+    r"|^now-\$\{[A-Za-z_][A-Za-z0-9_]*\}[smhdwMy]$")
 _NRQL_LEAK_RE = re.compile(
     r"\b(SINCE|FACET|TIMESERIES|NRQL|COMPARE WITH|UNTIL)\b")
 _PLACEHOLDER_RE = re.compile(r"<(?:BY|SEL|SELBARE|W|AGG|AGGINV|HTTP)>")

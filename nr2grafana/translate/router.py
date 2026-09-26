@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, Optional
 
 from ..nrql.parser import (
@@ -107,6 +108,26 @@ def _short_duration(seconds: float) -> str:
     return "%gs" % n
 
 
+# SINCE <previous unit> UNTIL <this unit>: the whole previous calendar
+# unit. Grafana: timeFrom pins the panel to "this unit so far", timeShift
+# "1u/u" moves both ends back one unit and rounds them to its bounds.
+_WHOLE_UNITS = {
+    ("yesterday", "today"): ("now/d", "1d/d", "day"),
+    ("last week", "this week"): ("now/w", "1w/w", "week"),
+    ("last month", "this month"): ("now/M", "1M/M", "month"),
+    ("last year", "this year"): ("now/y", "1y/y", "year"),
+}
+_VAR_AGO_RE = re.compile(
+    r"^\{\{\{?\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}?\}\}\s+"
+    r"(second|minute|hour|day|week|month|year)s?\s+ago$", re.I)
+_GRAFANA_UNIT = {"second": "s", "minute": "m", "hour": "h", "day": "d",
+                 "week": "w", "month": "M", "year": "y"}
+
+
+def _time_key(text: Optional[str]) -> str:
+    return re.sub(r"\s+", " ", (text or "").strip().lower())
+
+
 def _time_hints(q, t: Translation) -> None:
     """SINCE/UNTIL -> timefrom:/timeshift: hints for the builder.
 
@@ -119,6 +140,24 @@ def _time_hints(q, t: Translation) -> None:
                "variable; its value must be a Grafana span such as 1h or 7d "
                "(New Relic wrote e.g. '1 hour ago')" % var.group(1),
                NEEDS_REVIEW)
+        return
+    var_ago = _VAR_AGO_RE.match((q.since or "").strip()) if q.since else None
+    if var_ago is not None and not q.until:
+        unit = _GRAFANA_UNIT[var_ago.group(2).lower()]
+        t.notes.append("timefrom:now-${%s}%s" % (var_ago.group(1), unit))
+        t.note("SINCE %s: the panel's relative time is now-${%s}%s; the "
+               "variable's value must be a whole number"
+               % (q.since.strip(), var_ago.group(1), unit), NEEDS_REVIEW)
+        return
+    whole = _WHOLE_UNITS.get((_time_key(q.since), _time_key(q.until))) \
+        if q.since and q.until else None
+    if whole is not None:
+        rng, shift, unit = whole
+        t.notes.append("timefrom:%s" % rng)
+        t.notes.append("timeshift:%s" % shift)
+        t.note("SINCE %s UNTIL %s became a panel time override (timeFrom %s "
+               "with timeShift %s: the whole previous %s)"
+               % (q.since, q.until, rng, shift, unit))
         return
     since_s = _rel_seconds(q.since) if q.since else None
     until_s = _rel_seconds(q.until) if q.until else None

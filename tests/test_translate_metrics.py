@@ -31,9 +31,10 @@ class TransactionTests(unittest.TestCase):
         self.assertEqual(t.datasource, "prometheus")
         self.assertEqual(t.query_type, "range")
         self.assertEqual(t.confidence, APPROXIMATE)
-        # count-shaped aggregation: unit follows the aggregation (a
-        # count), not the duration source metric
-        self.assertIn("unit:short", t.notes)
+        # count-shaped aggregation: the unit follows the aggregation (a
+        # request rate per minute), not the duration source metric
+        self.assertIn("unit:reqpm", t.notes)
+        self.assertNotIn("unit:short", t.notes)
         self.assertIn("timefrom:now-1h", t.notes)
 
     def test_latency_percentiles_two_targets(self):
@@ -1261,3 +1262,190 @@ class Iteration5MetricTests(unittest.TestCase):
         self.assertEqual(t.datasource, "prometheus")
         self.assertTrue(any("TraceQL metrics cannot express" in n
                             for n in t.notes))
+
+
+class Iteration6MetricTests(unittest.TestCase):
+    T = "SELECT %s FROM Transaction WHERE appName = 'checkout'%s"
+
+    def q(self, select, tail=" TIMESERIES"):
+        return tr(self.T % (select, tail))
+
+    def test_rate_units_follow_the_period_and_the_metric(self):
+        cases = [
+            ("rate(count(*), 1 minute)", "reqpm"),
+            ("rate(count(*), 1 second)", "reqps"),
+            ("rate(count(*), 1 hour)", "short"),
+            ("rate(sum(duration), 1 minute)", "short"),
+        ]
+        for select, unit in cases:
+            t = self.q(select)
+            self.assertIn("unit:%s" % unit, t.notes, select)
+            self.assertEqual(
+                [n for n in t.notes if n.startswith("unit:")],
+                ["unit:%s" % unit], select)
+        t = tr("SELECT rate(sum(orders.completed), 1 minute) FROM Metric "
+               "TIMESERIES")
+        self.assertIn("unit:cpm", t.notes)
+        t = tr("SELECT rate(count(*), 1 second) FROM Span "
+               "WHERE service.name = 'checkout' TIMESERIES")
+        self.assertIn("unit:reqps", t.notes)
+        t = tr("SELECT rate(sum(system.network.io), 1 second) FROM Metric "
+               "TIMESERIES")
+        self.assertIn("unit:Bps", t.notes)
+        t = tr("SELECT derivative(sum(orders.completed), 1 minute) FROM "
+               "Metric TIMESERIES")
+        self.assertIn("unit:cpm", t.notes)
+
+    def test_rate_of_filter_keeps_the_embedded_where(self):
+        t = self.q("rate(filter(count(*), WHERE error IS TRUE), 1 minute)")
+        self.assertEqual(
+            t.expr,
+            'sum(rate(%s_count{service_name="checkout",'
+            'http_response_status_code=~"5.."}[$__rate_interval])) * 60'
+            % HTTP)
+        self.assertIn("unit:reqpm", t.notes)
+        self.assertEqual(t.confidence, NEEDS_REVIEW)
+
+    def test_multiple_aggregations_get_distinct_legends_with_facet(self):
+        t = self.q("average(duration) AS 'Avg', percentile(duration, 95) "
+                   "AS 'p95', max(duration)", " FACET name TIMESERIES")
+        self.assertEqual(t.legend, "{{http_route}} Avg")
+        self.assertEqual([x.legend for x in t.extra],
+                         ["{{http_route}} p95",
+                          "{{http_route}} max(duration)"])
+
+    def test_multiple_aggregations_get_distinct_legends_without_facet(self):
+        t = self.q("average(totalTime), average(duration), "
+                   "average(databaseDuration)")
+        self.assertEqual(t.legend, "average(totalTime)")
+        self.assertEqual([x.legend for x in t.extra],
+                         ["average(duration)", "average(databaseDuration)"])
+        # aliases still win, and a single aggregation keeps the plain legend
+        t = self.q("count(*) AS 'Requests', filter(count(*), WHERE error "
+                   "IS TRUE) AS 'Errors'")
+        self.assertEqual(t.legend, "Requests")
+        self.assertEqual(t.extra[0].legend, "Errors")
+        t = self.q("average(duration)", " FACET name TIMESERIES")
+        self.assertEqual(t.legend, "{{http_route}}")
+        t = self.q("average(duration)")
+        self.assertEqual(t.legend, "")
+
+    def test_status_code_bands_intersect(self):
+        t = self.q("count(*)", " AND httpResponseCode >= 400 AND "
+                   "httpResponseCode < 500 TIMESERIES")
+        self.assertIn('http_response_status_code=~"4.."', t.expr)
+        self.assertEqual(t.expr.count("http_response_status_code"), 1)
+        t = self.q("count(*)", " AND httpResponseCode >= 300 AND "
+                   "httpResponseCode < 500 TIMESERIES")
+        self.assertIn('http_response_status_code=~"[34].."', t.expr)
+        # contradictory bands are left alone (no data, as in New Relic)
+        t = self.q("count(*)", " AND httpResponseCode >= 500 AND "
+                   "httpResponseCode < 400 TIMESERIES")
+        self.assertIn('http_response_status_code=~"5.."', t.expr)
+        self.assertIn('http_response_status_code=~"[123].."', t.expr)
+
+    def test_ratio_unit_is_a_proportion_only_for_counts_over_counts(self):
+        t = self.q("count(*) / uniqueCount(host)", "")
+        self.assertFalse(any(n.startswith("unit:") for n in t.notes))
+        t = self.q("uniqueCount(name) / uniqueCount(host)", "")
+        self.assertFalse(any(n.startswith("unit:") for n in t.notes))
+        t = self.q("filter(count(*), WHERE error IS TRUE) / count(*)")
+        self.assertIn("unit:percentunit", t.notes)
+
+    def test_transaction_type_and_error_expected_have_no_label_notes(self):
+        t = self.q("count(*)", " AND transactionType = 'Web' TIMESERIES")
+        self.assertEqual(t.confidence, APPROXIMATE)
+        self.assertFalse(any("not in label_map" in n for n in t.notes))
+        self.assertIn("transactionType = 'Web' is implicit for HTTP server "
+                      "metrics; filter dropped", t.notes)
+        t = tr("SELECT count(*) FROM TransactionError WHERE appName = 'c' "
+               "AND error.expected IS FALSE")
+        self.assertFalse(any("not in label_map" in n for n in t.notes))
+        self.assertTrue(any("error.expected has no label" in n
+                            for n in t.notes))
+
+    def test_is_not_null_on_always_present_attributes(self):
+        t = self.q("count(*)", " AND duration IS NOT NULL AND name IS NOT "
+                   "NULL TIMESERIES")
+        self.assertEqual(t.confidence, APPROXIMATE)
+        self.assertEqual(
+            t.expr,
+            'sum(rate(%s_count{service_name="checkout"}[$__rate_interval]))'
+            ' * $__interval_ms / 1000' % HTTP)
+        self.assertIn("duration IS NOT NULL is always true on HTTP server "
+                      "metrics (every request carries it); dropped", t.notes)
+        self.assertFalse(any("not in label_map" in n for n in t.notes))
+        t = self.q("count(*)", " AND databaseDuration IS NOT NULL TIMESERIES")
+        self.assertEqual(t.confidence, NEEDS_REVIEW)
+        self.assertNotIn("databaseDuration", t.expr)
+        self.assertTrue(any("cannot tell them apart" in n for n in t.notes))
+
+    def test_variable_used_as_a_whole_condition_is_dropped(self):
+        t = self.q("count(*)", " AND {{where}} TIMESERIES")
+        self.assertNotIn("$where", t.expr)
+        self.assertEqual(t.confidence, NEEDS_REVIEW)
+        self.assertTrue(any("used as a whole WHERE condition" in n
+                            for n in t.notes))
+
+    def test_earliest_on_derived_infra_expressions_is_refused(self):
+        t = tr("SELECT earliest(cpuPercent) FROM SystemSample TIMESERIES")
+        self.assertEqual(t.confidence, UNTRANSLATABLE)
+        self.assertTrue(any("first_over_time" in n for n in t.notes))
+
+    def test_facet_cases_on_a_duration_threshold_needs_count(self):
+        t = self.q("average(duration)", " FACET cases(WHERE duration < 1 "
+                   "AS 'fast', WHERE duration >= 1 AS 'slow') TIMESERIES")
+        self.assertEqual(t.extra, [])
+        self.assertEqual(t.legend, "")
+        self.assertTrue(any("only count(*) can split" in n for n in t.notes))
+        self.assertEqual(t.confidence, NEEDS_REVIEW)
+        # count(*) still splits into one bucket-arithmetic target per case
+        t = self.q("count(*)", " FACET cases(WHERE duration < 1 AS 'fast', "
+                   "WHERE duration >= 1 AS 'slow') TIMESERIES")
+        self.assertEqual(t.legend, "fast")
+        self.assertEqual(t.extra[0].legend, "slow")
+
+    def test_facet_cases_or_other_bucket_is_parsed_and_noted(self):
+        t = self.q("count(*)", " FACET cases(WHERE duration < 1 AS 'fast', "
+                   "WHERE duration < 5 AS 'medium') OR 'slow' TIMESERIES")
+        self.assertEqual([t.legend] + [x.legend for x in t.extra],
+                         ["fast", "medium"])
+        self.assertFalse(any("not understood" in n for n in t.notes))
+        self.assertTrue(any("OR 'slow': the catch-all bucket" in n
+                            for n in t.notes))
+
+    def test_todatetime_and_case_folding_facets(self):
+        t = self.q("count(*)", " FACET toDatetime(timestamp, "
+                   "'yyyy-MM-dd HH:mm')")
+        self.assertEqual(t.group_by, [])
+        self.assertNotIn("timestamp", t.expr)
+        self.assertTrue(any("toDatetime(...) buckets by time" in n
+                            and "1m interval" in n for n in t.notes))
+        t = self.q("count(*)", " FACET toDatetime(timestamp, 'yyyy-MM-dd')")
+        self.assertTrue(any("1d interval" in n for n in t.notes))
+        t = self.q("count(*)", " FACET lower(name)")
+        self.assertEqual(t.group_by, ["http_route"])
+        self.assertTrue(any("FACET lower(name): Prometheus label values keep "
+                            "their case" in n for n in t.notes))
+
+    def test_whole_previous_calendar_units(self):
+        t = self.q("count(*)", " TIMESERIES SINCE yesterday UNTIL today")
+        self.assertIn("timefrom:now/d", t.notes)
+        self.assertIn("timeshift:1d/d", t.notes)
+        self.assertEqual(t.confidence, APPROXIMATE)
+        self.assertFalse(any("cannot be expressed" in n for n in t.notes))
+        t = self.q("count(*)", " SINCE last month UNTIL this month")
+        self.assertIn("timefrom:now/M", t.notes)
+        self.assertIn("timeshift:1M/M", t.notes)
+        # SINCE yesterday alone still means "since the start of yesterday"
+        t = self.q("count(*)", " TIMESERIES SINCE yesterday")
+        self.assertIn("timefrom:now-1d/d", t.notes)
+        self.assertFalse(any(n.startswith("timeshift:") for n in t.notes))
+
+    def test_variable_relative_range(self):
+        t = self.q("count(*)", " TIMESERIES SINCE {{since}} minutes ago")
+        self.assertIn("timefrom:now-${since}m", t.notes)
+        self.assertEqual(t.confidence, NEEDS_REVIEW)
+        self.assertTrue(any("whole number" in n for n in t.notes))
+        t = self.q("count(*)", " SINCE {{n}} days ago")
+        self.assertIn("timefrom:now-${n}d", t.notes)

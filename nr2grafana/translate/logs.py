@@ -18,13 +18,18 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 
+from dataclasses import replace as _dc_replace
+
 from ..nrql.parser import Attr, BoolOp, Func, Lit, NrqlQuery, SelectItem, Star
 from .common import (
     APPROXIMATE, EXACT, NEEDS_REVIEW, Matcher, NumericPred, Translation,
     Untranslatable, cond_text, cond_to_branches, event_map_entry, expr_text,
-    facet_labels, legend_for, map_attr, regex_escape, q, unwrap_attr, worst,
+    facet_labels, hoist_rate_filter, legend_for, map_attr, regex_escape, q,
+    unwrap_attr, worst,
 )
-from .metrics import _extract_facet_cases, _scaled_unit, nr_duration_to_prom
+from .metrics import (
+    _extract_facet_cases, _scaled_unit, note_cases_other, nr_duration_to_prom,
+)
 
 _NUMERIC_OPS = ("<", "<=", ">", ">=")
 
@@ -339,8 +344,9 @@ def translate_to_logql(nq: NrqlQuery, cfg: Dict[str, Any]) -> Translation:
         out.notes[:0] = t0.notes
         out.confidence = worst(out.confidence, t0.confidence)
         return out
-    case_specs = _extract_facet_cases(nq)
+    case_specs, case_other = _extract_facet_cases(nq)
     if case_specs:
+        note_cases_other(t0, case_other)
         return _translate_log_cases(nq, cfg, extra_stream, t0, aggs,
                                     case_specs)
     # One target per aggregation; the first is the primary.
@@ -454,6 +460,10 @@ def _translate_one(nq: NrqlQuery, cfg: Dict[str, Any],
     if first_agg is not None:
         fn0 = first_agg.expr
         assert isinstance(fn0, Func)
+        hoisted = hoist_rate_filter(fn0)
+        if hoisted is not fn0:
+            fn0 = hoisted
+            first_agg = _dc_replace(first_agg, expr=fn0)
         if fn0.name in ("_ratio", "_arith"):
             out = _arith(nq, cfg, first_agg, extra_stream)
             _apply_multiplier(out, first_agg)
@@ -575,21 +585,6 @@ def _translate_one(nq: NrqlQuery, cfg: Dict[str, Any],
         return finish("sum%s(count_over_time(%s [%s]))"
                       % (by_clause, base_stream(), window))
 
-    if name == "rate":
-        per_seconds = 60.0
-        for a in fn.args:
-            if isinstance(a, Lit) and isinstance(a.value, (int, float)):
-                per_seconds = float(a.value)
-        if per_seconds == 1:
-            mult = ""
-        elif per_seconds == int(per_seconds):
-            mult = " * %d" % int(per_seconds)
-        else:
-            mult = " * %s" % per_seconds
-        t.notes.append("unit:short")
-        return finish("sum%s(rate(%s [%s]))%s"
-                      % (by_clause, base_stream(), window, mult))
-
     def unwrap_attr_name() -> str:
         arg = fn.args[0] if fn.args else None
         attr, _ = unwrap_attr(arg)
@@ -614,6 +609,45 @@ def _translate_one(nq: NrqlQuery, cfg: Dict[str, Any],
     # NR's event-level semantics. Without it, a bare avg_over_time returns
     # one series PER STREAM instead of NR's single series.
     group = " by (%s)" % ", ".join(by) if by else " by ()"
+
+    if name == "rate":
+        per_seconds = 60.0
+        for a in fn.args:
+            if isinstance(a, Lit) and isinstance(a.value, (int, float)):
+                per_seconds = float(a.value)
+        if per_seconds == 1:
+            mult = ""
+        elif per_seconds == int(per_seconds):
+            mult = " * %d" % int(per_seconds)
+        else:
+            mult = " * %s" % per_seconds
+        inner = fn.args[0] if fn.args and isinstance(fn.args[0], Func) \
+            else None
+        if inner is not None and inner.name == "sum":
+            # rate(sum(bytes), 1 second): LogQL rate() over an unwrapped
+            # value is the per-second sum of the values.
+            arg = inner.args[0] if inner.args else None
+            attr, _ = unwrap_attr(arg)
+            if attr is None:
+                raise Untranslatable("rate(sum(x)) on logs needs a numeric "
+                                     "attribute")
+            field = attr.name.replace(".", "_")
+            t.note("unwrap of %r assumes it is a numeric field after parsing"
+                   % field, APPROXIMATE)
+            t.notes.append("unit:%s" % (
+                "Bps" if per_seconds == 1 and "byte" in field.lower()
+                else "short"))
+            return finish("sum%s(rate(%s [%s]))%s"
+                          % (by_clause, unwrap_stream(field), window, mult))
+        if inner is not None and inner.name not in ("count",):
+            raise Untranslatable(
+                "rate(%s(...)) on logs has no LogQL equivalent: only "
+                "rate(count(*)) (lines per unit of time) and rate(sum(x)) "
+                "(sum of a field per unit of time) translate" % inner.name)
+        t.notes.append("unit:%s" % ("cps" if per_seconds == 1 else
+                                    "cpm" if per_seconds == 60 else "short"))
+        return finish("sum%s(rate(%s [%s]))%s"
+                      % (by_clause, base_stream(), window, mult))
 
     if name in ("average", "avg", "sum", "max", "min"):
         over = {"average": "avg_over_time", "avg": "avg_over_time",

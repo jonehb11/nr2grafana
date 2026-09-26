@@ -697,3 +697,52 @@ class Iteration4BuilderTests(Iteration2BuilderTests):
         tgt = self._panel(dash, "Pie")["targets"][0]
         self.assertTrue(tgt["instant"])
         self.assertFalse(tgt["range"])
+
+
+class Iteration6BuilderTests(Iteration2BuilderTests):
+    def test_whole_previous_day_and_variable_ranges(self):
+        var = self._widget("Var", "viz.line",
+                           "SELECT count(*) FROM Transaction SINCE {{n}} "
+                           "minutes ago TIMESERIES")
+        var["layout"]["row"] = 4
+        dash = self._build([
+            self._widget("A", "viz.line",
+                         "SELECT count(*) FROM Transaction SINCE 1 hour ago "
+                         "TIMESERIES"),
+            self._widget("B", "viz.line",
+                         "SELECT count(*) FROM Transaction SINCE 1 hour ago "
+                         "TIMESERIES", col=5),
+            self._widget("Yesterday", "viz.billboard",
+                         "SELECT count(*) FROM Transaction SINCE yesterday "
+                         "UNTIL today", col=9),
+            var,
+        ], [{"name": "n", "type": "STRING",
+             "defaultValues": [{"value": {"string": "30"}}]}])
+        self.assertEqual(dash["time"], {"from": "now-1h", "to": "now"})
+        y = self._panel(dash, "Yesterday")
+        self.assertEqual(y["timeFrom"], "now/d")
+        self.assertEqual(y["timeShift"], "1d/d")
+        v = self._panel(dash, "Var")
+        self.assertEqual(v["timeFrom"], "now-${n}m")
+        from nr2grafana.grafana.validate import validate_dashboard_full
+        self.assertEqual(validate_dashboard_full(dash)["errors"], [])
+
+    def test_multi_aggregation_targets_carry_their_legends(self):
+        dash = self._build([self._widget(
+            "Lat", "viz.line",
+            "SELECT average(duration) AS 'Avg', percentile(duration, 95) "
+            "AS 'p95' FROM Transaction WHERE appName = 'c' FACET name "
+            "TIMESERIES")])
+        p = self._panel(dash, "Lat")
+        self.assertEqual([t["legendFormat"] for t in p["targets"]],
+                         ["{{http_route}} Avg", "{{http_route}} p95"])
+        self.assertEqual(p["fieldConfig"]["defaults"]["unit"], "s")
+
+    def test_throughput_panel_unit(self):
+        dash = self._build([self._widget(
+            "Tp", "viz.line",
+            "SELECT rate(count(*), 1 minute) FROM Transaction WHERE "
+            "appName = 'c' TIMESERIES")])
+        self.assertEqual(
+            self._panel(dash, "Tp")["fieldConfig"]["defaults"]["unit"],
+            "reqpm")

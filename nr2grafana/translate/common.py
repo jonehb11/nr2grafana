@@ -300,6 +300,19 @@ _UNWRAP_FUNCS = {
 MAX_OR_BRANCHES = 8
 
 
+def hoist_rate_filter(fn: Func) -> Func:
+    """rate(filter(agg, WHERE c), N unit) -> filter(rate(agg, N unit),
+    WHERE c): the embedded WHERE filters the rate the same way, and every
+    translator knows how to wrap filter() around an aggregation."""
+    if fn.name == "rate" and fn.args and isinstance(fn.args[0], Func) \
+            and fn.args[0].name == "filter" and fn.args[0].args:
+        inner = fn.args[0]
+        rate = Func("rate", args=[inner.args[0]] + list(fn.args[1:]))
+        return Func("filter", args=[rate], where=inner.where,
+                    cases=list(inner.cases))
+    return fn
+
+
 def unwrap_attr(expr: Any) -> Tuple[Optional[Attr], bool]:
     """(Attr, case_insensitive) for an Attr or a reshaping function of one;
     (None, False) when the expression is something else."""
@@ -446,6 +459,17 @@ def _leaf_matchers(cond: Any, negate: bool, cfg: Dict[str, Any],
         if truth is False:
             t.note("a WHERE condition is always false (%s); no data can match"
                    % cond_text(cond), NEEDS_REVIEW)
+        return []
+    if isinstance(cond, Cmp) and cond.op in ("=", "!=") \
+            and isinstance(cond.left, Attr) and is_nr_variable(cond.left) \
+            and isinstance(cond.right, Lit) and cond.right.value is True:
+        # WHERE ... AND {{filter}}: the variable stands for a whole
+        # condition (there is no attribute to match on).
+        t.note("dashboard variable {{%s}} is used as a whole WHERE "
+               "condition; it cannot become a label matcher and was dropped "
+               "— rewrite the panel around a concrete attribute, or use a "
+               "Grafana ad hoc filter variable" % is_nr_variable(cond.left),
+               NEEDS_REVIEW)
         return []
     if isinstance(cond, Cmp):
         if cond.op in ("<", "<=", ">", ">=") and isinstance(cond.right, Lit) \
@@ -669,6 +693,45 @@ def _status_class_matcher(label: str, op: str, n: float) -> Optional[Matcher]:
     return Matcher(label, "=~", pattern)
 
 
+_STATUS_LABELS = ("http_response_status_code", "http_status_code",
+                  "status_code", "http_status")
+_BAND_ALT_RE = re.compile(r"^(?:(\d)|\[(\d+)\])\.\.$")
+
+
+def _band_digits(value: str) -> Optional[set]:
+    """Leading digits of a status-class band regex ('4..|5..', '[123]..');
+    None when the regex is not one."""
+    out: set = set()
+    for alt in value.split("|"):
+        m = _BAND_ALT_RE.match(alt)
+        if not m:
+            return None
+        out.update(m.group(1) or m.group(2))
+    return out
+
+
+def merge_status_bands(matchers: List[Matcher]) -> List[Matcher]:
+    """Two status-class bands on one label (`>= 400 AND < 500`) intersect
+    into a single matcher (`4..`) instead of two overlapping regexes."""
+    bands = [m for m in matchers
+             if m.label in _STATUS_LABELS and m.op == "=~"
+             and _band_digits(m.value) is not None]
+    if len(bands) < 2:
+        return matchers
+    digits: Optional[set] = None
+    for m in bands:
+        d = _band_digits(m.value) or set()
+        digits = d if digits is None else digits & d
+    if not digits:
+        return matchers  # contradictory bands: leave them (no data)
+    ds = "".join(sorted(digits))
+    merged = Matcher(bands[0].label, "=~",
+                     "%s.." % ds if len(ds) == 1 else "[%s].." % ds)
+    out = [m for m in matchers if not any(m is b for b in bands)]
+    out.insert(matchers.index(bands[0]), merged)
+    return out
+
+
 def render_selector(metric: str, matchers: List[Matcher]) -> str:
     inner = ",".join(m.render() for m in matchers)
     if metric:
@@ -715,16 +778,34 @@ def facet_labels(query: NrqlQuery, cfg: Dict[str, Any],
     legend_parts: List[str] = []
     use_template = False
     for item in query.facet:
+        fn = item.expr if isinstance(item.expr, Func) else None
+        if fn is not None and fn.name == "todatetime":
+            # toDatetime(timestamp, 'yyyy-MM-dd HH:mm') buckets by the
+            # finest field of the format (no format: per millisecond).
+            fmt = str(fn.args[1].value) if len(fn.args) > 1 \
+                and isinstance(fn.args[1], Lit) else ""
+            gran = ("1s" if "s" in fmt else "1m" if "m" in fmt
+                    else "1h" if ("H" in fmt or "h" in fmt) else "1d") \
+                if fmt else "1m"
+            t.note("FACET toDatetime(...) buckets by time; Grafana does "
+                   "this with TIMESERIES-style range queries — use a %s "
+                   "interval / Min interval on the panel instead of a "
+                   "grouping" % gran, NEEDS_REVIEW)
+            continue
         attr, _ci = unwrap_attr(item.expr)
         if attr is not None:
             label, mapped = map_attr(attr.name, cfg)
             if not mapped:
                 t.note("FACET attribute %r not in label_map; used %r"
                        % (attr.name, label), NEEDS_REVIEW)
+            if _ci and fn is not None:
+                t.note("FACET %s(%s): Prometheus label values keep their "
+                       "case, so values differing only by case stay "
+                       "separate groups" % (fn.name, attr.name),
+                       APPROXIMATE)
             labels.append(label)
             legend_parts.append("{{%s}}" % label)
             continue
-        fn = item.expr if isinstance(item.expr, Func) else None
         if fn is None:
             t.note("unsupported FACET expression dropped", NEEDS_REVIEW)
             continue

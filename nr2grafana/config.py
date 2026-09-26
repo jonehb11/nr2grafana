@@ -103,6 +103,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "error.class": "error_type",
         "errorClass": "error_type",
         "error.type": "error_type",
+        # Transaction attributes the HTTP-metric fixups consume (no label
+        # to verify: the notes say what happens to them).
+        "transactionType": "transaction_type",
+        "transactionSubType": "transaction_sub_type",
+        "error.expected": "error_expected",
         "request.uri": "http_route",
         "http.route": "http_route",
         # Infrastructure agent dimensional metrics (host.* / k8s.*) name

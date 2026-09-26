@@ -896,6 +896,13 @@ class _Parser:
 
     def parse_facet_item(self) -> FacetItem:
         expr = self.parse_expr()
+        if isinstance(expr, Func) and expr.name == "cases" \
+                and self.at_kw("OR"):
+            # FACET cases(WHERE ... AS 'a') OR 'other': the catch-all bucket.
+            nxt = self.peek(1)
+            if nxt is not None and nxt.kind == "string":
+                self.next()
+                expr.args.append(Lit("OR:" + _unquote_string(self.next().text)))
         alias = None
         if self.eat_kw("AS"):
             tok = self.next()

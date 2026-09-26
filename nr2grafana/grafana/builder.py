@@ -247,9 +247,9 @@ def _apply_notes_to_panel(panel: Dict[str, Any], trans: List[Translation],
                 continue
             if note.startswith("timefrom:"):
                 rng = note.split(":", 1)[1]
-                if rng.startswith("$"):
-                    # SINCE {{var}}: a per-panel override, never the
-                    # dashboard default.
+                if "$" in rng:
+                    # SINCE {{var}} / {{n}} minutes ago: a per-panel
+                    # override, never the dashboard default.
                     panel["timeFrom"] = rng
                     panel["hideTimeOverride"] = False
                     continue

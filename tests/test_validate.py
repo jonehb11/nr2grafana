@@ -337,3 +337,13 @@ class VariableQueryShapeTests(unittest.TestCase):
         empties = [e for e in res["errors"] if "empty query" in e]
         self.assertEqual(len(empties), 1)
         self.assertIn("'empty'", empties[0])
+
+
+class TimeOverrideVariableTests(unittest.TestCase):
+    def test_variable_relative_time_is_accepted(self):
+        from nr2grafana.grafana.validate import _TIME_OVERRIDE_RE
+        for ok in ("now-${since}m", "now-${n}h", "$since", "now/d", "1d/d",
+                   "now-1d/d", "30m"):
+            self.assertTrue(_TIME_OVERRIDE_RE.match(ok), ok)
+        for bad in ("now-${since}", "now-$since m", "yesterday", "${x}m"):
+            self.assertFalse(_TIME_OVERRIDE_RE.match(bad), bad)

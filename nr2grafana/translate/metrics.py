@@ -24,14 +24,15 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..nrql.parser import (
-    Attr, BinOp, BoolOp, Cmp, Func, Lit, NotOp, NrqlQuery, SelectItem,
-    Star,
+    Attr, BinOp, BoolOp, Cmp, Func, Lit, NotOp, NrqlQuery, NullCheck,
+    SelectItem, Star,
 )
 from .common import (
     APPROXIMATE, EXACT, NEEDS_REVIEW, UNTRANSLATABLE,
     Matcher, NumericPred, Translation, Untranslatable,
-    cond_text, cond_to_branches, expr_text, facet_labels, legend_for,
-    map_attr, render_selector, sanitize_label, unwrap_attr, worst,
+    cond_text, cond_to_branches, expr_text, facet_labels, hoist_rate_filter,
+    legend_for, map_attr, merge_status_bands, render_selector,
+    sanitize_label, unwrap_attr, worst,
 )
 from . import nrmetrics
 from .nrmetrics import Spec
@@ -354,7 +355,38 @@ def nr_duration_to_grafana_range(text: str) -> Optional[str]:
 # Expression building
 # ---------------------------------------------------------------------------
 
-_TXN_TYPE_ATTRS = ("transactiontype", "transactionsubtype")
+_TXN_TYPE_ATTRS = ("transactiontype", "transactionsubtype",
+                   "transaction_type", "transaction_sub_type")
+
+# Transaction attributes every HTTP request carries (`x IS NOT NULL` is a
+# no-op on the server-duration histogram) and the ones that only some
+# transactions carry (a DB / external call happened) which the histogram
+# cannot tell apart.
+_HTTP_ALWAYS_PRESENT = ("duration", "totaltime", "webduration", "name",
+                        "transactionname", "error", "http_route",
+                        "span_name")
+_HTTP_SOMETIMES_PRESENT = ("databaseduration", "externalduration",
+                          "databasecallcount", "externalcallcount",
+                          "queueduration")
+
+
+def _drop_present_checks(cond: Any, t: Translation) -> Any:
+    """Rewrite `duration IS NOT NULL` (always true on HTTP metrics) into a
+    constant predicate before matcher building, so no label is looked up
+    for it."""
+    if isinstance(cond, BoolOp):
+        return BoolOp(cond.op, [_drop_present_checks(c, t)
+                                for c in cond.items])
+    if isinstance(cond, NotOp):
+        return NotOp(_drop_present_checks(cond.item, t))
+    if isinstance(cond, NullCheck) and cond.negated:
+        attr, _ci = unwrap_attr(cond.left)
+        if attr is not None and attr.name.lower() in _HTTP_ALWAYS_PRESENT:
+            t.notes.append("%s IS NOT NULL is always true on HTTP server "
+                           "metrics (every request carries it); dropped"
+                           % attr.name)
+            return Cmp(Lit(True), "=", Lit(True))
+    return cond
 
 
 def _http_fixups(matchers: List[Matcher], t: Translation,
@@ -395,11 +427,17 @@ def _http_fixups(matchers: List[Matcher], t: Translation,
                    "5xx response counts (expected errors included)",
                    NEEDS_REVIEW)
             continue
-        elif m.op == "!=" and m.value == "" and m.label.lower() in (
-                "error", "duration", "totaltime", "webduration",
-                "databaseduration", "externalduration", "name",
-                "transactionname", "http_route", "span_name"):
+        elif m.op == "!=" and m.value == "" \
+                and m.label.lower() in _HTTP_ALWAYS_PRESENT:
             # `x IS NOT NULL` on a value every request carries: no filter.
+            continue
+        elif m.op in ("!=", "=") and m.value == "" \
+                and m.label.lower() in _HTTP_SOMETIMES_PRESENT:
+            t.note("%s IS %sNULL selects transactions by whether they made "
+                   "a DB / external call; the HTTP server histogram cannot "
+                   "tell them apart — filter dropped"
+                   % (m.label, "NOT " if m.op == "!=" else ""),
+                   NEEDS_REVIEW)
             continue
         else:
             out.append(m)
@@ -543,7 +581,10 @@ class _Ctx:
             or _uses_apm_http_metric(q)
         self.is_legacy_aws = etl in nrmetrics.LEGACY_AWS_EVENTS
         self.aws_provider = ""  # WHERE provider = '...' on legacy AWS events
-        self.branches = cond_to_branches(q.where, cfg, t)
+        where = q.where
+        if self.is_apm_http and where is not None:
+            where = _drop_present_checks(where, t)
+        self.branches = cond_to_branches(where, cfg, t)
         # Numeric predicates captured while building the matchers belong
         # to the outer WHERE; each SELECT item may consume a copy.
         self.numeric: List[NumericPred] = list(t.numeric)
@@ -551,6 +592,7 @@ class _Ctx:
         self.branches = [self._fixups(b) for b in self.branches]
         self.branches = [list({(m.label, m.op, m.value): m for m in b}.values())
                          for b in self.branches]
+        self.branches = [merge_status_bands(b) for b in self.branches]
         if nrmetrics.is_infra_event(etl):
             for b in self.branches:
                 for m in list(b):
@@ -1191,6 +1233,10 @@ def _derived_expr(ctx: _Ctx, fn: Func, src: DerivedSource,
     """Render a template source (nrmetrics kind 'expr' / 'count')."""
     t = ctx.t
     agg = _AGG_WORD.get(fn.name, "avg")
+    if fn.name == "earliest":
+        raise Untranslatable(
+            "earliest() has no PromQL equivalent (PromQL lacks a "
+            "first_over_time function)")
     if fn.name in ("percentile", "median", "stddev", "histogram", "apdex",
                    "derivative", "predictlinear"):
         raise Untranslatable(
@@ -1842,24 +1888,38 @@ def _if_cases(fn: Func, negated: List[Any]) \
     return specs
 
 
-def _extract_facet_cases(q: NrqlQuery) -> Optional[List[Tuple[Any, Optional[str]]]]:
+def _extract_facet_cases(q: NrqlQuery) \
+        -> Tuple[Optional[List[Tuple[Any, Optional[str]]]], Optional[str]]:
     """Pop the FACET cases(...) / if(...) item (other FACET attributes stay
-    as the grouping); return its (cond, alias) list."""
+    as the grouping); return its (cond, alias) list and the name of the
+    catch-all bucket (`cases(...) OR 'other'`), if any."""
     idx = next((i for i, f in enumerate(q.facet)
                 if isinstance(f.expr, Func) and f.expr.name in ("cases", "if")),
                None)
     if idx is None:
-        return None
+        return None, None
     fn = q.facet[idx].expr
     specs: Optional[List[Tuple[Any, Optional[str]]]] = None
+    other: Optional[str] = None
     if fn.name == "cases" and fn.cases:
         specs = list(fn.cases)
+        for a in fn.args:
+            if isinstance(a, Lit) and isinstance(a.value, str) \
+                    and a.value.startswith("OR:"):
+                other = a.value[3:]
     elif fn.name == "if":
         specs = _if_cases(fn, [])
     if specs is None:
-        return None
+        return None, None
     q.facet = q.facet[:idx] + q.facet[idx + 1:]
-    return specs
+    return specs, other
+
+
+def note_cases_other(t: Translation, other: Optional[str]) -> None:
+    if other:
+        t.note("FACET cases(...) OR %r: the catch-all bucket (rows matching "
+               "no case) is not emitted; add a target with the negated case "
+               "conditions if you need it" % other, APPROXIMATE)
 
 
 def _translate_facet_cases(ctx: _Ctx,
@@ -1876,11 +1936,25 @@ def _translate_facet_cases(ctx: _Ctx,
         return None
     fn = funcs[0].expr
     assert isinstance(fn, Func)
+    base = fn
+    while base.name == "filter" and base.args \
+            and isinstance(base.args[0], Func):
+        base = base.args[0]
     for cond, _alias in case_specs:
         probe = Translation()
         branches = cond_to_branches(cond, ctx.cfg, probe)
         usable = [p for p in probe.numeric if _numeric_consumable(ctx, p)]
         if not any(branches) and not usable:
+            return None
+        if not any(branches) and usable and base.name != "count":
+            # average(duration) FACET cases(WHERE duration < 1 ...): only
+            # count(*) can be split at a histogram bucket boundary; every
+            # case would otherwise be the same unfiltered query.
+            t.note("FACET cases(...) compares %s, which only count(*) can "
+                   "split at a histogram bucket boundary — %s() cannot be "
+                   "computed for a sub-range of the buckets; grouping "
+                   "dropped, the panel shows the overall value"
+                   % (usable[0].attr, base.name), NEEDS_REVIEW)
             return None
     t.note("FACET cases(...) became one filtered query per case; NR's "
            "implicit 'Other' bucket is not emitted", APPROXIMATE)
@@ -1946,7 +2020,7 @@ def _scaled_unit(unit: str, mult: float) -> Optional[str]:
 
 def translate_to_promql(q: NrqlQuery, cfg: Dict[str, Any]) -> Translation:
     t = Translation(datasource="prometheus")
-    case_specs = _extract_facet_cases(q)
+    case_specs, case_other = _extract_facet_cases(q)
     ctx = _Ctx(q, cfg, t)
     t.query_type = "range" if ctx.is_range else "instant"
 
@@ -1963,6 +2037,7 @@ def translate_to_promql(q: NrqlQuery, cfg: Dict[str, Any]) -> Translation:
             "Tempo (FROM Span)")
 
     if case_specs:
+        note_cases_other(t, case_other)
         out = _translate_facet_cases(ctx, items, case_specs)
         if out is not None:
             return out
@@ -1973,6 +2048,10 @@ def translate_to_promql(q: NrqlQuery, cfg: Dict[str, Any]) -> Translation:
     primary_expr: Optional[str] = None
     primary_legend = ""
     failures: List[str] = []
+    # Several aggregations in one SELECT: every target needs a legend that
+    # names its item (the alias, else the NRQL expression) next to the
+    # FACET labels, or the series are indistinguishable in Grafana.
+    multi = sum(1 for i in items if isinstance(i.expr, Func)) > 1
     for item in items:
         fn = item.expr
         if not isinstance(fn, Func):
@@ -2020,6 +2099,10 @@ def translate_to_promql(q: NrqlQuery, cfg: Dict[str, Any]) -> Translation:
                        % _scale_text(item.multiplier), APPROXIMATE)
         item_legend = t.legend or legend_for(ctx.by, item.alias,
                                              t.legend_template)
+        if multi and not t.legend:
+            tag = item.alias or expr_text(fn)
+            item_legend = ((legend_for(ctx.by, None, t.legend_template)
+                            + " " + tag).strip() if ctx.by else tag)
         if primary_expr is None:
             primary_expr = expr
             primary_legend = item_legend
@@ -2050,16 +2133,55 @@ _UNIT_PRESERVING_AGGS = {"average", "avg", "percentile", "median", "max",
 _COUNT_AGGS = {"count", "uniquecount", "cardinality", "rate", "derivative"}
 
 
-def _unit_note(t: Translation, agg: str, src: Any) -> None:
+_REQUEST_METRIC_HINTS = ("http_server_request", "http_client_request",
+                         "rpc_server", "rpc_client", "spanmetrics_calls",
+                         "traces_span_metrics_calls")
+
+
+def _rate_unit(fn: Func, unit: str, base: str) -> str:
+    """Grafana unit for rate(agg, N unit) / derivative(x, N unit): counts
+    (or requests) per second / minute; bytes per second; otherwise
+    dimensionless."""
+    per = 60.0
+    args = fn.args if fn.name == "rate" else fn.args[1:]
+    for a in args:
+        if isinstance(a, Lit) and isinstance(a.value, (int, float)) \
+                and not isinstance(a.value, bool):
+            per = float(a.value)
+    inner = fn.args[0] if fn.args and isinstance(fn.args[0], Func) else None
+    while inner is not None and inner.name == "filter" and inner.args \
+            and isinstance(inner.args[0], Func):
+        inner = inner.args[0]
+    if fn.name == "rate" and inner is not None \
+            and inner.name in ("count", "uniquecount", "cardinality"):
+        unit = "short"  # rate(count(*)) counts events whatever they measure
+    if unit == "bytes":
+        return "Bps" if per == 1 else "short"
+    if unit and unit not in ("short", "none"):
+        return "short"
+    requests = any(h in base for h in _REQUEST_METRIC_HINTS)
+    if per == 1:
+        return "reqps" if requests else "cps"
+    if per == 60:
+        return "reqpm" if requests else "cpm"
+    return "short"
+
+
+def _unit_note(t: Translation, agg: str, src: Any,
+               fn: Optional[Func] = None) -> None:
     """The panel unit follows the aggregation: count-shaped aggregations
     yield counts regardless of what the underlying metric measures."""
     if isinstance(src, DerivedSource):
-        if src.unit and agg not in ("count", "uniquecount", "cardinality"):
+        if agg == "rate" and fn is not None:
+            t.notes.append("unit:%s" % _rate_unit(fn, src.unit, src.expr))
+        elif src.unit and agg not in ("count", "uniquecount", "cardinality"):
             t.notes.append("unit:%s" % src.unit)
         elif agg in ("count", "uniquecount", "cardinality"):
             t.notes.append("unit:short")
         return
-    if agg in _COUNT_AGGS:
+    if agg in ("rate", "derivative") and fn is not None:
+        t.notes.append("unit:%s" % _rate_unit(fn, src.unit, src.base))
+    elif agg in _COUNT_AGGS:
         t.notes.append("unit:short")
     elif agg == "sum" and src.mtype == "counter":
         # the increase of a counter is a count (or the counter's own unit)
@@ -2186,6 +2308,7 @@ def _translate_item(ctx: _Ctx, fn: Func,
     t = ctx.t
     extra = [list(b) for b in (extra or [[]])]
     numeric = list(numeric or [])
+    fn = hoist_rate_filter(fn)
     if fn.name == "if":
         raise Untranslatable(
             "bare if() in SELECT has no metric equivalent; wrap it in an "
@@ -2330,12 +2453,22 @@ def _translate_item(ctx: _Ctx, fn: Func,
             while f.name == "filter" and f.args and isinstance(f.args[0], Func):
                 f = f.args[0]
             return f.name
+
+        def filtered(f: Func) -> bool:
+            # filter(count(*), WHERE c) / count(if(c, 1)) / sum(if(c, 1, 0))
+            return f.name == "filter" or f.where is not None or bool(
+                f.args and isinstance(f.args[0], Func)
+                and f.args[0].name == "if")
         counts_left = base_name(left) in count_like \
             or "unit:short" in left_units
         counts_right = base_name(right) in count_like \
             or "unit:short" in right_units
-        if counts_left and counts_right:
-            # count/count (etc.) is a proportion in [0, 1].
+        per_entity = base_name(right) in ("uniquecount", "cardinality")
+        if counts_left and counts_right and (filtered(left)
+                                             or not per_entity):
+            # count/count (errors over requests, a filtered count over the
+            # count) is a proportion in [0, 1]; count(*) / uniqueCount(host)
+            # is a per-entity number.
             t.notes.append("unit:percentunit")
         return "(%s) / (%s)" % (left_expr, right_expr)
 
@@ -2382,7 +2515,7 @@ def _translate_item(ctx: _Ctx, fn: Func,
         t.confidence = worst(t.confidence, src.confidence)
         if src.note:
             t.note(src.note)
-        _unit_note(t, inner.name, src)
+        _unit_note(t, inner.name, src, inner)
         if isinstance(src, DerivedSource):
             return _derived_expr(ctx, inner, src, extra)
         return _agg_expr(ctx, inner, src, extra=extra, numeric=numeric)
@@ -2419,7 +2552,7 @@ def _translate_item(ctx: _Ctx, fn: Func,
     t.confidence = worst(t.confidence, src.confidence)
     if src.note:
         t.note(src.note)
-    _unit_note(t, fn.name, src)
+    _unit_note(t, fn.name, src, fn)
     if isinstance(src, DerivedSource):
         return _derived_expr(ctx, fn, src, extra)
     if src.value_attr == "timestamp":

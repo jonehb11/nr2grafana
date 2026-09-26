@@ -92,9 +92,14 @@ create folders). Never print or commit them.
   widget whose NRQL lacks `TIMESERIES` is still translated as a range query
   (noted as approximate).
 - `SINCE x` → panel/dashboard time range; `SINCE a UNTIL b` → panel
-  `timeFrom`/`timeShift`; `COMPARE WITH` → a second target with `offset`.
+  `timeFrom`/`timeShift` (`SINCE yesterday UNTIL today` → `now/d` +
+  `1d/d`, the whole previous day); `COMPARE WITH` → a second target with
+  `offset`. `rate(count(*), 1 minute)` → `rate(m[W]) * 60` with the panel
+  unit `reqpm` (HTTP / span metrics) or `cpm`.
 - `FACET a` → `by (a)` + legend; `FACET … LIMIT n` → `topk(n, …)`;
-  `FACET cases(...)`/`if(...)` → one filtered target per case.
+  `FACET cases(...)`/`if(...)` → one filtered target per case. Several
+  aggregations in one SELECT become one target each, legends `{{label}}
+  <alias or expression>`.
 - `FROM Transaction` → OTel HTTP server histogram (`duration`), DB client
   histogram (`databaseDuration`), HTTP client histogram (`externalDuration`);
   `error IS TRUE` ≈ 5xx; `transactionType = 'Web'` is implicit; other

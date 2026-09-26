@@ -67,7 +67,15 @@ General invariants:
 | `apdex(x, t: T)` histogram | needs-review | `(sum(rate(b{le=T})) + sum(rate(b{le=4T}))) / 2 / sum(rate(_count))`; algebraically `(satisfied + tolerating/2) / total` because buckets are cumulative. Requires bucket bounds at exactly T and 4T (noted). Thresholds scale x1000 for millisecond histograms. Integral bounds match both `le="2"` and `le="2.0"` spellings via regex |
 | `apdex()` non-histogram | untranslatable | needs a histogram metric |
 | `histogram(x, ...)` | approximate | `sum by (le)(increase(_bucket[$__interval]))` + `panel-hint:heatmap`; Prometheus bucket bounds, not NR's requested buckets |
-| `rate(agg, N unit)` | exact-shaped | `sum(rate(m[W])) * seconds(N unit)`; the parser normalizes `1 minute` etc. to seconds |
+| `rate(agg, N unit)` | exact-shaped | `sum(rate(m[W])) * seconds(N unit)`; the parser normalizes `1 minute` etc. to seconds. Panel unit: requests/min or /sec (`reqpm` / `reqps`) on HTTP and span metrics, counts/min or /sec (`cpm` / `cps`) elsewhere, bytes/sec (`Bps`) for `rate(sum(<bytes>), 1 second)`, otherwise none. `rate(filter(count(*), WHERE c), …)` keeps the embedded WHERE (hoisted to `filter(rate(…))`) |
+| `rate(x)` of anything but `count()` / `sum()` / `filter()` of those | untranslatable | refused with the reason (a rate of an average has no metric form) |
+| `derivative(<per-second attribute>)` | untranslatable | a second derivative; PromQL has no sound form — plot the rate itself |
+| `uniques(attr)` | approximate | `group by (label)(metric{...})` instant query rendered as a table (`panel-hint:table`); one row per label value seen in the range |
+| `latest(<string attribute>)` on Transaction (`latest(host)`) | approximate | the label values seen in the range as a table (noted: every value, not only the latest); attributes with no label say so and point at Loki / span events |
+| `predictLinear(average(duration), N unit)` on a histogram | approximate | `predict_linear((<average>)[$__range:], seconds)` — a subquery over the range |
+| `bucketPercentile(x, p)` | approximate | `histogram_quantile(p/100, …)` like `percentile()` |
+| `getCdfValue(x, v)` | approximate | share of observations ≤ v: `_bucket{le="v"}` over `_count` (`percentunit`) |
+| `round`, `abs`, `floor`, `ceil`, `sqrt`, `exp`, `ln`/`log`, `log10`, `log2`, `clamp_max`, `clamp_min`, `pow`, `mod` around an aggregation | composes | the PromQL function around the translated expression (`round(expr, 0.01)` for two decimals; `pow` / `mod` as `^` / `%`) |
 | `derivative(x, N unit)` counter | approximate | `sum(rate(m[W])) * N` |
 | `derivative(x, N unit)` gauge | approximate | `deriv(m[W]) * N` (linear regression) |
 | `derivative()` histogram | untranslatable | only _bucket/_sum/_count series exist |
@@ -212,8 +220,10 @@ output:
 | `concat(a, ':', b)` | approximate | `by (a, b)`, legend `{{a}}:{{b}}` |
 | `capture(attr, r'(?P<name>...)')` / `aparse(attr, 'a/*/b')` | approximate | `label_replace(expr, "name", "$N", label, regex)` + `by (name)` |
 | `if(cond, 'a', 'b')` | approximate | two filtered targets (like `cases`) |
-| `hourOf/dateOf/weekdayOf/...(timestamp)` | needs-review | note suggests the interval to use |
+| `hourOf/dateOf/weekdayOf/...(timestamp)`, `toDatetime(timestamp, fmt)` | needs-review | grouping dropped; the note names the panel interval to use instead (`toDatetime`: the finest field of the format) |
 | `string(x)` etc. | exact | unwrapped |
+| `lower(x)` / `upper(x)` | approximate | grouped by the label; noted that label values keep their case |
+| `cases(...) OR 'other'` | approximate | the cases become targets; the catch-all bucket is noted, not emitted |
 
 ### FROM Metric — built-in names
 
@@ -271,7 +281,11 @@ one target each; `agg/agg` and `agg ± agg` preserved as LogQL arithmetic;
 ### Time
 
 `SINCE a UNTIL b` (relative) → `timeFrom = a − b`, `timeShift = b`
-(exact); `SINCE last week` → `now-1w/w`, `last month` → `now-1M/M`.
+(exact); `SINCE last week` → `now-1w/w`, `last month` → `now-1M/M`;
+`SINCE yesterday UNTIL today` (and `last week UNTIL this week`, `last
+month UNTIL this month`, `last year UNTIL this year`) → `timeFrom now/d` +
+`timeShift 1d/d` (the whole previous unit, exact); `SINCE {{n}} minutes
+ago` → a per-panel `timeFrom now-${n}m`.
 
 ### Iteration 2 — semantic quirks found by auditing the emitted queries
 
@@ -389,3 +403,29 @@ configurations (`http_metrics_flavor: legacy`, `spanmetrics_flavor: tempo`,
 | `rate(sum(<derived per-second attribute>), 1 minute)`, `rate(sum(restartCount), 1 hour)` on pods | unscaled / untranslatable | scaled by the unit; counters inside templates get `rate()` applied in place |
 | `span_aggregations: "traceql"` with an aggregation TraceQL metrics cannot express (`percentage()`) | untranslatable | span metrics in Mimir with a note |
 | `entityGuid`, `containerId` / `container.id` | unmapped | default label map entries |
+
+### Iteration 6 — clause, time, alias and unit edge shapes
+
+A fifth corpus (214 queries: time keywords and `UNTIL` pairs, FACET
+functions, aliases next to FACET, `rate()` periods, `IS NULL` checks,
+quoting, every place a `{{variable}}` can appear). All parse; the semantic
+findings:
+
+| Construct | Before | Now |
+| --- | --- | --- |
+| `rate(count(*), 1 minute)` / `1 second` | panel unit `short` | `reqpm` / `reqps` on HTTP and span metrics, `cpm` / `cps` on other counters and logs; `rate(sum(<bytes>), 1 second)` → `Bps` |
+| `rate(filter(count(*), WHERE error IS TRUE), 1 minute)` | the embedded WHERE silently dropped (PromQL and LogQL) | hoisted to `filter(rate(count(*)), WHERE …)`: the 5xx matcher (or Loki filter) is kept |
+| `rate(sum(bytes), 1 second)` on logs | the line rate | `sum(rate({…} \| unwrap bytes [$__auto]))` (bytes per second) |
+| `SELECT average(duration) AS 'Avg', percentile(duration, 95) AS 'p95' … FACET name` | every target legend `{{http_route}}` (indistinguishable series) | `{{http_route}} Avg`, `{{http_route}} p95`; without aliases the NRQL expression names the target (`average(totalTime)`) |
+| `SINCE yesterday UNTIL today` (and the week / month / year pairs) | `timeFrom now-1d/d` (yesterday **and** today so far) plus a "cannot be expressed" note | `timeFrom now/d` + `timeShift 1d/d`: exactly the whole previous day |
+| `SINCE {{n}} minutes ago` | "could not be mapped" | per-panel `timeFrom now-${n}m` (the validator accepts the form) |
+| `FACET toDatetime(timestamp, 'yyyy-MM-dd')` | grouped by a `timestamp` label | a time-bucketing FACET like `dateOf()`: dropped with the interval to use |
+| `FACET lower(name)` | silent | noted that Prometheus label values keep their case |
+| `FACET cases(…) OR 'slow'` | `OR 'slow'` reported as not understood | parsed; the catch-all bucket is noted as not emitted |
+| `average(duration) FACET cases(WHERE duration < 1 AS 'fast', WHERE duration >= 1 AS 'slow')` | two identical unfiltered targets labelled fast / slow | grouping dropped with the reason (only `count(*)` can be split at a bucket boundary) |
+| `httpResponseCode >= 400 AND httpResponseCode < 500` | two overlapping regex matchers (`4..\|5..` and `[1234]..`) | one intersected band matcher (`4..`; `>= 300 AND < 500` → `[34]..`) |
+| `count(*) / uniqueCount(host)`, `uniqueCount(a) / uniqueCount(b)` | `percentunit` | no unit (a per-entity number); `filter(count(*), …) / count(*)` and `errors / requests` stay proportions |
+| `transactionType = 'Web'`, `error.expected IS FALSE`, `FACET transactionType` | a "not in label_map" review note next to the note that explains the drop | only the explaining note (default label-map entries) |
+| `duration IS NOT NULL`, `name IS NOT NULL`, `error IS NOT NULL` on Transaction | a "not in label_map" review note | dropped as always true (approximate); `databaseDuration IS NOT NULL` is refused with the reason (the histogram cannot tell transactions with DB calls apart) |
+| `WHERE appName = 'x' AND {{filter}}` (a variable standing for a whole condition) | `$filter="true"` label matcher | dropped with a note |
+| `earliest(cpuPercent)` on infra samples | silently the current value | refused (no `first_over_time` in PromQL), like `FROM Metric` |

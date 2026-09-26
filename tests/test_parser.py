@@ -524,3 +524,17 @@ class LenientSyntaxTests(unittest.TestCase):
         q = parse_nrql("SELECT count(*) FROM Transaction WHERE true TIMESERIES")
         self.assertEqual(q.where, Cmp(Lit(True), "=", Lit(True)))
         self.assertIsNotNone(q.timeseries)
+
+
+class CasesOtherBucketTests(unittest.TestCase):
+    def test_or_other_after_cases_is_kept(self):
+        q = parse_nrql("SELECT count(*) FROM Transaction FACET cases(WHERE "
+                       "duration < 1 AS 'fast', WHERE duration < 5 AS "
+                       "'medium') OR 'slow' TIMESERIES SINCE 1 hour ago")
+        fn = q.facet[0].expr
+        self.assertEqual(fn.name, "cases")
+        self.assertEqual([a for c, a in fn.cases], ["fast", "medium"])
+        self.assertIn(Lit("OR:slow"), fn.args)
+        self.assertIsNotNone(q.timeseries)
+        self.assertEqual(q.since, "1 hour ago")
+        self.assertIsNone(q.facet[0].alias)
