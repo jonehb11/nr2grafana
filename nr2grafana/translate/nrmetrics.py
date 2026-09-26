@@ -547,6 +547,16 @@ _add("k8snodesample", {
         "{id=\"/\"<SEL>}) / on (node) max by (node)(kube_node_status_allocatable{"
         "resource=\"memory\"<SEL>}))", "percent", "working set / allocatable",
         APPROXIMATE),
+    "allocatableCpuCoresUtilization": _e(
+        "100 * <AGG> <BY>(sum by (node)(rate(container_cpu_usage_seconds_total"
+        "{id=\"/\"<SEL>}[<W>])) / on (node) max by (node)(kube_node_status_allocatable{"
+        "resource=\"cpu\"<SEL>}))", "percent", "used / allocatable",
+        APPROXIMATE),
+    "allocatableMemoryUtilization": _e(
+        "100 * <AGG> <BY>(sum by (node)(container_memory_working_set_bytes"
+        "{id=\"/\"<SEL>}) / on (node) max by (node)(kube_node_status_allocatable{"
+        "resource=\"memory\"<SEL>}))", "percent", "working set / allocatable",
+        APPROXIMATE),
     "allocatableCpuCores": _g("kube_node_status_allocatable", "short",
                               [("resource", "=", "cpu")], KSM_NOTE, EXACT),
     "allocatableMemoryBytes": _g("kube_node_status_allocatable", "bytes",

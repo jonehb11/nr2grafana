@@ -119,7 +119,8 @@ create folders). Never print or commit them.
   metrics); `uniqueCount(trace.id)` → root-span count.
 - Infra samples (`SystemSample`, `K8s*Sample`, `ProcessSample`,
   `ContainerSample`, …) → node_exporter / kube-state-metrics / cAdvisor /
-  process-exporter / kubelet metrics.
+  process-exporter / kubelet metrics; `count(*) WHERE <metric attribute> >
+  n` counts the entities whose series satisfies the comparison.
 - Legacy AWS polling samples (`ComputeSample`, `DatastoreSample`,
   `QueueSample`, `LoadBalancerSample`, …) need `WHERE provider = '<type>'`;
   `provider.<Metric>.<Stat>` → YACE `aws_<ns>_<metric>_<stat>` (needs-review:

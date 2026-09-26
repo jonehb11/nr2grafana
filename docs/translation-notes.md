@@ -493,3 +493,15 @@ Kubernetes reasons, Kafka/AWS/JVM metrics, Loki fields, span metrics):
 | `latest(reason)` / `WHERE reason = 'Evicted'` on `K8sPodSample` | untranslatable / `kube_pod_info{reason=...}` (no such label) | `kube_pod_status_reason{reason=...} == 1` (grouped by `reason`); a `status` filter next to it is implied |
 | `average(numeric(duration_ms))` legend | `average(numeric(duration_ms))` | `average(duration_ms)` |
 | the "panel unit set to percent (was )" note | an empty "(was )" | "(was s)" only when there was a unit |
+
+### Iteration 10 — numeric WHERE on infra populations, ratio units
+
+A tenth batch (Kubernetes / infra quickstart shapes and alert-style
+counts):
+
+| Construct | Before | Now |
+| --- | --- | --- |
+| `count(*)` / `uniqueCount(<entity>)` on a sample event `WHERE <metric-valued attribute> > n` (`podsMissing > 0`, `restartCount > 5`, `cpuPercent > 90`, `isReady = 0`) | the comparison vanished silently (the population was counted unfiltered) | the population is the attribute's own series filtered by the comparison: `count((expr) > n)`; several comparisons `and` together; a status/phase filter next to them is intersected `on (<entity labels>)`; the note shows the filter |
+| an average / max / latest on a derived infra expression with a numeric WHERE it cannot take | silent | "cannot become a label matcher for this derived expression; dropped" |
+| `average(loadAverageOneMinute) / latest(coreCount)` and other ratios of plain numbers | `percentunit` | no unit; only counts over counts (and sums of counters) are proportions |
+| `allocatableCpuCoresUtilization`, `allocatableMemoryUtilization` on `K8sNodeSample` | unknown | used / allocatable per node (cAdvisor root cgroup over kube-state-metrics allocatable) |

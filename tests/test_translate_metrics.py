@@ -1670,3 +1670,64 @@ class Iteration9MetricTests(unittest.TestCase):
         self.assertIn("SELECT arithmetic '* 100' preserved; panel unit set "
                       "to percent", t.notes)
         self.assertFalse(any("(was )" in n for n in t.notes))
+
+
+class Iteration10MetricTests(unittest.TestCase):
+    def test_numeric_where_on_infra_counts_filters_the_population(self):
+        t = tr("SELECT count(*) FROM K8sDaemonsetSample WHERE podsMissing > 0")
+        self.assertEqual(
+            t.expr,
+            "count(((avg by (namespace, daemonset)(kube_daemonset_status_"
+            "desired_number_scheduled - kube_daemonset_status_number_ready))"
+            " > 0))")
+        self.assertTrue(any("selected by the attribute's own series" in n
+                            for n in t.notes))
+        t = tr("SELECT uniqueCount(podName) FROM K8sContainerSample WHERE "
+               "restartCount > 5")
+        self.assertEqual(
+            t.expr,
+            "count(count by (pod)((kube_pod_container_status_restarts_total "
+            "> 5)))")
+        t = tr("SELECT uniqueCount(hostname) FROM SystemSample WHERE "
+               "cpuPercent > 90")
+        self.assertEqual(
+            t.expr,
+            'count(((100 * (1 - avg by (instance)(rate(node_cpu_seconds_total'
+            '{mode="idle"}[$__range])))) > 90))')
+        t = tr("SELECT count(*) FROM K8sContainerSample WHERE status = "
+               "'Running' AND restartCount > 3 FACET namespaceName")
+        self.assertEqual(
+            t.expr,
+            "count by (namespace)((kube_pod_container_status_restarts_total "
+            "> 3) and on (namespace, pod, container) "
+            "(kube_pod_container_status_running == 1))")
+        # attr = <number> on a metric-valued attribute is the same filter
+        t = tr("SELECT count(*) FROM K8sPodSample WHERE isReady = 0")
+        self.assertEqual(
+            t.expr, 'count((kube_pod_status_ready{condition="true"} == 0))')
+
+    def test_numeric_where_a_derived_average_cannot_take_is_reported(self):
+        t = tr("SELECT average(cpuPercent) FROM SystemSample WHERE "
+               "memoryUsedPercent > 90 FACET hostname")
+        self.assertNotIn("90", t.expr)
+        self.assertTrue(any("memoryUsedPercent > 90 cannot become a label "
+                            "matcher for this derived expression" in n
+                            for n in t.notes))
+        self.assertEqual(t.confidence, NEEDS_REVIEW)
+
+    def test_ratio_units_only_for_counts(self):
+        t = tr("SELECT average(loadAverageOneMinute) / latest(coreCount) FROM "
+               "SystemSample FACET hostname TIMESERIES")
+        self.assertFalse(any(n.startswith("unit:") for n in t.notes))
+        t = tr("SELECT sum(errors) / sum(requests) FROM Metric TIMESERIES")
+        self.assertIn("unit:percentunit", t.notes)
+
+    def test_node_allocatable_utilization(self):
+        t = tr("SELECT average(allocatableCpuCoresUtilization), "
+               "average(allocatableMemoryUtilization) FROM K8sNodeSample "
+               "FACET nodeName TIMESERIES")
+        self.assertTrue(t.expr.startswith(
+            "100 * avg by (node)(sum by (node)(rate(container_cpu_usage_"
+            "seconds_total"))
+        self.assertIn("kube_node_status_allocatable", t.extra[0].expr)
+        self.assertIn("unit:percent", t.notes)

@@ -608,6 +608,8 @@ class _Ctx:
         # to the outer WHERE; each SELECT item may consume a copy.
         self.numeric: List[NumericPred] = list(t.numeric)
         del t.numeric[:]
+        # Predicates a derived (template) source turned into PromQL filters.
+        self.consumed_numeric: List[NumericPred] = []
         self.branches = [self._fixups(b) for b in self.branches]
         self.branches = [list({(m.label, m.op, m.value): m for m in b}.values())
                          for b in self.branches]
@@ -621,6 +623,13 @@ class _Ctx:
                             and m.label.lower() not in ("status", "phase",
                                                         "state", "reason"):
                         b.remove(m)
+                        if m.op in ("=", "!=") and re.fullmatch(
+                                r"-?\d+(\.\d+)?", m.value):
+                            # isReady = 0: a numeric comparison on the
+                            # attribute's series (see _numeric_count_filters)
+                            self.numeric.append(NumericPred(
+                                m.label, m.label, m.op, float(m.value)))
+                            continue
                         t.note("WHERE %s %s %r compares a metric-valued "
                                "attribute; the exporter carries it as a "
                                "metric (%s), not a label — express it as a "
@@ -1716,6 +1725,81 @@ def _legacy_aws_source(ctx: _Ctx, agg: str, arg: Any) -> Any:
     return src
 
 
+_POPULATION_RE = re.compile(r"\(([A-Za-z_:][A-Za-z0-9_:]*)\{[^{}]*\}\)$")
+
+
+def _numeric_count_filters(ctx: _Ctx, etl: str, src: Any) -> Any:
+    """count(*) / uniqueCount(entity) WHERE <metric-valued attr> > n: the
+    population is the attribute's own series filtered by the comparison
+    (count((kube_deployment_spec_replicas - ...) > 0)) — PromQL's way of
+    saying "entities whose value satisfies the predicate"."""
+    if not isinstance(src, DerivedSource) or not ctx.numeric:
+        return src
+    filters: List[str] = []
+    names: List[str] = []
+    for p in list(ctx.numeric):
+        spec = nrmetrics.infra_lookup(etl, p.attr)
+        if spec is None:
+            continue
+        entity = _ENTITY_LABELS.get(etl)
+        if spec.kind == "gauge" or (spec.kind == "counter"
+                                    and getattr(spec, "cumulative", False)):
+            sel = _with_fixed(spec.name, spec.matchers)
+            body = sel if "{" in sel else sel + "{<SELBARE>}"
+        elif spec.kind == "expr" and ("<AGG> <BY>" in spec.expr
+                                      or "<AGGINV> <BY>" in spec.expr):
+            # One value per entity: the template's aggregation folds the
+            # entity's sub-series (CPU cores, filesystems) on its labels.
+            fold = ("avg by (%s)" % entity) if entity else ""
+            body = "(" + spec.expr.replace("<AGGINV> <BY>", fold, 1).replace(
+                "<AGG> <BY>", fold, 1) + ")"
+        else:
+            continue
+        op = "==" if p.op == "=" else p.op
+        filters.append("(%s %s %s)" % (body, op, _fmt_num(p.value)))
+        names.append("%s %s %s" % (p.attr, p.op, _fmt_num(p.value)))
+        ctx.numeric.remove(p)
+        ctx.consumed_numeric.append(p)
+    if not filters:
+        return src
+    joined = filters[0] if len(filters) == 1 else " and ".join(filters)
+    m = _POPULATION_RE.search(src.expr)
+    if not m:
+        return src
+    head = src.expr[:m.start()]
+    population = m.group(0)[1:-1]
+    if head.startswith("sum "):
+        # A phase/state-selected population (sum of value-1 series): the
+        # filtered series must still be counted, and intersected with the
+        # state series on the entity labels.
+        entity = _ENTITY_LABELS.get(etl)
+        head = "count" + head[len("sum"):]
+        if entity:
+            joined = "%s and on (%s) (%s == 1)" % (joined, entity, population)
+        else:
+            ctx.t.note("the status filter was dropped next to the numeric "
+                       "comparison (no entity labels known to intersect on)",
+                       NEEDS_REVIEW)
+    src.expr = head + "(%s)" % joined
+    shown = joined.replace("<SELBARE>", "...").replace("<SEL>", "")
+    ctx.t.note("WHERE %s: the entities are selected by the attribute's own "
+               "series (%s), a PromQL filter instead of a label matcher"
+               % (", ".join(names), shown), APPROXIMATE)
+    return src
+
+
+# Entity identity labels per sample event (for intersecting series).
+_ENTITY_LABELS = {
+    "k8spodsample": "namespace, pod",
+    "k8scontainersample": "namespace, pod, container",
+    "k8snodesample": "node",
+    "k8sdeploymentsample": "namespace, deployment",
+    "k8sdaemonsetsample": "namespace, daemonset",
+    "k8sstatefulsetsample": "namespace, statefulset",
+    "systemsample": "instance",
+}
+
+
 def _infra_source(ctx: _Ctx, item: SelectItem, fn: Optional[Func],
                   agg: str, arg: Any) -> Any:
     """Infra sample events via nrmetrics knowledge."""
@@ -1768,6 +1852,7 @@ def _infra_source(ctx: _Ctx, item: SelectItem, fn: Optional[Func],
                    "%s) rather than New Relic samples" % (
                        ctx.event, ctx.event.replace("Sample", "").
                        replace("K8s", "").lower() or "entity"), APPROXIMATE)
+        src = _numeric_count_filters(ctx, etl, src)
         _drop_implicit(ctx)
         return src
     if is_unique and count_spec is not None:
@@ -1778,6 +1863,7 @@ def _infra_source(ctx: _Ctx, item: SelectItem, fn: Optional[Func],
         if not mapped:
             t.note("uniqueCount attribute %r not in label_map; used %r"
                    % (attr_name, label), NEEDS_REVIEW)
+        src = _numeric_count_filters(ctx, etl, src)
         if isinstance(src, DerivedSource):
             src.expr = src.expr.replace(
                 "count <BY>(", "count <BY>(count by (%s%s)(" % (
@@ -2521,10 +2607,12 @@ def _translate_item(ctx: _Ctx, fn: Func,
             return f.name == "filter" or f.where is not None or bool(
                 f.args and isinstance(f.args[0], Func)
                 and f.args[0].name == "if")
+        # sum() of a counter is a count too; an average/latest of a plain
+        # number (load / cores) is not.
         counts_left = base_name(left) in count_like \
-            or "unit:short" in left_units
+            or (base_name(left) == "sum" and "unit:short" in left_units)
         counts_right = base_name(right) in count_like \
-            or "unit:short" in right_units
+            or (base_name(right) == "sum" and "unit:short" in right_units)
         per_entity = base_name(right) in ("uniquecount", "cardinality")
         if counts_left and counts_right and (filtered(left)
                                              or not per_entity):
@@ -2579,6 +2667,7 @@ def _translate_item(ctx: _Ctx, fn: Func,
             t.note(src.note)
         _unit_note(t, inner.name, src, inner)
         if isinstance(src, DerivedSource):
+            _note_leftover_numeric(ctx, numeric)
             return _derived_expr(ctx, inner, src, extra)
         return _agg_expr(ctx, inner, src, extra=extra, numeric=numeric)
 
@@ -2616,10 +2705,24 @@ def _translate_item(ctx: _Ctx, fn: Func,
         t.note(src.note)
     _unit_note(t, fn.name, src, fn)
     if isinstance(src, DerivedSource):
+        _note_leftover_numeric(ctx, numeric)
         return _derived_expr(ctx, fn, src, extra)
     if src.value_attr == "timestamp":
         return _latest_timestamp(ctx, fn, src, extra)
     return _agg_expr(ctx, fn, src, extra=extra, numeric=numeric)
+
+
+def _note_leftover_numeric(ctx: _Ctx, numeric: List[NumericPred]) -> None:
+    """A derived (template) expression cannot take numeric predicates the
+    count path did not turn into filters: say so instead of dropping them
+    silently."""
+    for p in numeric:
+        if p in ctx.consumed_numeric:
+            continue
+        ctx.t.note("numeric comparison %s %s %s cannot become a label "
+                   "matcher for this derived expression; dropped — apply "
+                   "it manually" % (p.attr, p.op, _fmt_num(p.value)),
+                   NEEDS_REVIEW)
 
 
 def _latest_timestamp(ctx: _Ctx, fn: Func, src: MetricSource,

@@ -745,11 +745,19 @@ class Iteration5KnowledgeTests(unittest.TestCase):
                "WHERE k8s.clusterName = 'c'")
         self.assertEqual(t.expr, 'count(kube_node_info{cluster="c"})')
 
-    def test_metric_valued_attribute_filters_are_dropped(self):
+    def test_metric_valued_attribute_filters_become_series_filters(self):
         t = tr("SELECT uniqueCount(podName) FROM K8sPodSample WHERE isReady = 0 "
                "AND status = 'Running' FACET namespaceName")
         self.assertEqual(
-            t.expr, 'sum by (namespace)(kube_pod_status_phase{phase="Running"})')
+            t.expr,
+            'count by (namespace)((kube_pod_status_ready{condition="true"} '
+            '== 0) and on (namespace, pod) (kube_pod_status_phase{phase='
+            '"Running"} == 1))')
+        self.assertTrue(any("selected by the attribute's own series" in n
+                            for n in t.notes))
+        # a non-numeric comparison on a metric-valued attribute still says so
+        t = tr("SELECT uniqueCount(podName) FROM K8sPodSample WHERE "
+               "isReady = 'no'")
         self.assertTrue(any("metric-valued attribute" in n and
                             "kube_pod_status_ready" in n for n in t.notes))
 
