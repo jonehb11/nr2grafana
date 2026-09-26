@@ -616,3 +616,61 @@ class JoinSafetyTests(unittest.TestCase):
                "FACET nodeName TIMESERIES")
         self.assertIn('/ on (node) max by (node)(kube_node_status_allocatable{'
                       'resource="cpu"}))', t.expr)
+
+
+class MoreKubernetesTests(unittest.TestCase):
+    def test_jobs_and_cronjobs(self):
+        t = tr("SELECT latest(failed) FROM K8sJobSample FACET jobName")
+        self.assertEqual(t.expr, "max by (job_name)(kube_job_status_failed)")
+        t = tr("SELECT latest(isActive) FROM K8sCronjobSample FACET cronjobName")
+        self.assertEqual(t.expr, "max by (cronjob)(kube_cronjob_status_active)")
+
+    def test_namespace_aggregates(self):
+        t = tr("SELECT latest(cpuUsedCores) FROM K8sNamespaceSample "
+               "FACET namespaceName")
+        self.assertEqual(
+            t.expr,
+            'avg by (namespace)(sum by (namespace)(rate('
+            'container_cpu_usage_seconds_total{container!=""}'
+            '[$__rate_interval])))')
+
+    def test_node_running_pods_and_container_memory_limit(self):
+        t = tr("SELECT latest(allocatablePods) - latest(runningPods) "
+               "FROM K8sNodeSample FACET nodeName")
+        self.assertEqual(
+            t.expr,
+            '(max by (node)(kube_node_status_allocatable{resource="pods"})) - '
+            '(max by (node)(kubelet_running_pods))')
+        t = tr("SELECT average(memoryUsageBytes) / average(memoryLimitBytes) "
+               "FROM ContainerSample FACET name TIMESERIES")
+        self.assertIn("container_spec_memory_limit_bytes", t.expr)
+
+
+class OnHostIntegrationTests(unittest.TestCase):
+    def test_redis(self):
+        t = tr("SELECT average(net.commandsProcessedPerSecond) FROM RedisSample "
+               "TIMESERIES")
+        self.assertEqual(
+            t.expr, "avg(rate(redis_commands_processed_total[$__rate_interval]))")
+        self.assertEqual(tr("SELECT count(*) FROM RedisSample").expr,
+                         "count(redis_up)")
+
+    def test_postgres_database_label(self):
+        t = tr("SELECT latest(db.connections) FROM PostgresqlDatabaseSample "
+               "FACET database")
+        self.assertEqual(t.expr, "max by (datname)(pg_stat_database_numbackends)")
+
+    def test_mysql_command_counters(self):
+        t = tr("SELECT average(query.comSelectPerSecond) FROM MysqlSample "
+               "FACET hostname TIMESERIES")
+        self.assertIn('mysql_global_status_commands_total{command="select"}',
+                      t.expr)
+
+    def test_unknown_attribute_names_the_exporter(self):
+        t = tr("SELECT average(memoryUsedBytes) FROM MemcachedSample TIMESERIES")
+        self.assertEqual(t.confidence, UNTRANSLATABLE)
+        self.assertTrue(any("memcached_exporter" in n for n in t.notes))
+        t = tr("SELECT latest(cluster.status) FROM ElasticsearchClusterSample")
+        self.assertEqual(t.confidence, UNTRANSLATABLE)
+        self.assertTrue(any("elasticsearch_cluster_health_status" in n
+                            for n in t.notes))

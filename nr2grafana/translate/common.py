@@ -547,6 +547,15 @@ def _cmp_to_matcher(cmp_: Cmp, cfg: Dict[str, Any], t: Translation,
                    % (label, op, _fmt(num)), NEEDS_REVIEW)
         return []
 
+    if op in ("<", "<=", ">", ">=") and is_nr_variable(val):
+        attr0, _ = unwrap_attr(left)
+        t.note("comparison %s %s {{%s}} takes its threshold from a dashboard "
+               "variable; a metric bucket or threshold cannot be chosen at "
+               "conversion time — hard-code the value (at a histogram bucket "
+               "boundary) or use a Grafana threshold line instead; dropped"
+               % (attr0.name if attr0 is not None else expr_text(left), op,
+                  is_nr_variable(val)), NEEDS_REVIEW)
+        return []
     label, _, ci = _left_label(left, cfg, t)
     if label is None:
         return []

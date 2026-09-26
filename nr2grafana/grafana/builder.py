@@ -228,6 +228,12 @@ def _apply_notes_to_panel(panel: Dict[str, Any], trans: List[Translation],
         for note in t.notes:
             if note.startswith("timefrom:"):
                 rng = note.split(":", 1)[1]
+                if rng.startswith("$"):
+                    # SINCE {{var}}: a per-panel override, never the
+                    # dashboard default.
+                    panel["timeFrom"] = rng
+                    panel["hideTimeOverride"] = False
+                    continue
                 b.timefroms.append(rng)
                 b.panel_ranges.append((panel, rng))
             elif note.startswith("timeshift:"):
@@ -571,6 +577,9 @@ def _convert_widget(widget: NRWidget, b: _Build,
         ptype = "table"
     if "traceql-metrics" in hints and ptype in ("table", "logs"):
         ptype = "timeseries"
+    if "table" in hints and ptype in ("timeseries", "stat", "bargauge",
+                                      "piechart", "gauge"):
+        ptype = "table"  # uniques(): a list of values
 
     # Instant table/pie/bar targets from prometheus should come back as table
     # frames for correct rendering.

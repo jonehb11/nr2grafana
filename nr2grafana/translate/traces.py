@@ -14,8 +14,8 @@ from ..nrql.parser import (
     Attr, BoolOp, Cmp, Cond, Func, InList, Lit, NotOp, NrqlQuery, NullCheck,
 )
 from .common import (
-    APPROXIMATE, NEEDS_REVIEW, Translation, Untranslatable, grafana_var,
-    is_nr_variable, q, regex_escape,
+    APPROXIMATE, NEEDS_REVIEW, Translation, Untranslatable, _VAR_RE,
+    grafana_var, is_nr_variable, q, regex_escape,
 )
 
 # NR span attribute -> TraceQL field.
@@ -33,7 +33,11 @@ _TRACEQL_FIELDS = {
     "http.status_code": "span.http.response.status_code",
     "http.method": "span.http.request.method",
     "db.system": "span.db.system",
+    "root.entity.name": "resource.service.name",
+    "root.entityName": "resource.service.name",
 }
+_ROOT_ATTRS = {"parentid", "parent.id", "parentspanid", "parent.span.id",
+               "nr.entrypoint", "entrypoint"}
 
 _DURATION_ATTRS = {"duration", "duration.ms", "durationms", "duration_ms"}
 _KIND_VALUES = {"server", "client", "producer", "consumer", "internal"}
@@ -86,14 +90,16 @@ def _field_for(attr: str, t: Translation) -> str:
     return "." + attr
 
 
-def _value_text(v: Any) -> str:
+def _value_text(v: Any, cfg: Optional[Dict[str, Any]] = None) -> str:
     if isinstance(v, Lit):
         if isinstance(v.value, bool):
             return "true" if v.value else "false"
         if isinstance(v.value, (int, float)):
             n = v.value
             return str(int(n)) if float(n) == int(n) else str(n)
-        return q(str(v.value))
+        # 'prod-{{svc}}': keep the placeholder as a Grafana variable.
+        return q(_VAR_RE.sub(lambda m: "$" + grafana_var(m.group(1), cfg or {}),
+                             str(v.value)))
     if isinstance(v, Attr):
         return q(v.name)
     return q(str(v))
@@ -135,6 +141,10 @@ def _cond_to_traceql(cond: Optional[Cond], t: Translation,
         return "%s %s %s" % (field, op, q("^(?:%s)$" % alt))
     if isinstance(cond, NullCheck):
         if isinstance(cond.left, Attr):
+            if cond.left.name.lower() in _ROOT_ATTRS:
+                # parentId IS NULL: a root span (Tempo's nested-set model).
+                return "nestedSetParent %s 0" % (">=" if cond.negated
+                                                 else "<")
             field = _field_for(cond.left.name, t)
             return "%s %s nil" % (field, "!=" if cond.negated else "=")
         return ""
@@ -148,6 +158,11 @@ def _cmp_to_traceql(c: Cmp, t: Translation, cfg: Dict[str, Any]) -> str:
         return ""
     attr = c.left.name
     low = attr.lower()
+    if low in _ROOT_ATTRS and c.op in ("=", "!="):
+        # nr.entryPoint IS TRUE: the trace's root span.
+        text = str(getattr(c.right, "value", c.right)).strip().lower()
+        wants_root = (text in ("true", "1")) == (c.op == "=")
+        return "nestedSetParent %s 0" % ("<" if wants_root else ">=")
     field = _field_for(attr, t)
 
     # error IS TRUE handled by parser as Cmp(error, '=', Lit(True));
@@ -182,7 +197,7 @@ def _cmp_to_traceql(c: Cmp, t: Translation, cfg: Dict[str, Any]) -> str:
     if var:
         rhs = q("$%s" % grafana_var(var, cfg))
     else:
-        rhs = _value_text(c.right)
+        rhs = _value_text(c.right, cfg)
 
     if not var and _is_int_field(field, attr):
         it = _int_text(c.right)
@@ -217,9 +232,19 @@ def _cmp_to_traceql(c: Cmp, t: Translation, cfg: Dict[str, Any]) -> str:
     # explicitly to preserve whole-value matching semantics.
     if c.op in ("LIKE", "NOT LIKE"):
         pattern = str(getattr(c.right, "value", ""))
-        body = "".join(
-            ".*" if ch == "%" else ("." if ch == "_" else regex_escape(ch))
-            for ch in pattern)
+
+        def like_body(seg: str) -> str:
+            return "".join(".*" if ch == "%" else
+                           ("." if ch == "_" else regex_escape(ch))
+                           for ch in seg)
+        parts: List[str] = []
+        pos = 0
+        for m in _VAR_RE.finditer(pattern):
+            parts.append(like_body(pattern[pos:m.start()]))
+            parts.append("${%s:regex}" % grafana_var(m.group(1), cfg))
+            pos = m.end()
+        parts.append(like_body(pattern[pos:]))
+        body = "".join(parts)
         rx = "(?i)^%s$" % body
         return "%s %s %s" % (field, "=~" if c.op == "LIKE" else "!~", q(rx))
     if c.op in ("RLIKE", "NOT RLIKE"):
@@ -249,8 +274,8 @@ _TRACEQL_BY_FIELDS = {
 }
 
 
-def translate_span_metrics_traceql(nq: NrqlQuery,
-                                   cfg: Dict[str, Any]) -> Translation:
+def translate_span_metrics_traceql(nq: NrqlQuery, cfg: Dict[str, Any],
+                                   root_only: bool = False) -> Translation:
     """Aggregation-shaped FROM Span queries as TraceQL metrics (Tempo
     2.4+): ``{ filters } | rate() by (field)``. Used when the config sets
     ``span_aggregations: "traceql"`` and always for uniqueCount(trace.id),
@@ -269,6 +294,12 @@ def translate_span_metrics_traceql(nq: NrqlQuery,
     attr = arg.name.lower() if isinstance(arg, Attr) else ""
     is_trace_count = fn.name in ("uniquecount", "cardinality") and attr in (
         "trace.id", "traceid", "trace_id")
+    if root_only and not is_trace_count:
+        # FROM DistributedTraceSummary: one row per trace = its root span.
+        body = ("nestedSetParent < 0" + (" && " + body if body else ""))
+        t.note("FROM DistributedTraceSummary aggregates one row per trace; "
+               "translated over root spans (nestedSetParent < 0) with "
+               "TraceQL metrics", NEEDS_REVIEW)
     if is_trace_count:
         body = ("nestedSetParent < 0" + (" && " + body if body else ""))
         agg = "count_over_time()"
@@ -297,12 +328,16 @@ def translate_span_metrics_traceql(nq: NrqlQuery,
                 "equivalent" % (fn.name, attr or "?"))
         if fn.name in ("average", "avg"):
             agg = "avg_over_time(duration)"
+            t.note("avg_over_time() needs Tempo 2.6+", APPROXIMATE)
         elif fn.name == "max":
             agg = "max_over_time(duration)"
+            t.note("max_over_time() needs Tempo 2.6+", APPROXIMATE)
         elif fn.name == "min":
             agg = "min_over_time(duration)"
+            t.note("min_over_time() needs Tempo 2.6+", APPROXIMATE)
         elif fn.name == "sum":
             agg = "sum_over_time(duration)"
+            t.note("sum_over_time() needs Tempo 2.7+", APPROXIMATE)
         elif fn.name == "histogram":
             agg = "histogram_over_time(duration)"
             t.notes.append("panel-hint:heatmap")

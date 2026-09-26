@@ -771,6 +771,107 @@ _add("k8svolumesample", {
                       note=KSM_NOTE),
 })
 
+_NS_CONTAINERS = "container!=\"\""
+
+_add("k8snamespacesample", {
+    "cpuUsedCores": _e(
+        "<AGG> <BY>(sum by (namespace)(rate(container_cpu_usage_seconds_total"
+        "{%s<SEL>}[<W>])))" % _NS_CONTAINERS, "short",
+        "sum of the namespace's container CPU usage (cAdvisor)", APPROXIMATE),
+    "cpuRequestedCores": _e(
+        "<AGG> <BY>(sum by (namespace)(kube_pod_container_resource_requests"
+        "{resource=\"cpu\"<SEL>}))", "short", KSM_NOTE, EXACT),
+    "cpuLimitCores": _e(
+        "<AGG> <BY>(sum by (namespace)(kube_pod_container_resource_limits"
+        "{resource=\"cpu\"<SEL>}))", "short", KSM_NOTE, EXACT),
+    "memoryUsedBytes": _e(
+        "<AGG> <BY>(sum by (namespace)(container_memory_usage_bytes"
+        "{%s<SEL>}))" % _NS_CONTAINERS, "bytes",
+        "sum of the namespace's container memory usage (cAdvisor)",
+        APPROXIMATE),
+    "memoryWorkingSetBytes": _e(
+        "<AGG> <BY>(sum by (namespace)(container_memory_working_set_bytes"
+        "{%s<SEL>}))" % _NS_CONTAINERS, "bytes",
+        "sum of the namespace's container working set (cAdvisor)",
+        APPROXIMATE),
+    "memoryRequestedBytes": _e(
+        "<AGG> <BY>(sum by (namespace)(kube_pod_container_resource_requests"
+        "{resource=\"memory\"<SEL>}))", "bytes", KSM_NOTE, EXACT),
+    "memoryLimitBytes": _e(
+        "<AGG> <BY>(sum by (namespace)(kube_pod_container_resource_limits"
+        "{resource=\"memory\"<SEL>}))", "bytes", KSM_NOTE, EXACT),
+    "podsRunning": _e(
+        "<AGG> <BY>(sum by (namespace)(kube_pod_status_phase{phase=\"Running\""
+        "<SEL>}))", "short", KSM_NOTE, EXACT),
+    "podsPending": _e(
+        "<AGG> <BY>(sum by (namespace)(kube_pod_status_phase{phase=\"Pending\""
+        "<SEL>}))", "short", KSM_NOTE, EXACT),
+    "podsFailed": _e(
+        "<AGG> <BY>(sum by (namespace)(kube_pod_status_phase{phase=\"Failed\""
+        "<SEL>}))", "short", KSM_NOTE, EXACT),
+})
+
+_add("k8scronjobsample", {
+    "isActive": _g("kube_cronjob_status_active", "short", note=KSM_NOTE,
+                   conf=EXACT),
+    "activeJobs": _g("kube_cronjob_status_active", "short", note=KSM_NOTE,
+                     conf=EXACT),
+    "isSuspended": _g("kube_cronjob_spec_suspend", "short", note=KSM_NOTE,
+                      conf=EXACT),
+    "suspend": _g("kube_cronjob_spec_suspend", "short", note=KSM_NOTE,
+                  conf=EXACT),
+    "lastScheduleTime": _e("<AGG> <BY>(kube_cronjob_status_last_schedule_time"
+                           "{<SELBARE>}) * 1000", "dateTimeAsIso", KSM_NOTE,
+                           EXACT),
+    "nextScheduleTime": _e("<AGG> <BY>(kube_cronjob_next_schedule_time"
+                           "{<SELBARE>}) * 1000", "dateTimeAsIso", KSM_NOTE,
+                           EXACT),
+    "schedule": _no("the cron schedule is the `schedule` label of "
+                    "kube_cronjob_info, not a value; show it in a table "
+                    "panel with `kube_cronjob_info`"),
+    "__count__": Spec("count", name="kube_cronjob_info",
+                      entity_attrs=["cronjobName", "entityGuid", "entityName",
+                                    "displayName"],
+                      note=KSM_NOTE),
+})
+
+_add("k8sjobsample", {
+    "active": _g("kube_job_status_active", "short", note=KSM_NOTE, conf=EXACT),
+    "activePods": _g("kube_job_status_active", "short", note=KSM_NOTE,
+                     conf=EXACT),
+    "succeeded": _g("kube_job_status_succeeded", "short", note=KSM_NOTE,
+                    conf=EXACT),
+    "succeededPods": _g("kube_job_status_succeeded", "short", note=KSM_NOTE,
+                        conf=EXACT),
+    "failed": _g("kube_job_status_failed", "short", note=KSM_NOTE, conf=EXACT),
+    "failedPods": _g("kube_job_status_failed", "short", note=KSM_NOTE,
+                     conf=EXACT),
+    "isComplete": _g("kube_job_complete", "short",
+                     [("condition", "=", "true")], KSM_NOTE, EXACT),
+    "isFailed": _g("kube_job_failed", "short", [("condition", "=", "true")],
+                   KSM_NOTE, EXACT),
+    "startedAt": _e("<AGG> <BY>(kube_job_status_start_time{<SELBARE>}) * "
+                    "1000", "dateTimeAsIso", KSM_NOTE, EXACT),
+    "completedAt": _e("<AGG> <BY>(kube_job_status_completion_time{<SELBARE>})"
+                      " * 1000", "dateTimeAsIso", KSM_NOTE, EXACT),
+    "specParallelism": _g("kube_job_spec_parallelism", "short", note=KSM_NOTE,
+                          conf=EXACT),
+    "specCompletions": _g("kube_job_spec_completions", "short", note=KSM_NOTE,
+                          conf=EXACT),
+    "__count__": Spec("count", name="kube_job_info",
+                      entity_attrs=["jobName", "entityGuid", "entityName",
+                                    "displayName"],
+                      note=KSM_NOTE),
+})
+
+INFRA[("k8snodesample", _norm_attr("runningPods"))] = _g(
+    "kubelet_running_pods", "short", note="kubelet metric", conf=EXACT)
+INFRA[("k8snodesample", _norm_attr("runningContainers"))] = _g(
+    "kubelet_running_containers", "short",
+    [("container_state", "=", "running")], "kubelet metric", EXACT)
+INFRA[("containersample", _norm_attr("memoryLimitBytes"))] = INFRA[
+    ("containersample", _norm_attr("memorySizeLimitBytes"))]
+
 for _et in ("k8sapiserversample", "k8sschedulersample",
             "k8scontrollermanagersample", "k8setcdsample"):
     INFRA[(_et, "*")] = _no(
@@ -834,6 +935,15 @@ EVENT_LABELS: Dict[str, Dict[str, str]] = {
                      "label.app": "label_app"},
     "k8snodesample": {"nodeName": "node", "clusterName": "cluster",
                       "displayName": "node", "entityName": "node"},
+    "k8snamespacesample": {"namespaceName": "namespace",
+                           "clusterName": "cluster", "displayName":
+                           "namespace", "entityName": "namespace"},
+    "k8scronjobsample": {"cronjobName": "cronjob", "namespaceName":
+                         "namespace", "clusterName": "cluster",
+                         "displayName": "cronjob", "entityName": "cronjob"},
+    "k8sjobsample": {"jobName": "job_name", "namespaceName": "namespace",
+                     "clusterName": "cluster", "displayName": "job_name",
+                     "entityName": "job_name", "ownerName": "owner_name"},
     "k8sdeploymentsample": {"deploymentName": "deployment",
                             "namespaceName": "namespace",
                             "clusterName": "cluster",
@@ -911,6 +1021,13 @@ def infra_count_spec(event: str) -> Optional[Spec]:
 def is_infra_event(event: str) -> bool:
     e = event.lower()
     return any(k[0] == e for k in INFRA)
+
+
+def has_attr_specs(event: str) -> bool:
+    """True when the event has attribute-level specs (not only a '*'
+    fallback naming the exporter)."""
+    e = event.lower()
+    return any(k[0] == e and k[1] != "*" for k in INFRA)
 
 
 # ---------------------------------------------------------------------------
@@ -994,6 +1111,32 @@ METRICS: Dict[str, Spec] = {
                                            "bytes", note=_OTEL_NOTE),
     "process.runtime.jvm.gc.duration": _h("process_runtime_jvm_gc_duration_seconds",
                                           "s", _OTEL_NOTE),
+    "process.runtime.jvm.memory.usage": _g(
+        "process_runtime_jvm_memory_usage_bytes", "bytes", note=_OTEL_NOTE),
+    "process.runtime.jvm.memory.committed": _g(
+        "process_runtime_jvm_memory_committed_bytes", "bytes",
+        note=_OTEL_NOTE),
+    "process.runtime.jvm.memory.limit": _g(
+        "process_runtime_jvm_memory_limit_bytes", "bytes", note=_OTEL_NOTE),
+    "process.runtime.jvm.memory.init": _g(
+        "process_runtime_jvm_memory_init_bytes", "bytes", note=_OTEL_NOTE),
+    "process.runtime.jvm.threads.count": _g(
+        "process_runtime_jvm_threads_count", "short", note=_OTEL_NOTE),
+    "process.runtime.jvm.classes.loaded": _c(
+        "process_runtime_jvm_classes_loaded_total", "short", note=_OTEL_NOTE),
+    "process.runtime.jvm.classes.current_loaded": _g(
+        "process_runtime_jvm_classes_current_loaded", "short",
+        note=_OTEL_NOTE),
+    "process.runtime.jvm.gc.duration": _h(
+        "process_runtime_jvm_gc_duration_seconds", "s", _OTEL_NOTE),
+    "process.runtime.jvm.cpu.utilization": _g(
+        "process_runtime_jvm_cpu_utilization_ratio", "percentunit",
+        note=_OTEL_NOTE),
+    "process.runtime.jvm.system.cpu.utilization": _g(
+        "process_runtime_jvm_system_cpu_utilization_ratio", "percentunit",
+        note=_OTEL_NOTE),
+    "process.runtime.jvm.buffer.usage": _g(
+        "process_runtime_jvm_buffer_usage_bytes", "bytes", note=_OTEL_NOTE),
     "jvm.memory.used": _g("jvm_memory_used_bytes", "bytes", note=_OTEL_NOTE),
     "jvm.memory.committed": _g("jvm_memory_committed_bytes", "bytes",
                                note=_OTEL_NOTE),
@@ -1371,3 +1514,458 @@ def legacy_aws_spec(event: str, provider: str, attr: str,
              "aws_%s_cpuutilization_average) and pin it with metric_map "
              "(key \"%s.%s\") if it differs"
              % (event, provider, name, ns, event, attr))
+
+
+# ---------------------------------------------------------------------------
+# On-host integration sample events (nri-nginx, nri-mysql, ...)
+# ---------------------------------------------------------------------------
+#
+# New Relic's on-host integrations each have a Prometheus exporter
+# counterpart. The most common attributes are mapped; everything else
+# names the exporter so the panel can be rebuilt on its metrics.
+
+_ONHOST_EXPORTERS = {
+    "nginxsample": "nginx-prometheus-exporter (nginx_connections_*, "
+                   "nginx_http_requests_total)",
+    "apachesample": "apache_exporter (apache_accesses_total, apache_workers)",
+    "mysqlsample": "mysqld_exporter (mysql_global_status_*)",
+    "postgresqldatabasesample": "postgres_exporter (pg_stat_database_*)",
+    "postgresqlinstancesample": "postgres_exporter (pg_stat_bgwriter_*, "
+                                "pg_up)",
+    "postgresqltablesample": "postgres_exporter (pg_stat_user_tables_*)",
+    "postgresqlindexsample": "postgres_exporter (pg_stat_user_indexes_*)",
+    "redissample": "redis_exporter (redis_*)",
+    "rediskeyspacesample": "redis_exporter (redis_db_keys, "
+                           "redis_db_keys_expiring)",
+    "kafkabrokersample": "jmx_exporter or kafka_exporter "
+                         "(kafka_server_brokertopicmetrics_*)",
+    "kafkatopicsample": "kafka_exporter (kafka_topic_partitions, "
+                        "kafka_topic_partition_*)",
+    "kafkaoffsetsample": "kafka_exporter (kafka_consumergroup_lag, "
+                         "kafka_consumergroup_current_offset)",
+    "kafkaconsumersample": "jmx_exporter on the consumer "
+                           "(kafka_consumer_fetch_manager_*)",
+    "kafkaproducersample": "jmx_exporter on the producer "
+                           "(kafka_producer_*)",
+    "elasticsearchclustersample": "elasticsearch_exporter "
+                                  "(elasticsearch_cluster_health_*)",
+    "elasticsearchnodesample": "elasticsearch_exporter (elasticsearch_jvm_*, "
+                               "elasticsearch_indices_*, "
+                               "elasticsearch_os_*)",
+    "elasticsearchindexsample": "elasticsearch_exporter "
+                                "(elasticsearch_indices_* per index)",
+    "rabbitmqqueuesample": "the RabbitMQ prometheus plugin "
+                           "(rabbitmq_queue_messages*)",
+    "rabbitmqnodesample": "the RabbitMQ prometheus plugin "
+                          "(rabbitmq_process_*, rabbitmq_disk_*)",
+    "rabbitmqvhostsample": "the RabbitMQ prometheus plugin",
+    "rabbitmqexchangesample": "the RabbitMQ prometheus plugin",
+    "mongodbdatabasesample": "mongodb_exporter (mongodb_*)",
+    "mongodbserversample": "mongodb_exporter (mongodb_ss_*)",
+    "mongodbcollectionsample": "mongodb_exporter",
+    "memcachedsample": "memcached_exporter (memcached_*)",
+    "haproxysample": "haproxy_exporter or HAProxy's built-in prometheus "
+                     "endpoint (haproxy_*)",
+    "cassandrasample": "jmx_exporter (cassandra_*)",
+    "consulagentsample": "Consul's own prometheus telemetry (consul_*)",
+    "consuldatacentersample": "Consul's own prometheus telemetry (consul_*)",
+    "couchbasesample": "couchbase_exporter",
+    "vsphere": "vmware_exporter",
+    "f5sample": "the F5 BIG-IP exporter",
+    "oraclesample": "oracledb_exporter",
+    "mssqlinstancesample": "sql_exporter / mssql_exporter (mssql_*)",
+    "mssqldatabasesample": "sql_exporter / mssql_exporter (mssql_*)",
+    "jmxsample": "jmx_exporter (the same MBeans as the JMX integration)",
+    "flexsample": "a custom exporter (nri-flex has no generic equivalent)",
+}
+
+for _et, _hint in _ONHOST_EXPORTERS.items():
+    INFRA.setdefault((_et, "*"), _no(
+        "%s is a New Relic on-host integration event; the LGTM equivalent "
+        "is %s — rebuild this panel on those metrics, or add a metric_map "
+        "entry keyed \"%s.<attribute>\"" % (_et, _hint, _et)))
+
+_NGINX = "nginx-prometheus-exporter metric"
+_add("nginxsample", {
+    "net.connectionsActive": _g("nginx_connections_active", "short",
+                                note=_NGINX, conf=EXACT),
+    "net.connectionsReading": _g("nginx_connections_reading", "short",
+                                 note=_NGINX, conf=EXACT),
+    "net.connectionsWriting": _g("nginx_connections_writing", "short",
+                                 note=_NGINX, conf=EXACT),
+    "net.connectionsWaiting": _g("nginx_connections_waiting", "short",
+                                 note=_NGINX, conf=EXACT),
+    "net.connectionsAcceptedPerSecond": _r("nginx_connections_accepted",
+                                           "short", note=_NGINX, conf=EXACT),
+    "net.connectionsDroppedPerSecond": _e(
+        "<AGG> <BY>(rate(nginx_connections_accepted{<SELBARE>}[<W>]) - "
+        "rate(nginx_connections_handled{<SELBARE>}[<W>]))", "short",
+        "accepted minus handled connections", EXACT),
+    "net.requestsPerSecond": _r("nginx_http_requests_total", "reqps",
+                                note=_NGINX, conf=EXACT),
+})
+
+_APACHE = "apache_exporter metric"
+_add("apachesample", {
+    "net.requestsPerSecond": _r("apache_accesses_total", "reqps",
+                                note=_APACHE, conf=EXACT),
+    "net.bytesPerSecond": _e("<AGG> <BY>(rate(apache_sent_kilobytes_total"
+                             "{<SELBARE>}[<W>]) * 1024)", "Bps", _APACHE,
+                             EXACT),
+    "server.busyWorkers": _g("apache_workers", "short",
+                             [("state", "=", "busy")], _APACHE, EXACT),
+    "server.idleWorkers": _g("apache_workers", "short",
+                             [("state", "=", "idle")], _APACHE, EXACT),
+    "server.uptime": _g("apache_uptime_seconds_total", "s", note=_APACHE,
+                        conf=EXACT),
+})
+
+_MYSQL = "mysqld_exporter metric"
+_add("mysqlsample", {
+    "net.bytesReceivedPerSecond": _r("mysql_global_status_bytes_received",
+                                     "Bps", note=_MYSQL, conf=EXACT),
+    "net.bytesSentPerSecond": _r("mysql_global_status_bytes_sent", "Bps",
+                                 note=_MYSQL, conf=EXACT),
+    "net.connectionsPerSecond": _r("mysql_global_status_connections", "short",
+                                   note=_MYSQL, conf=EXACT),
+    "net.abortedConnectsPerSecond": _r("mysql_global_status_aborted_connects",
+                                       "short", note=_MYSQL, conf=EXACT),
+    "net.abortedClientsPerSecond": _r("mysql_global_status_aborted_clients",
+                                      "short", note=_MYSQL, conf=EXACT),
+    "net.threadsConnected": _g("mysql_global_status_threads_connected",
+                               "short", note=_MYSQL, conf=EXACT),
+    "net.threadsRunning": _g("mysql_global_status_threads_running", "short",
+                             note=_MYSQL, conf=EXACT),
+    "net.maxUsedConnections": _g("mysql_global_status_max_used_connections",
+                                 "short", note=_MYSQL, conf=EXACT),
+    "net.maxConnections": _g("mysql_global_variables_max_connections",
+                             "short", note=_MYSQL, conf=EXACT),
+    "query.questionsPerSecond": _r("mysql_global_status_questions", "short",
+                                   note=_MYSQL, conf=EXACT),
+    "query.queriesPerSecond": _r("mysql_global_status_queries", "short",
+                                 note=_MYSQL, conf=EXACT),
+    "query.slowQueriesPerSecond": _r("mysql_global_status_slow_queries",
+                                     "short", note=_MYSQL, conf=EXACT),
+    "query.comSelectPerSecond": _r("mysql_global_status_commands_total",
+                                   "short", [("command", "=", "select")],
+                                   _MYSQL, EXACT),
+    "query.comInsertPerSecond": _r("mysql_global_status_commands_total",
+                                   "short", [("command", "=", "insert")],
+                                   _MYSQL, EXACT),
+    "query.comUpdatePerSecond": _r("mysql_global_status_commands_total",
+                                   "short", [("command", "=", "update")],
+                                   _MYSQL, EXACT),
+    "query.comDeletePerSecond": _r("mysql_global_status_commands_total",
+                                   "short", [("command", "=", "delete")],
+                                   _MYSQL, EXACT),
+    "query.comCommitPerSecond": _r("mysql_global_status_commands_total",
+                                   "short", [("command", "=", "commit")],
+                                   _MYSQL, EXACT),
+    "query.comRollbackPerSecond": _r("mysql_global_status_commands_total",
+                                     "short", [("command", "=", "rollback")],
+                                     _MYSQL, EXACT),
+    "db.innodb.bufferPoolPagesData": _g(
+        "mysql_global_status_buffer_pool_pages", "short",
+        [("state", "=", "data")], _MYSQL, EXACT),
+    "db.innodb.bufferPoolPagesFree": _g(
+        "mysql_global_status_buffer_pool_pages", "short",
+        [("state", "=", "free")], _MYSQL, EXACT),
+    "db.innodb.bufferPoolPagesDirty": _g(
+        "mysql_global_status_buffer_pool_dirty_pages", "short", note=_MYSQL,
+        conf=EXACT),
+    "db.innodb.rowLockWaitsPerSecond": _r(
+        "mysql_global_status_innodb_row_lock_waits", "short", note=_MYSQL,
+        conf=EXACT),
+    "db.innodb.rowLockCurrentWaits": _g(
+        "mysql_global_status_innodb_row_lock_current_waits", "short",
+        note=_MYSQL, conf=EXACT),
+    "db.openedTablesPerSecond": _r("mysql_global_status_opened_tables",
+                                   "short", note=_MYSQL, conf=EXACT),
+    "db.openTables": _g("mysql_global_status_open_tables", "short",
+                        note=_MYSQL, conf=EXACT),
+    "db.openFiles": _g("mysql_global_status_open_files", "short",
+                       note=_MYSQL, conf=EXACT),
+    "db.tablesLocksWaitedPerSecond": _r(
+        "mysql_global_status_table_locks_waited", "short", note=_MYSQL,
+        conf=EXACT),
+    "db.handlerRollbackPerSecond": _r("mysql_global_status_handlers_total",
+                                      "short", [("handler", "=", "rollback")],
+                                      _MYSQL, EXACT),
+    "db.tmpTablesCreatedPerSecond": _r("mysql_global_status_created_tmp_tables",
+                                       "short", note=_MYSQL, conf=EXACT),
+    "db.tmpDiskTablesCreatedPerSecond": _r(
+        "mysql_global_status_created_tmp_disk_tables", "short", note=_MYSQL,
+        conf=EXACT),
+    "software.uptime": _g("mysql_global_status_uptime", "s", note=_MYSQL,
+                          conf=EXACT),
+    "__count__": Spec("count", name="mysql_up",
+                      entity_attrs=["hostname", "entityGuid", "entityName",
+                                    "displayName"], note=_MYSQL),
+})
+
+_PG = "postgres_exporter metric (per database: the `datname` label)"
+_add("postgresqldatabasesample", {
+    "db.connections": _g("pg_stat_database_numbackends", "short", note=_PG,
+                         conf=EXACT),
+    "db.commitsPerSecond": _r("pg_stat_database_xact_commit", "short",
+                              note=_PG, conf=EXACT),
+    "db.rollbacksPerSecond": _r("pg_stat_database_xact_rollback", "short",
+                                note=_PG, conf=EXACT),
+    "db.readsPerSecond": _r("pg_stat_database_blks_read", "short", note=_PG,
+                            conf=EXACT),
+    "db.bufferHitsPerSecond": _r("pg_stat_database_blks_hit", "short",
+                                 note=_PG, conf=EXACT),
+    "db.rowsReturnedPerSecond": _r("pg_stat_database_tup_returned", "short",
+                                   note=_PG, conf=EXACT),
+    "db.rowsFetchedPerSecond": _r("pg_stat_database_tup_fetched", "short",
+                                  note=_PG, conf=EXACT),
+    "db.rowsInsertedPerSecond": _r("pg_stat_database_tup_inserted", "short",
+                                   note=_PG, conf=EXACT),
+    "db.rowsUpdatedPerSecond": _r("pg_stat_database_tup_updated", "short",
+                                  note=_PG, conf=EXACT),
+    "db.rowsDeletedPerSecond": _r("pg_stat_database_tup_deleted", "short",
+                                  note=_PG, conf=EXACT),
+    "db.conflictsPerSecond": _r("pg_stat_database_conflicts", "short",
+                                note=_PG, conf=EXACT),
+    "db.deadlocksPerSecond": _r("pg_stat_database_deadlocks", "short",
+                                note=_PG, conf=EXACT),
+    "db.tempFilesCreatedPerSecond": _r("pg_stat_database_temp_files", "short",
+                                       note=_PG, conf=EXACT),
+    "db.tempWrittenBytesPerSecond": _r("pg_stat_database_temp_bytes", "Bps",
+                                       note=_PG, conf=EXACT),
+    "db.sizeInBytes": _g("pg_database_size_bytes", "bytes", note=_PG,
+                         conf=EXACT),
+    "__count__": Spec("count", name="pg_stat_database_numbackends",
+                      entity_attrs=["database", "entityGuid", "entityName",
+                                    "displayName"], note=_PG),
+})
+_add("postgresqlinstancesample", {
+    "db.bgwriter.checkpointsScheduledPerSecond": _r(
+        "pg_stat_bgwriter_checkpoints_timed_total", "short", note=_PG,
+        conf=EXACT),
+    "db.bgwriter.checkpointsRequestedPerSecond": _r(
+        "pg_stat_bgwriter_checkpoints_req_total", "short", note=_PG,
+        conf=EXACT),
+    "db.bgwriter.buffersWrittenByBackgroundWriterPerSecond": _r(
+        "pg_stat_bgwriter_buffers_clean_total", "short", note=_PG, conf=EXACT),
+    "db.bgwriter.buffersWrittenForCheckpointsPerSecond": _r(
+        "pg_stat_bgwriter_buffers_checkpoint_total", "short", note=_PG,
+        conf=EXACT),
+    "db.bgwriter.buffersWrittenByBackendPerSecond": _r(
+        "pg_stat_bgwriter_buffers_backend_total", "short", note=_PG,
+        conf=EXACT),
+    "__count__": Spec("count", name="pg_up",
+                      entity_attrs=["hostname", "entityGuid", "entityName",
+                                    "displayName"], note=_PG),
+})
+
+_REDIS = "redis_exporter metric"
+_add("redissample", {
+    "net.connectedClients": _g("redis_connected_clients", "short",
+                               note=_REDIS, conf=EXACT),
+    "net.blockedClients": _g("redis_blocked_clients", "short", note=_REDIS,
+                             conf=EXACT),
+    "net.commandsProcessedPerSecond": _r("redis_commands_processed_total",
+                                         "short", note=_REDIS, conf=EXACT),
+    "net.connectionsReceivedPerSecond": _r("redis_connections_received_total",
+                                           "short", note=_REDIS, conf=EXACT),
+    "net.rejectedConnectionsPerSecond": _r("redis_rejected_connections_total",
+                                           "short", note=_REDIS, conf=EXACT),
+    "net.inputBytesPerSecond": _r("redis_net_input_bytes_total", "Bps",
+                                  note=_REDIS, conf=EXACT),
+    "net.outputBytesPerSecond": _r("redis_net_output_bytes_total", "Bps",
+                                   note=_REDIS, conf=EXACT),
+    "system.usedMemoryBytes": _g("redis_memory_used_bytes", "bytes",
+                                 note=_REDIS, conf=EXACT),
+    "system.usedMemoryRssBytes": _g("redis_memory_used_rss_bytes", "bytes",
+                                    note=_REDIS, conf=EXACT),
+    "system.usedMemoryPeakBytes": _g("redis_memory_used_peak_bytes", "bytes",
+                                     note=_REDIS, conf=EXACT),
+    "system.usedMemoryLuaBytes": _g("redis_memory_used_lua_bytes", "bytes",
+                                    note=_REDIS, conf=EXACT),
+    "system.totalSystemMemoryBytes": _g("redis_total_system_memory_bytes",
+                                        "bytes", note=_REDIS, conf=EXACT),
+    "system.maxmemoryBytes": _g("redis_memory_max_bytes", "bytes",
+                                note=_REDIS, conf=EXACT),
+    "system.memFragmentationRatio": _g("redis_mem_fragmentation_ratio",
+                                       "short", note=_REDIS, conf=EXACT),
+    "db.keyspaceHitsPerSecond": _r("redis_keyspace_hits_total", "short",
+                                   note=_REDIS, conf=EXACT),
+    "db.keyspaceMissesPerSecond": _r("redis_keyspace_misses_total", "short",
+                                     note=_REDIS, conf=EXACT),
+    "db.evictedKeysPerSecond": _r("redis_evicted_keys_total", "short",
+                                  note=_REDIS, conf=EXACT),
+    "db.expiredKeysPerSecond": _r("redis_expired_keys_total", "short",
+                                  note=_REDIS, conf=EXACT),
+    "db.rdbChangesSinceLastSave": _g("redis_rdb_changes_since_last_save",
+                                     "short", note=_REDIS, conf=EXACT),
+    "db.rdbLastBgsaveStatus": _g("redis_rdb_last_bgsave_status", "short",
+                                 note=_REDIS, conf=EXACT),
+    "cluster.connectedSlaves": _g("redis_connected_slaves", "short",
+                                  note=_REDIS, conf=EXACT),
+    "software.uptimeMilliseconds": _e("<AGG> <BY>(redis_uptime_in_seconds"
+                                      "{<SELBARE>}) * 1000", "ms", _REDIS,
+                                      EXACT),
+    "__count__": Spec("count", name="redis_up",
+                      entity_attrs=["hostname", "entityGuid", "entityName",
+                                    "displayName"], note=_REDIS),
+})
+_add("rediskeyspacesample", {
+    "db.keys": _g("redis_db_keys", "short", note=_REDIS, conf=EXACT),
+    "db.expires": _g("redis_db_keys_expiring", "short", note=_REDIS,
+                     conf=EXACT),
+    "db.avgTtl": _e("<AGG> <BY>(redis_db_avg_ttl_seconds{<SELBARE>}) * 1000",
+                    "ms", _REDIS, EXACT),
+})
+
+_KAFKA = "kafka_exporter metric"
+_add("kafkaoffsetsample", {
+    "consumer.lag": _g("kafka_consumergroup_lag", "short", note=_KAFKA,
+                       conf=EXACT),
+    "consumer.totalLag": _e("<AGG> <BY>(sum by (consumergroup, topic)("
+                            "kafka_consumergroup_lag{<SELBARE>}))", "short",
+                            _KAFKA, EXACT),
+    "consumer.offset": _g("kafka_consumergroup_current_offset", "short",
+                          note=_KAFKA, conf=EXACT),
+    "consumer.hwm": _g("kafka_topic_partition_current_offset", "short",
+                       note=_KAFKA, conf=EXACT),
+})
+_add("kafkatopicsample", {
+    "topic.partitionsWithNonPreferredLeader": _e(
+        "<AGG> <BY>(sum by (topic)(1 - kafka_topic_partition_leader_is_preferred"
+        "{<SELBARE>}))", "short", _KAFKA, EXACT),
+    "topic.underReplicatedPartitions": _e(
+        "<AGG> <BY>(sum by (topic)(kafka_topic_partition_under_replicated_partition"
+        "{<SELBARE>}))", "short", _KAFKA, EXACT),
+    "topic.partitions": _g("kafka_topic_partitions", "short", note=_KAFKA,
+                           conf=EXACT),
+})
+
+_ES = "elasticsearch_exporter metric"
+_add("elasticsearchclustersample", {
+    "cluster.nodes": _g("elasticsearch_cluster_health_number_of_nodes",
+                        "short", note=_ES, conf=EXACT),
+    "cluster.dataNodes": _g("elasticsearch_cluster_health_number_of_data_nodes",
+                            "short", note=_ES, conf=EXACT),
+    "cluster.activeShardsPrimaries": _g(
+        "elasticsearch_cluster_health_active_primary_shards", "short",
+        note=_ES, conf=EXACT),
+    "cluster.activeShards": _g("elasticsearch_cluster_health_active_shards",
+                               "short", note=_ES, conf=EXACT),
+    "cluster.relocatingShards": _g(
+        "elasticsearch_cluster_health_relocating_shards", "short", note=_ES,
+        conf=EXACT),
+    "cluster.initializingShards": _g(
+        "elasticsearch_cluster_health_initializing_shards", "short", note=_ES,
+        conf=EXACT),
+    "cluster.unassignedShards": _g(
+        "elasticsearch_cluster_health_unassigned_shards", "short", note=_ES,
+        conf=EXACT),
+    "cluster.pendingTasks": _g(
+        "elasticsearch_cluster_health_number_of_pending_tasks", "short",
+        note=_ES, conf=EXACT),
+    "cluster.status": _no("the cluster colour is elasticsearch_cluster_health"
+                          "_status{color=\"green|yellow|red\"} (one series per "
+                          "colour, value 1 for the current one)"),
+})
+_add("elasticsearchnodesample", {
+    "jvm.mem.heapUsedInBytes": _g("elasticsearch_jvm_memory_used_bytes",
+                                  "bytes", [("area", "=", "heap")], _ES, EXACT),
+    "jvm.mem.heapMaxInBytes": _g("elasticsearch_jvm_memory_max_bytes", "bytes",
+                                 [("area", "=", "heap")], _ES, EXACT),
+    "jvm.mem.heapUsed": _e(
+        "100 * <AGG> <BY>(elasticsearch_jvm_memory_used_bytes{area=\"heap\""
+        "<SEL>} / elasticsearch_jvm_memory_max_bytes{area=\"heap\"<SEL>})",
+        "percent", _ES, EXACT),
+    "indices.docs.count": _g("elasticsearch_indices_docs", "short", note=_ES,
+                             conf=EXACT),
+    "indices.store.sizeInBytes": _g("elasticsearch_indices_store_size_bytes",
+                                    "bytes", note=_ES, conf=EXACT),
+    "indices.indexingOperationsPerSecond": _r(
+        "elasticsearch_indices_indexing_index_total", "short", note=_ES,
+        conf=EXACT),
+    "indices.searchQueriesPerSecond": _r(
+        "elasticsearch_indices_search_query_total", "short", note=_ES,
+        conf=EXACT),
+    "fs.totalInBytes": _g("elasticsearch_filesystem_data_size_bytes", "bytes",
+                          note=_ES, conf=EXACT),
+    "fs.availableInBytes": _g("elasticsearch_filesystem_data_available_bytes",
+                              "bytes", note=_ES, conf=EXACT),
+    "os.cpuPercent": _g("elasticsearch_os_cpu_percent", "percent", note=_ES,
+                        conf=EXACT),
+    "os.memActualUsedInBytes": _g("elasticsearch_os_mem_used_bytes", "bytes",
+                                  note=_ES, conf=EXACT),
+    "threadpool.search.rejected": _r(
+        "elasticsearch_thread_pool_rejected_count", "short",
+        [("type", "=", "search")], _ES, EXACT),
+    "threadpool.write.rejected": _r(
+        "elasticsearch_thread_pool_rejected_count", "short",
+        [("type", "=", "write")], _ES, EXACT),
+})
+
+_RMQ = "RabbitMQ prometheus plugin metric"
+_add("rabbitmqqueuesample", {
+    "queue.totalMessages": _g("rabbitmq_queue_messages", "short", note=_RMQ,
+                              conf=EXACT),
+    "queue.messagesReady": _g("rabbitmq_queue_messages_ready", "short",
+                              note=_RMQ, conf=EXACT),
+    "queue.messagesUnacknowledged": _g("rabbitmq_queue_messages_unacked",
+                                       "short", note=_RMQ, conf=EXACT),
+    "queue.consumers": _g("rabbitmq_queue_consumers", "short", note=_RMQ,
+                          conf=EXACT),
+    "queue.messagesPublishedPerSecond": _r(
+        "rabbitmq_queue_messages_published_total", "short", note=_RMQ,
+        conf=EXACT),
+    "queue.messagesDeliveredPerSecond": _r(
+        "rabbitmq_queue_messages_delivered_total", "short", note=_RMQ,
+        conf=EXACT),
+    "queue.messagesAcknowledgedPerSecond": _r(
+        "rabbitmq_queue_messages_acked_total", "short", note=_RMQ, conf=EXACT),
+    "queue.messagesRedeliveredPerSecond": _r(
+        "rabbitmq_queue_messages_redelivered_total", "short", note=_RMQ,
+        conf=EXACT),
+    "queue.memory": _g("rabbitmq_queue_process_memory_bytes", "bytes",
+                       note=_RMQ, conf=EXACT),
+})
+_add("rabbitmqnodesample", {
+    "node.fileDescriptorsTotalUsed": _g("rabbitmq_process_open_fds", "short",
+                                        note=_RMQ, conf=EXACT),
+    "node.socketsUsed": _g("rabbitmq_process_open_tcp_sockets", "short",
+                           note=_RMQ, conf=EXACT),
+    "node.memoryUsed": _g("rabbitmq_process_resident_memory_bytes", "bytes",
+                          note=_RMQ, conf=EXACT),
+    "node.diskSpaceFree": _g("rabbitmq_disk_space_available_bytes", "bytes",
+                             note=_RMQ, conf=EXACT),
+    "node.processesUsed": _g("rabbitmq_erlang_processes_used", "short",
+                             note=_RMQ, conf=EXACT),
+    "node.running": _g("rabbitmq_build_info", "short", note=_RMQ + " (1 "
+                       "while the node is up)", conf=APPROXIMATE),
+})
+
+EVENT_LABELS.update({
+    "postgresqldatabasesample": {"database": "datname", "hostname":
+                                 "instance", "entityName": "datname",
+                                 "displayName": "datname"},
+    "mysqlsample": {"hostname": "instance", "entityName": "instance",
+                    "displayName": "instance"},
+    "redissample": {"hostname": "instance", "entityName": "instance",
+                    "displayName": "instance"},
+    "rediskeyspacesample": {"hostname": "instance", "keyspace": "db",
+                            "entityName": "instance"},
+    "nginxsample": {"hostname": "instance", "entityName": "instance",
+                    "displayName": "instance"},
+    "kafkaoffsetsample": {"consumerGroup": "consumergroup", "topic": "topic",
+                          "partition": "partition"},
+    "kafkatopicsample": {"topic": "topic", "entityName": "topic",
+                         "displayName": "topic"},
+    "elasticsearchclustersample": {"cluster.name": "cluster",
+                                   "entityName": "cluster",
+                                   "displayName": "cluster"},
+    "elasticsearchnodesample": {"cluster.name": "cluster", "node.name": "name",
+                                "entityName": "name", "displayName": "name"},
+    "rabbitmqqueuesample": {"queue.name": "queue", "queue.vhost": "vhost",
+                            "entityName": "queue", "displayName": "queue",
+                            "queue.node": "node"},
+    "rabbitmqnodesample": {"node.name": "instance", "entityName": "instance",
+                           "displayName": "instance"},
+})

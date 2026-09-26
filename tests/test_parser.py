@@ -501,3 +501,13 @@ class ArithmeticAndSyntaxTests(unittest.TestCase):
         q = parse_nrql("SELECT count(*) -1 FROM Transaction")
         self.assertEqual(q.select[0].expr.name, "_arith")
         self.assertEqual(q.select[0].expr.args[0].value, "-")
+
+
+class VariableClauseTests(unittest.TestCase):
+    def test_limit_and_timeseries_accept_variables(self):
+        from nr2grafana.nrql.parser import parse_nrql
+        q = parse_nrql("SELECT count(*) FROM Transaction FACET name "
+                       "LIMIT {{limit}} TIMESERIES {{interval}}")
+        self.assertEqual(q.limit, "$limit")
+        self.assertEqual(q.timeseries.interval_var, "interval")
+        self.assertFalse(q.timeseries.auto)

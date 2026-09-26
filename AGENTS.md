@@ -115,9 +115,20 @@ create folders). Never print or commit them.
   `provider.<Metric>.<Stat>` → YACE `aws_<ns>_<metric>_<stat>` (needs-review:
   verify the name, pin it with `metric_map` keyed `"<Event>.<attribute>"`).
 - `{{var}}` anywhere in a literal stays a variable (`'%{{host}}%'` →
-  `=~".*${host:regex}.*"`); `FACET {{attr}}` → `by ($attr)`. NRQL dashboard
-  variables become `label_values(<metric>{<WHERE>}, label)` on the datasource
-  family their FROM maps to (Prometheus / Loki / Tempo).
+  `=~".*${host:regex}.*"`); `FACET {{attr}}` → `by ($attr)`; `LIMIT {{n}}` →
+  `topk($n, …)`; `percentile(x, {{p}})` → `histogram_quantile($p / 100, …)`;
+  `SINCE {{since}}` / `TIMESERIES {{interval}}` → panel `timeFrom` /
+  `interval` set to the variable (its value must be a Grafana span). NRQL
+  dashboard variables become `label_values(<metric>{<WHERE>}, label)` on the
+  datasource family their FROM maps to (Prometheus / Loki / Tempo).
+- Math around an aggregation (`round`, `abs`, `floor`, `ceil`, `sqrt`, `exp`,
+  `log`, `clamp_max`, `pow`, …) becomes the PromQL function; `uniques(attr)`
+  becomes a `group by (label)` table.
+- On-host integration samples (`NginxSample`, `MysqlSample`,
+  `PostgresqlDatabaseSample`, `RedisSample`, `KafkaOffsetSample`,
+  `ElasticsearchClusterSample`, `RabbitmqQueueSample`, …) map their common
+  attributes to the matching Prometheus exporter; anything else names the
+  exporter to rebuild on.
 - Never translatable: `funnel()`, service maps, custom nerdpack
   visualizations, browser/mobile RUM (Faro is the LGTM equivalent), synthetics
   (blackbox_exporter), `Nr*` account data, subqueries. The tool says so per

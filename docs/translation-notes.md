@@ -297,3 +297,36 @@ these, all fixed:
 | `yAxisLeft.zero`, `facet.showOtherSeries`, `viz.billboard-comparison` | ignored | `min: 0`; note that topk has no 'Other' bucket; note on the percent-change badge |
 | NRQL dashboard variables | always `label_values(label)` on Prometheus | routed by FROM: Prometheus `label_values(<metric>{<WHERE>}, label)` (HTTP histogram `_count`, span-metrics calls, the `metricName`, the infra entity metric, `aws_<ns>_info`), Loki `label_values({<stream>}, label)`, Tempo tag values (`resource.service.name`); `SELECT count(*) ... FACET attr` variables work too |
 | `ComputeSample` / `DatastoreSample` / `QueueSample` / `LoadBalancerSample` / `BlockDeviceSample` / `ServerlessSample` / `StreamSample` / `CdnSample` / `DnsSample` / `ApiGatewaySample` (API-polling AWS integrations) | untranslatable | `provider.<Metric>.<Statistic>` + `WHERE provider = '<type>'` → YACE `aws_<namespace>_<metric>_<statistic>` (needs-review: NR camel-cases the CloudWatch name; pin with `metric_map` key `"<Event>.provider.<Metric>.<Stat>"`), dimensions → `dimension_<Name>`, `awsRegion` → `region`, `label.<Tag>` → `tag_<Tag>`, `count(*)` / `uniqueCount(<id>)` → `aws_<ns>_info` series; without `provider` the message lists the known types |
+
+### Iteration 3 — a second corpus (339 queries) and the produced dashboards
+
+| Construct | Before | Now |
+| --- | --- | --- |
+| `round(x, n)`, `abs`, `floor`, `ceil`, `sqrt`, `exp`, `ln`/`log`, `log10`, `log2`, `clamp_max`, `clamp_min`, `pow`, `mod` around an aggregation (or arithmetic over aggregations) | untranslatable | the PromQL function around the translated expression (`round(expr, 0.01)` for two decimals; `pow`/`mod` as `^`/`%`); LogQL drops `round()` with a note (no rounding function) and refuses the others |
+| `uniques(attr)` | untranslatable | `group by (label)(metric{...})` instant query, rendered as a table (one row per value) |
+| `latest(<string attribute>)` on Transaction | empty reason | says the attribute is a string with no metric and points at Loki / span events |
+| `percentile(x, {{pct}})`, `LIMIT {{limit}}`, `WHERE metricName = '{{metric}}'`, `average({{metric}})`, `SINCE {{since}}`, `TIMESERIES {{interval}}` | silently p95 / parse error / dropped / `_metric_` | `histogram_quantile($pct / 100, ...)`, `topk($limit, ...)`, `$metric` as the metric name (needs-review: the variable must hold Prometheus names), panel `timeFrom: $since`, panel `interval: $interval` (each noted with what the variable must contain) |
+| `duration > {{threshold}}` | "not numeric; dropped" + a misleading label note | one note explaining that a bucket cannot be chosen from a variable |
+| `FACET if(error, 'a', 'b')` (bare boolean) | grouping dropped | two filtered targets like `if(error IS TRUE, ...)` |
+| `FACET cases(...), name` | grouping dropped | one filtered target per case, each grouped by the other FACET attributes (legend `case {{label}}`) |
+| `rate(sum(<histogram>), 1 minute)` | rate of `_count` | rate of `_sum` (time spent per minute) |
+| unknown `*.count` / `*.sum` metric names (`process.runtime.jvm.threads.count`, `custom.count`) | treated as a histogram's `_count`/`_sum` | a gauge keeping its name unless the stem looks like a duration histogram; the older `process.runtime.jvm.*` names are known |
+| `WHERE metricName = 'x'` next to `SELECT agg(x)`, `WHERE x IS NOT NULL` | leaked as label matchers | consumed (a different metricName is noted); `uniqueCount(metricName) WHERE metricName LIKE 'custom.%'` → `count(count by (__name__)({__name__=~"custom_.*"}))` |
+| `sum()` of a CloudWatch `Sum`/`SampleCount` statistic (YACE `*_sum`, legacy `provider.*.Sum`) | `sum(avg_over_time(...))` (per-period average) | `sum(sum_over_time(m[$__interval]))` — adds the datapoints, as NR does |
+| span metrics `otel.status_code = 'ERROR'` inside `percentage()`/`filter()` | `status_code="ERROR"` | `status_code="STATUS_CODE_ERROR"` |
+| `count(*) / 60`, `sum(bytes) / 1024 / 1024` | `* 0.016667`, `* 0.000001` (rounded) | `/ 60`, `/ 1048576` (exact) |
+| LogQL `sum(x)` | `sum_over_time(...) by (...)` — Loki rejects grouping on `sum_over_time` | `sum by (...)(sum_over_time(...))` |
+| LogQL OR mixing `message` predicates with attribute filters | the whole WHERE dropped (all streams) | the shared stream selector is kept; only the OR is dropped (noted) |
+| LogQL `FACET capture(message, r'(?P<x>...)')` | `label_replace` note + `\| json` | `\| regexp "..."` parser stage extracting the label |
+| LogQL `FACET cases(...)` / `if(...)` | grouping dropped | one filtered target per case |
+| `WHERE timestamp > n` (logs) | `\| json \| timestamp > n` | dropped: the time picker selects the period |
+| TraceQL `name LIKE '%{{op}}%'`, `service.name = 'prod-{{svc}}'` | braces escaped literally | `${op:regex}` / `$svc` inside the pattern |
+| TraceQL `parentId IS NULL`, `nr.entryPoint IS TRUE` | `.parentId = nil`, `.nr.entryPoint = true` (no such attributes) | `nestedSetParent < 0` (root spans); `IS NOT NULL` → `>= 0` |
+| `FROM DistributedTraceSummary` aggregations | span metrics with a `root_entity_name` label that does not exist | TraceQL metrics over root spans (`{ nestedSetParent < 0 && resource.service.name = "x" } \| count_over_time()`), `avg_over_time`/`min`/`max`/`sum` noted with the Tempo version they need |
+| `K8sJobSample`, `K8sCronjobSample`, `K8sNamespaceSample` (cpu/memory/pods), `K8sNodeSample.runningPods`, `ContainerSample.memoryLimitBytes` | untranslatable | kube-state-metrics (`kube_job_*`, `kube_cronjob_*`, `kube_pod_container_resource_*` summed per namespace), kubelet (`kubelet_running_pods`), cAdvisor |
+| on-host integration samples (`NginxSample`, `ApacheSample`, `MysqlSample`, `PostgresqlDatabaseSample`/`InstanceSample`, `RedisSample`/`RedisKeyspaceSample`, `KafkaOffsetSample`/`TopicSample`, `ElasticsearchClusterSample`/`NodeSample`, `RabbitmqQueueSample`/`NodeSample`, plus Mongo, Memcached, HAProxy, Cassandra, Consul, MSSQL, Oracle, JMX, Flex, ...) | "custom or unknown event type" | the common attributes map to the matching exporter's metrics (nginx-prometheus-exporter, apache_exporter, mysqld_exporter, postgres_exporter, redis_exporter, kafka_exporter, elasticsearch_exporter, the RabbitMQ prometheus plugin); every other attribute names the exporter to rebuild on |
+
+The produced dashboards were audited as JSON (grid overlaps, panel
+datasources, `$variables` used vs. defined, legends on grouped queries,
+`interval`/`timeFrom` syntax, units on duration panels): no findings
+beyond the translations above.

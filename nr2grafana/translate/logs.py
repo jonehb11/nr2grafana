@@ -21,18 +21,27 @@ from typing import Any, Dict, List, Optional, Tuple
 from ..nrql.parser import Attr, BoolOp, Func, Lit, NrqlQuery, SelectItem, Star
 from .common import (
     APPROXIMATE, EXACT, NEEDS_REVIEW, Matcher, NumericPred, Translation,
-    Untranslatable, cond_to_branches, event_map_entry, expr_text,
+    Untranslatable, cond_text, cond_to_branches, event_map_entry, expr_text,
     facet_labels, legend_for, map_attr, regex_escape, q, unwrap_attr, worst,
 )
-from .metrics import _scaled_unit, nr_duration_to_prom
+from .metrics import _extract_facet_cases, _scaled_unit, nr_duration_to_prom
 
 _NUMERIC_OPS = ("<", "<=", ">", ">=")
 
 
 def _fmt_num(n: float) -> str:
-    return str(int(n)) if n == int(n) else ("%f" % n).rstrip("0").rstrip(".")
+    return str(int(n)) if n == int(n) else repr(float(n))
 
 
+def _scale_text(mult: float) -> str:
+    inv = 1.0 / mult if mult else 0.0
+    if mult and abs(inv) >= 2 and abs(inv - round(inv)) < 1e-9 * abs(inv):
+        return "/ %d" % int(round(inv))
+    return "* %s" % _fmt_num(mult)
+
+
+_LOG_MATH = {"round", "abs", "ceil", "floor", "sqrt", "exp", "ln", "log",
+             "log10", "log2", "clamp_max", "clamp_min", "pow", "mod"}
 _LEVEL_LABELS = {"level", "severity", "severity_text", "severitytext",
                  "detected_level", "log_level", "loglevel"}
 
@@ -83,6 +92,10 @@ def _split_matchers(matchers: List[Matcher], cfg: Dict[str, Any],
     meta: List[Matcher] = []
     parsed: List[Matcher] = []
     for m in matchers:
+        if m.label == "timestamp":
+            t.note("WHERE on timestamp dropped; the dashboard time range "
+                   "selects the period", APPROXIMATE)
+            continue
         if m.op in _NUMERIC_OPS:
             parsed.append(m)
         elif m.label == "message":
@@ -184,15 +197,17 @@ def _merge_branches(branches: List[List[Matcher]], cfg: Dict[str, Any],
     """OR across attributes: keep the stream matchers every branch shares
     as the selector and express the rest as a pipeline ``or``."""
     stream_labels = set(cfg.get("loki_stream_labels") or [])
-    if any(m.label == "message" for b in branches for m in b):
-        t.note("an OR mixing message predicates with attribute filters "
-               "cannot be expressed in one LogQL query; that OR clause was "
-               "DROPPED — verify filter logic", NEEDS_REVIEW)
-        return [], []
     keys = [set((m.label, m.op, m.value) for m in b) for b in branches]
     common = set.intersection(*keys) if keys else set()
     shared = [m for m in branches[0]
               if (m.label, m.op, m.value) in common]
+    if any(m.label == "message" and (m.label, m.op, m.value) not in common
+           for b in branches for m in b):
+        t.note("an OR mixing message predicates with attribute filters "
+               "cannot be expressed in one LogQL query; that OR clause was "
+               "DROPPED (the filters every alternative shares were kept) — "
+               "verify filter logic", NEEDS_REVIEW)
+        return shared, []
     groups: List[List[Matcher]] = []
     for b in branches:
         rest = [m for m in b if (m.label, m.op, m.value) not in common]
@@ -317,6 +332,10 @@ def translate_to_logql(nq: NrqlQuery, cfg: Dict[str, Any]) -> Translation:
         out.notes[:0] = t0.notes
         out.confidence = worst(out.confidence, t0.confidence)
         return out
+    case_specs = _extract_facet_cases(nq)
+    if case_specs:
+        return _translate_log_cases(nq, cfg, extra_stream, t0, aggs,
+                                    case_specs)
     # One target per aggregation; the first is the primary.
     primary: Optional[Translation] = None
     failures: List[str] = []
@@ -350,10 +369,57 @@ def translate_to_logql(nq: NrqlQuery, cfg: Dict[str, Any]) -> Translation:
     return primary
 
 
+def _translate_log_cases(nq: NrqlQuery, cfg: Dict[str, Any],
+                         extra_stream: Optional[List[Matcher]],
+                         t0: Translation, aggs: List[SelectItem],
+                         case_specs: List[Tuple[Any, Optional[str]]]
+                         ) -> Translation:
+    """FACET cases(WHERE c1 AS a, ...) / if(...) on logs: one filtered
+    query per case (each case is a WHERE)."""
+    item = aggs[0]
+    primary: Optional[Translation] = None
+    for cond, alias in case_specs:
+        where = cond if nq.where is None else BoolOp("and", [nq.where, cond])
+        sub_q = _sub_query(nq, item, where)
+        sub_q.facet = list(nq.facet)
+        try:
+            sub = _translate_one(sub_q, cfg, extra_stream)
+        except Untranslatable as e:
+            if primary is not None:
+                primary.note("case %r could not be translated: %s"
+                             % (alias or cond_text(cond), e), NEEDS_REVIEW)
+                continue
+            raise
+        label = alias or cond_text(cond)
+        sub.legend = (label + " " + sub.legend).strip() if sub.legend \
+            else label
+        if primary is None:
+            primary = sub
+        else:
+            unit_notes = [n for n in sub.notes if n.startswith("unit:")]
+            primary.confidence = worst(primary.confidence, sub.confidence)
+            for n in sub.notes:
+                if not n.startswith("unit:") and n not in primary.notes:
+                    primary.notes.append(n)
+            sub.notes = unit_notes
+            sub.extra = []
+            primary.extra.append(sub)
+    assert primary is not None
+    primary.note("FACET cases(...) became one filtered query per case; NR's "
+                 "implicit 'Other' bucket is not emitted", APPROXIMATE)
+    if len(aggs) > 1:
+        primary.note("only the first SELECT item was translated with FACET "
+                     "cases(...); add the others as separate panels",
+                     NEEDS_REVIEW)
+    primary.notes[:0] = t0.notes
+    primary.confidence = worst(primary.confidence, t0.confidence)
+    return primary
+
+
 def _apply_multiplier(t: Translation, item: SelectItem) -> None:
     if not item.multiplier:
         return
-    t.expr = "(%s) * %s" % (t.expr, _fmt_num(item.multiplier))
+    t.expr = "(%s) %s" % (t.expr, _scale_text(item.multiplier))
     unit = next((n.split(":", 1)[1] for n in t.notes
                  if n.startswith("unit:")), "")
     t.notes[:] = [n for n in t.notes if not n.startswith("unit:")]
@@ -361,10 +427,10 @@ def _apply_multiplier(t: Translation, item: SelectItem) -> None:
     if scaled:
         t.notes.append("unit:%s" % scaled)
     else:
-        t.note("SELECT arithmetic '* %s' preserved; set the panel unit "
-               "manually" % _fmt_num(item.multiplier), APPROXIMATE)
+        t.note("SELECT arithmetic '%s' preserved; set the panel unit "
+               "manually" % _scale_text(item.multiplier), APPROXIMATE)
     for e in t.extra:
-        e.expr = "(%s) * %s" % (e.expr, _fmt_num(item.multiplier))
+        e.expr = "(%s) %s" % (e.expr, _scale_text(item.multiplier))
 
 
 def _translate_one(nq: NrqlQuery, cfg: Dict[str, Any],
@@ -425,7 +491,21 @@ def _translate_one(nq: NrqlQuery, cfg: Dict[str, Any],
     # --- metric queries ---
     by = facet_labels(nq, cfg, t)
     stream_labels = set(cfg.get("loki_stream_labels") or [])
-    facet_needs_parser = any(l not in stream_labels for l in by)
+    # FACET capture(message, r'(?P<name>...)') is a regexp parser stage
+    # (PromQL would use label_replace; Loki extracts the label directly).
+    regexp_labels = {new for new, _ref, src, _rx in t.label_replace
+                     if src == "message"}
+    regexp_stage = " ".join("| regexp %s" % q(rx)
+                            for _new, _ref, src, rx in t.label_replace
+                            if src == "message")
+    if regexp_stage:
+        t.notes[:] = [n for n in t.notes if "became label_replace(" not in n]
+        t.note("FACET capture(message, ...) became a `| regexp` parser stage "
+               "extracting %s from the log line; verify the pattern"
+               % ", ".join(sorted(regexp_labels)), APPROXIMATE)
+        t.label_replace = [x for x in t.label_replace if x[2] != "message"]
+    facet_needs_parser = any(l not in stream_labels and l not in regexp_labels
+                             for l in by)
     if facet_needs_parser:
         t.note("FACET on non-stream-label attribute(s) requires the parser "
                "stage; verify field names after parsing", NEEDS_REVIEW)
@@ -436,6 +516,8 @@ def _translate_one(nq: NrqlQuery, cfg: Dict[str, Any],
                          need_parser=need_parser or facet_needs_parser,
                          or_groups=or_groups)
         s = sel + line_part
+        if regexp_stage:
+            s += " " + regexp_stage
         if pipe:
             s += " " + pipe
         if extra_pipe:
@@ -530,6 +612,10 @@ def _translate_one(nq: NrqlQuery, cfg: Dict[str, Any],
                 "sum": "sum_over_time", "max": "max_over_time",
                 "min": "min_over_time"}[name]
         field = unwrap_attr_name()
+        if name == "sum":
+            # LogQL rejects by()/without() on sum_over_time; sum outside.
+            return finish("sum%s(sum_over_time(%s [%s]))"
+                          % (by_clause, unwrap_stream(field), window))
         return finish("%s(%s [%s])%s"
                       % (over, unwrap_stream(field), window, group))
 
@@ -623,6 +709,19 @@ def _translate_one(nq: NrqlQuery, cfg: Dict[str, Any],
     if name in ("eventtype", "keyset"):
         raise Untranslatable("%s() is NRDB introspection" % name)
 
+    if name in _LOG_MATH:
+        inner = fn.args[0] if fn.args else None
+        if name == "round" and isinstance(inner, Func):
+            out = _translate_one(_sub_query(nq, SelectItem(expr=inner,
+                                                           alias=alias),
+                                            nq.where), cfg, extra_stream)
+            out.note("round() dropped: LogQL has no rounding function; set "
+                     "the panel's decimals instead", APPROXIMATE)
+            return out
+        raise Untranslatable(
+            "LogQL has no %s() function; apply it with a Grafana "
+            "transformation (Add field from calculation) on the aggregated "
+            "series" % name)
     raise Untranslatable("aggregation %s() is not supported for FROM Log"
                          % name)
 

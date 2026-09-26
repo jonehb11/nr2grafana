@@ -620,3 +620,32 @@ class Iteration2BuilderTests(unittest.TestCase):
         from nr2grafana.grafana.validate import validate_dashboard_full
         res = validate_dashboard_full(dash)
         self.assertEqual([e for e in res["errors"] if "variable" in e], [])
+
+
+class Iteration3BuilderTests(Iteration2BuilderTests):
+    def test_uniques_widget_becomes_a_table(self):
+        dash = self._build([self._widget(
+            "Hosts", "viz.billboard",
+            "SELECT uniques(host) FROM Transaction WHERE appName = 'c'")])
+        p = self._panel(dash, "Hosts")
+        self.assertEqual(p["type"], "table")
+        self.assertTrue(p["targets"][0]["instant"])
+
+    def test_variable_since_and_interval(self):
+        dash = self._build([
+            self._widget("A", "viz.line",
+                         "SELECT count(*) FROM Transaction SINCE {{since}} "
+                         "TIMESERIES {{interval}}"),
+            self._widget("B", "viz.line",
+                         "SELECT count(*) FROM Transaction SINCE 1 hour ago "
+                         "TIMESERIES", col=5),
+        ], [{"name": "since", "type": "STRING",
+             "defaultValues": [{"value": {"string": "1h"}}]},
+            {"name": "interval", "type": "STRING",
+             "defaultValues": [{"value": {"string": "5m"}}]}])
+        a = self._panel(dash, "A")
+        self.assertEqual(a["timeFrom"], "$since")
+        self.assertEqual(a["interval"], "$interval")
+        self.assertEqual(dash["time"], {"from": "now-1h", "to": "now"})
+        from nr2grafana.grafana.validate import validate_dashboard_full
+        self.assertEqual(validate_dashboard_full(dash)["errors"], [])

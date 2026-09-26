@@ -366,3 +366,65 @@ class LevelCaseTests(unittest.TestCase):
         self.assertEqual(
             variable_scope(parse_nrql("SELECT uniques(service.name) FROM Log "
                                       "WHERE message LIKE '%x%'"), cfg), "")
+
+
+class Iteration3LogTests(unittest.TestCase):
+    def test_sum_groups_outside_sum_over_time(self):
+        t = tr("SELECT sum(bytes) FROM Log WHERE service.name = 'checkout' "
+               "FACET path TIMESERIES")
+        self.assertEqual(
+            t.expr,
+            'sum by (path)(sum_over_time({service_name="checkout"} | json | '
+            'unwrap bytes | __error__="" [$__auto]))')
+        t = tr("SELECT sum(bytes) / 1024 / 1024 FROM Log WHERE service.name = "
+               "'checkout' TIMESERIES")
+        self.assertEqual(
+            t.expr,
+            '(sum(sum_over_time({service_name="checkout"} | json | unwrap '
+            'bytes | __error__="" [$__auto]))) / 1048576')
+
+    def test_mixed_or_keeps_the_shared_stream_selector(self):
+        t = tr("SELECT count(*) FROM Log WHERE service.name = 'checkout' AND "
+               "(level = 'ERROR' OR message LIKE '%panic%') TIMESERIES")
+        self.assertEqual(
+            t.expr, 'sum(count_over_time({service_name="checkout"} [$__auto]))')
+        self.assertTrue(any("every alternative shares" in n for n in t.notes))
+
+    def test_capture_on_message_is_a_regexp_stage(self):
+        t = tr("SELECT count(*) FROM Log WHERE service.name = 'checkout' "
+               "FACET capture(message, r'user=(?P<user>\\w+)')")
+        self.assertEqual(
+            t.expr,
+            'sum by (user)(count_over_time({service_name="checkout"} | regexp '
+            '"user=(?P<user>\\\\w+)" [$__range]))')
+        self.assertEqual(t.legend, "{{user}}")
+        self.assertFalse(any("label_replace" in n for n in t.notes))
+
+    def test_facet_cases_become_per_case_targets(self):
+        t = tr("SELECT count(*) FROM Log WHERE service.name = 'checkout' "
+               "FACET cases(WHERE level = 'ERROR' AS 'err', "
+               "WHERE level = 'WARN' AS 'warn') TIMESERIES")
+        self.assertEqual(
+            t.expr,
+            'sum(count_over_time({service_name="checkout", level=~"(?i)ERROR"} '
+            '[$__auto]))')
+        self.assertEqual(t.legend, "err")
+        self.assertEqual(t.extra[0].legend, "warn")
+        self.assertIn('level=~"(?i)WARN"', t.extra[0].expr)
+
+    def test_math_functions(self):
+        t = tr("SELECT round(average(duration_ms), 1) FROM Log "
+               "WHERE service.name = 'checkout' TIMESERIES")
+        self.assertTrue(t.expr.startswith("avg_over_time("))
+        self.assertTrue(any("round() dropped" in n for n in t.notes))
+        t = tr("SELECT abs(average(duration_ms)) FROM Log "
+               "WHERE service.name = 'checkout' TIMESERIES")
+        self.assertEqual(t.confidence, "untranslatable")
+        self.assertTrue(any("LogQL has no abs()" in n for n in t.notes))
+
+    def test_timestamp_predicate_is_the_time_picker(self):
+        t = tr("SELECT count(*) FROM Log WHERE service.name = 'checkout' "
+               "AND timestamp > 1700000000000")
+        self.assertEqual(
+            t.expr, 'sum(count_over_time({service_name="checkout"} [$__range]))')
+        self.assertTrue(any("timestamp dropped" in n for n in t.notes))

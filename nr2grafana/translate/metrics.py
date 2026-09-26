@@ -23,7 +23,9 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..nrql.parser import Attr, Func, Lit, NrqlQuery, SelectItem, Star
+from ..nrql.parser import (
+    Attr, BinOp, Cmp, Func, Lit, NotOp, NrqlQuery, SelectItem, Star,
+)
 from .common import (
     APPROXIMATE, EXACT, NEEDS_REVIEW, UNTRANSLATABLE,
     Matcher, NumericPred, Translation, Untranslatable,
@@ -32,6 +34,7 @@ from .common import (
 )
 from . import nrmetrics
 from .nrmetrics import Spec
+from .common import grafana_var, is_nr_variable, sanitize_label  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -158,9 +161,17 @@ def resolve_metric(name: str, agg: str, cfg: Dict[str, Any],
                             note="assumed histogram from _bucket suffix")
     if base.endswith("_sum") or base.endswith("_count"):
         stem = base.rsplit("_", 1)[0]
-        return MetricSource(stem, "histogram", confidence=NEEDS_REVIEW,
-                            note="assumed %r is the _sum/_count of "
-                                 "histogram %r" % (base, stem))
+        if any(h in stem for h in _HISTO_HINTS):
+            return MetricSource(stem, "histogram", confidence=NEEDS_REVIEW,
+                                note="assumed %r is the _sum/_count of "
+                                     "histogram %r" % (base, stem))
+        # threads.count, custom.count: an OTel UpDownCounter/gauge keeps
+        # its name; nothing says a histogram is behind it.
+        return MetricSource(
+            base, "gauge", confidence=NEEDS_REVIEW,
+            note="assumed gauge %r (a *.count/*.sum metric name keeps its "
+                 "name in Prometheus); if it is the _count/_sum series of a "
+                 "histogram, add the histogram to metric_map" % base)
     looks_histo = any(h in base for h in _HISTO_HINTS)
     if agg in ("percentile", "median"):
         # percentile()/median() need per-event data. A real histogram gives
@@ -394,11 +405,11 @@ def _span_fixups(matchers: List[Matcher],
             wanted_error = (m.value == "true") == (m.op in ("=", "=~"))
             out.append(Matcher("status_code", "=" if wanted_error else "!=",
                                "STATUS_CODE_ERROR"))
-        elif m.label in ("otel_status_code", "status") \
+        elif m.label in ("otel_status_code", "status", "status_code") \
                 and m.value.upper() in ("ERROR", "STATUS_CODE_ERROR"):
             out.append(Matcher("status_code", m.op if m.op in ("=", "!=")
                                else "=", "STATUS_CODE_ERROR"))
-        elif m.label in ("otel_status_code", "status") \
+        elif m.label in ("otel_status_code", "status", "status_code") \
                 and m.value.upper() in ("OK", "STATUS_CODE_OK", "UNSET",
                                         "STATUS_CODE_UNSET"):
             code = "STATUS_CODE_OK" if "OK" in m.value.upper() \
@@ -498,6 +509,8 @@ class _Ctx:
         # Event-specific attribute -> label conventions overlay the
         # generic label_map while translating this event type.
         overlay = dict(nrmetrics.EVENT_LABELS.get(etl) or {})
+        if etl == "metric":
+            overlay.setdefault("metricName", "__name__")
         if etl in nrmetrics.LEGACY_AWS_EVENTS:
             # label.<Tag> attributes of AWS samples are YACE tag_<Tag> labels.
             for tag in set(re.findall(r"\blabel\.([A-Za-z0-9_]+)", q.raw or "")):
@@ -521,6 +534,14 @@ class _Ctx:
         self.numeric: List[NumericPred] = list(t.numeric)
         del t.numeric[:]
         self.branches = [self._fixups(b) for b in self.branches]
+        if self.is_metric_event:
+            for b in self.branches:
+                for i, m in enumerate(b):
+                    if m.label == "__name__" and m.op in ("=~", "!~") \
+                            and not m.value.startswith("${"):
+                        # metricName LIKE 'custom.%' -> custom_.* in Prom
+                        b[i] = Matcher(m.label, m.op,
+                                       m.value.replace("\\.", "_"))
         if len(self.branches) > 1:
             t.note("WHERE contains an OR across different attributes; "
                    "translated as a PromQL `or` union of %d filtered "
@@ -635,12 +656,13 @@ def _cancel_per_step(a: str, b: str) -> Tuple[str, str]:
 
 def _wrap_topk(ctx: _Ctx, expr: str) -> str:
     limit = ctx.q.limit
-    if ctx.q.facet and isinstance(limit, int):
+    is_var = isinstance(limit, str) and limit.startswith("$")
+    if ctx.q.facet and (isinstance(limit, int) or is_var):
         if ctx.is_range:
-            ctx.t.note("FACET LIMIT %d became topk(%d, ...); on range queries "
+            ctx.t.note("FACET LIMIT %s became topk(%s, ...); on range queries "
                        "topk is evaluated per step so series may flicker"
                        % (limit, limit), APPROXIMATE)
-        return "topk(%d, %s)" % (limit, expr)
+        return "topk(%s, %s)" % (limit, expr)
     return expr
 
 
@@ -653,7 +675,16 @@ def _fmt_q(p: float) -> str:
 def _fmt_num(n: float) -> str:
     if n == int(n):
         return str(int(n))
-    return ("%f" % n).rstrip("0").rstrip(".")
+    return repr(float(n))  # shortest exact text (PromQL accepts 1e-07)
+
+
+def _scale_text(mult: float) -> str:
+    """'* 1000', or '/ 60' when the factor is the reciprocal of an integer
+    (keeps 1/60 exact instead of a rounded decimal)."""
+    inv = 1.0 / mult if mult else 0.0
+    if mult and abs(inv) >= 2 and abs(inv - round(inv)) < 1e-9 * abs(inv):
+        return "/ %d" % int(round(inv))
+    return "* %s" % _fmt_num(mult)
 
 
 def _le_matcher(bound: float) -> Matcher:
@@ -744,6 +775,14 @@ def _agg_expr(ctx: _Ctx, fn: Func, src: MetricSource,
             return per_step("sum%s(%s)" % (by, hsel("_sum", fnname=inc)))
         if src.mtype == "rate":
             return "sum%s(%s)" % (by, hsel("", fnname="rate"))
+        if src.base.startswith("aws_") and (
+                src.base.endswith("_sum") or src.base.endswith("_sample_count")):
+            win = "$__interval" if ctx.is_range else "$__range"
+            t.note("sum() of a CloudWatch Sum/SampleCount statistic adds the "
+                   "per-period datapoints in each Grafana step (one datapoint "
+                   "per CloudWatch period)", APPROXIMATE)
+            return "sum%s(%s)" % (by, hsel("", window=win,
+                                          fnname="sum_over_time"))
         t.note("sum() of a gauge: NR sums datapoints; emitted sum of "
                "per-series averages (current-total semantics)", APPROXIMATE)
         return "sum%s(%s)" % (by, hsel("", fnname="avg_over_time"))
@@ -836,10 +875,23 @@ def _agg_expr(ctx: _Ctx, fn: Func, src: MetricSource,
 
     if name in ("percentile", "median"):
         leftover(numeric)
-        pcts = [50.0] if name == "median" else [
-            float(a.value) for a in fn.args[1:]
-            if isinstance(a, Lit) and isinstance(a.value, (int, float))
-        ] or [95.0]
+        # (quantile text for PromQL, legend suffix) per requested percentile
+        pcts: List[Tuple[str, str]] = []
+        if name == "median":
+            pcts = [("0.5", "p50")]
+        for a in ([] if name == "median" else fn.args[1:]):
+            if isinstance(a, Lit) and isinstance(a.value, (int, float)):
+                pcts.append((_fmt_q(float(a.value)), "p%g" % float(a.value)))
+                continue
+            var = is_nr_variable(a)
+            if var:
+                gv = grafana_var(var, ctx.cfg)
+                pcts.append(("$%s / 100" % gv, "p$%s" % gv))
+                t.note("the percentile comes from dashboard variable {{%s}}; "
+                       "its value must be a number from 0 to 100" % var,
+                       APPROXIMATE)
+        if not pcts:
+            pcts = [("0.95", "p95")]
         if src.mtype in ("gauge", "rate"):
             # No buckets to interpolate: take the quantile of the raw
             # sampled values per series over the window instead of
@@ -849,9 +901,9 @@ def _agg_expr(ctx: _Ctx, fn: Func, src: MetricSource,
                    "computes percentiles over all raw events — verify "
                    "against NR data" % src.base, NEEDS_REVIEW)
             exprs = []
-            for p in pcts:
+            for qtext, _lbl in pcts:
                 inner = hsel("", fnname="quantile_over_time",
-                             prefix="%s, " % _fmt_q(p))
+                             prefix="%s, " % qtext)
                 exprs.append("avg%s(%s)" % (by, inner) if ctx.by else inner)
         elif src.mtype != "histogram":
             # Neither a histogram (no _bucket series) nor a gauge (no raw
@@ -868,19 +920,19 @@ def _agg_expr(ctx: _Ctx, fn: Func, src: MetricSource,
                    "percentiles are computed from event data", APPROXIMATE)
             le_by = "le" + "".join(", " + l for l in ctx.by)
             exprs = ["histogram_quantile(%s, sum by (%s)(%s))"
-                     % (_fmt_q(p), le_by, hsel("_bucket", fnname="rate"))
-                     for p in pcts]
+                     % (qtext, le_by, hsel("_bucket", fnname="rate"))
+                     for qtext, _lbl in pcts]
         if len(exprs) > 1:
-            for p, e in list(zip(pcts, exprs))[1:]:
+            for (_q, lbl), e in list(zip(pcts, exprs))[1:]:
                 extra_t = Translation(
                     expr=_wrap_topk(ctx, e), datasource="prometheus",
                     query_type="range" if ctx.is_range else "instant",
                     legend=(legend_for(ctx.by, template=t.legend_template)
-                            + " p%g" % p).strip(),
+                            + " " + lbl).strip(),
                     confidence=t.confidence, group_by=list(ctx.by))
                 t.extra.append(extra_t)
             t.legend = (legend_for(ctx.by, template=t.legend_template)
-                        + " p%g" % pcts[0]).strip()
+                        + " " + pcts[0][1]).strip()
         return exprs[0]
 
     if name == "rate":
@@ -891,7 +943,13 @@ def _agg_expr(ctx: _Ctx, fn: Func, src: MetricSource,
             if isinstance(a, Lit) and isinstance(a.value, (int, float)):
                 per_seconds = float(a.value)
         mult = "" if per_seconds == 1 else " * %s" % _fmt_num(per_seconds)
-        target = "_count" if src.mtype == "histogram" else ""
+        inner = fn.args[0] if fn.args and isinstance(fn.args[0], Func) \
+            else None
+        target = ""
+        if src.mtype == "histogram":
+            # rate(count(x)) -> _count; rate(sum(x)) -> _sum (time spent)
+            target = "_sum" if inner is not None and inner.name == "sum" \
+                else "_count"
         if src.mtype == "gauge":
             t.note("rate() of a gauge-backed source; emitted rate() anyway",
                    NEEDS_REVIEW)
@@ -1105,14 +1163,44 @@ _EVENT_EQUIVALENTS = {
 }
 
 
+_NAME_LABELS = ("metricName", "metricname", "__name__")
+
+
 def _metric_name_from_where(ctx: _Ctx) -> Optional[str]:
-    """FROM Metric ... WHERE metricName = 'x' selects the metric."""
+    """FROM Metric ... WHERE metricName = 'x' selects the metric (a
+    {{var}} value becomes the Grafana variable)."""
     for b in ctx.branches:
         for m in list(b):
-            if m.label in ("metricName", "metricname") and m.op == "=":
+            if m.label in _NAME_LABELS and m.op == "=":
                 b.remove(m)
                 return m.value
+            if m.label in _NAME_LABELS and m.op == "=~" \
+                    and m.value.startswith("${") \
+                    and m.value.endswith(":regex}"):
+                b.remove(m)
+                return "$" + m.value[2:-len(":regex}")]
     return None
+
+
+def _consume_name_matchers(ctx: _Ctx, name: str) -> None:
+    """WHERE metricName = 'x' and WHERE x IS NOT NULL restate the metric
+    the SELECT already names: drop them (a different metricName is noted
+    — the SELECT wins)."""
+    norm = name if name.startswith("$") else normalize_metric_name(name)
+    for b in ctx.branches:
+        for m in list(b):
+            if m.label in _NAME_LABELS and m.op in ("=", "=~"):
+                same = (m.value == name or m.value.startswith("${")
+                        or (not name.startswith("$")
+                            and normalize_metric_name(m.value) == norm))
+                if not same:
+                    ctx.t.note("WHERE metricName %s %r selects a different "
+                               "metric than the SELECT (%s); the SELECT wins"
+                               % (m.op, m.value, name), NEEDS_REVIEW)
+                b.remove(m)
+            elif m.op == "!=" and m.value == "" and m.label in (
+                    norm, sanitize_label(name)):
+                b.remove(m)  # x IS NOT NULL on the selected metric
 
 
 def _timeslice_name(ctx: _Ctx) -> Optional[str]:
@@ -1140,6 +1228,17 @@ def _source_for(ctx: _Ctx, item: SelectItem) -> Any:
             arg = arg.args[0]
         inner_attr, _ = unwrap_attr(arg)
         name = None
+        if inner_attr is not None and inner_attr.name.lower() == "metricname":
+            if agg in ("uniquecount", "cardinality"):
+                # uniqueCount(metricName) WHERE metricName LIKE 'x%'
+                return DerivedSource(
+                    "count <BY>(count by (__name__)({<SELBARE>}))", "short",
+                    NEEDS_REVIEW, "distinct metric names matching the WHERE "
+                    "(__name__ matcher; the selector needs at least one "
+                    "matcher)")
+            raise Untranslatable(
+                "%s(metricName) FROM Metric: metricName is the metric's "
+                "identity, not a value" % (agg or "?"))
         if inner_attr is not None:
             name = inner_attr.name
         elif isinstance(arg, Lit) and isinstance(arg.value, str):
@@ -1154,6 +1253,18 @@ def _source_for(ctx: _Ctx, item: SelectItem) -> Any:
             raise Untranslatable(
                 "FROM Metric needs a metric name argument in %s()"
                 % (agg or "?"))
+        var = name[1:] if name.startswith("$") \
+            else is_nr_variable(Attr(name))
+        if var:
+            gv = "$" + grafana_var(var, cfg)
+            mtype = "counter" if agg in ("count", "sum", "rate") else "gauge"
+            _consume_name_matchers(ctx, gv)
+            t.note("the metric name comes from dashboard variable {{%s}}: "
+                   "its values must be Prometheus metric names (a "
+                   "label_values(__name__) variable) and the metric is "
+                   "assumed to be a %s" % (var, mtype), NEEDS_REVIEW)
+            return MetricSource(gv, mtype, confidence=NEEDS_REVIEW)
+        _consume_name_matchers(ctx, name)
         if name.lower() == "newrelic.timeslice.value":
             ts = _timeslice_name(ctx)
             if ts:
@@ -1227,7 +1338,12 @@ def _source_for(ctx: _Ctx, item: SelectItem) -> Any:
             return MetricSource(src.name("_count"), "counter", "short",
                                 NEEDS_REVIEW, src.note)
         raise Untranslatable(
-            "%s(%s) FROM %s: %s" % (agg, attr_name, et, note))
+            "%s(%s) FROM %s: %s" % (agg, attr_name, et, note or (
+                "the Transaction attribute %r has no OTel HTTP metric "
+                "equivalent (only duration / totalTime / databaseDuration / "
+                "externalDuration map); string attributes such as error "
+                "messages live in Loki (FROM Log) or as span events in "
+                "Tempo, not in metrics" % attr_name)))
 
     if etl in ("span", "distributedtrace", "distributedtracesummary"):
         attr, _ = unwrap_attr(arg)
@@ -1335,7 +1451,8 @@ def _infra_source(ctx: _Ctx, item: SelectItem, fn: Optional[Func],
     t = ctx.t
     etl = ctx.event.lower()
     whole = nrmetrics.INFRA.get((etl, "*"))
-    if whole is not None and whole.kind == "none":
+    if whole is not None and whole.kind == "none" \
+            and not nrmetrics.has_attr_specs(etl):
         raise Untranslatable(whole.reason)
     attr, _ = unwrap_attr(arg)
     attr_name = attr.name if attr is not None else ""
@@ -1469,27 +1586,41 @@ def _drop_implicit(ctx: _Ctx) -> None:
 # Entry point
 # ---------------------------------------------------------------------------
 
+def _if_parts(fn: Func) -> Tuple[Any, List[Any]]:
+    """if(cond, then[, else]) -> (cond, [then, else]); a bare attribute
+    condition (if(error, ...)) is the boolean test `attr = true`."""
+    if fn.where is not None:
+        return fn.where, list(fn.args)
+    if fn.args and isinstance(fn.args[0], Attr):
+        return Cmp(fn.args[0], "=", Lit(True)), list(fn.args[1:])
+    return None, list(fn.args)
+
+
 def _extract_facet_cases(q: NrqlQuery) -> Optional[List[Tuple[Any, Optional[str]]]]:
-    """Pop a sole FACET cases(...) / if(...) item; return its (cond, alias)
-    list."""
-    if len(q.facet) != 1 or not isinstance(q.facet[0].expr, Func):
+    """Pop the FACET cases(...) / if(...) item (other FACET attributes stay
+    as the grouping); return its (cond, alias) list."""
+    idx = next((i for i, f in enumerate(q.facet)
+                if isinstance(f.expr, Func) and f.expr.name in ("cases", "if")),
+               None)
+    if idx is None:
         return None
-    fn = q.facet[0].expr
+    fn = q.facet[idx].expr
+    specs: Optional[List[Tuple[Any, Optional[str]]]] = None
     if fn.name == "cases" and fn.cases:
         specs = list(fn.cases)
-        q.facet = []
-        return specs
-    if fn.name == "if" and fn.where is not None and fn.args:
-        from ..nrql.parser import NotOp
-        then = fn.args[0]
-        els = fn.args[1] if len(fn.args) > 1 else None
-        specs = [(fn.where, str(getattr(then, "value", "true")))]
-        if els is not None:
-            specs.append((NotOp(fn.where), str(getattr(els, "value",
+    elif fn.name == "if":
+        cond, vals = _if_parts(fn)
+        if cond is not None and vals:
+            then = vals[0]
+            els = vals[1] if len(vals) > 1 else None
+            specs = [(cond, str(getattr(then, "value", "true")))]
+            if els is not None:
+                specs.append((NotOp(cond), str(getattr(els, "value",
                                                         "false"))))
-        q.facet = []
-        return specs
-    return None
+    if specs is None:
+        return None
+    q.facet = q.facet[:idx] + q.facet[idx + 1:]
+    return specs
 
 
 def _translate_facet_cases(ctx: _Ctx,
@@ -1514,8 +1645,13 @@ def _translate_facet_cases(ctx: _Ctx,
             return None
     t.note("FACET cases(...) became one filtered query per case; NR's "
            "implicit 'Other' bucket is not emitted", APPROXIMATE)
+
+    def case_legend(label: str) -> str:
+        rest = legend_for(ctx.by, None, t.legend_template) if ctx.by else ""
+        return (label + " " + rest).strip() if rest else label
+
     for idx, (cond, alias) in enumerate(case_specs):
-        label = alias or cond_text(cond)
+        label = case_legend(alias or cond_text(cond))
         if idx == 0:
             extra, numeric = _embedded_numeric(ctx, cond)
             t.expr = _translate_item(ctx, fn, extra=extra,
@@ -1543,7 +1679,7 @@ def _translate_facet_cases(ctx: _Ctx,
     if ctx.q.compare_with:
         t.note("COMPARE WITH combined with FACET cases(...) is not "
                "supported; the comparison series was dropped", NEEDS_REVIEW)
-    t.group_by = []
+    t.group_by = list(ctx.by)
     return t
 
 
@@ -1621,7 +1757,7 @@ def translate_to_promql(q: NrqlQuery, cfg: Dict[str, Any]) -> Translation:
             del t.extra[extras_before:]
             continue
         if item.multiplier:
-            expr = "(%s) * %s" % (expr, _fmt_num(item.multiplier))
+            expr = "(%s) %s" % (expr, _scale_text(item.multiplier))
             new = t.notes[notes_before:]
             unit = next((n.split(":", 1)[1] for n in new
                          if n.startswith("unit:")), "")
@@ -1634,14 +1770,14 @@ def translate_to_promql(q: NrqlQuery, cfg: Dict[str, Any]) -> Translation:
             if scaled:
                 t.notes.append("unit:%s" % scaled)
                 if scaled != unit:
-                    t.notes.append("SELECT arithmetic '* %s' preserved; panel "
+                    t.notes.append("SELECT arithmetic '%s' preserved; panel "
                                    "unit set to %s (was %s)"
-                                   % (_fmt_num(item.multiplier), scaled,
+                                   % (_scale_text(item.multiplier), scaled,
                                       unit))
             else:
-                t.note("SELECT arithmetic '* %s' preserved; the derived "
+                t.note("SELECT arithmetic '%s' preserved; the derived "
                        "panel unit no longer applies — set it manually"
-                       % _fmt_num(item.multiplier), APPROXIMATE)
+                       % _scale_text(item.multiplier), APPROXIMATE)
         item_legend = t.legend or legend_for(ctx.by, item.alias,
                                              t.legend_template)
         if primary_expr is None:
@@ -1730,11 +1866,11 @@ def _rewrite_if(ctx: _Ctx, fn: Func) -> Tuple[Func, Optional[List[List[Matcher]]
             and fn.args[0].name == "if"):
         return fn, None
     branch = fn.args[0]
-    if branch.where is None:
+    cond, vals = _if_parts(branch)
+    if cond is None:
         raise Untranslatable(
             "the if() condition could not be parsed as a predicate; "
             "rewrite the query as filter(%s(...), WHERE ...)" % fn.name)
-    vals = branch.args  # then [, else] — condition lives in branch.where
     then = vals[0] if vals else None
     els = vals[1] if len(vals) > 1 else None
     zero_else = els is None or _is_lit(els, 0)
@@ -1754,8 +1890,8 @@ def _rewrite_if(ctx: _Ctx, fn: Func) -> Tuple[Func, Optional[List[List[Matcher]]
             "split into separate filtered queries" % fn.name)
     ctx.t.note("if(%s, ...) translated as a filtered aggregation "
                "(the condition became label matchers)"
-               % cond_text(branch.where), APPROXIMATE)
-    return new, _embedded(ctx, branch.where)
+               % cond_text(cond), APPROXIMATE)
+    return new, _embedded(ctx, cond)
 
 
 def _numeric_consumable(ctx: _Ctx, pred: NumericPred) -> bool:
@@ -1776,6 +1912,32 @@ def _product(a: List[List[Matcher]], b: List[List[Matcher]]) \
 _GETFIELD_AGG = {"count": "count", "sum": "sum", "max": "max", "min": "min",
                  "average": "average", "avg": "average", "latest": "latest",
                  "total": "sum"}
+
+
+# NRQL math functions -> PromQL (log() in NRQL is the natural logarithm).
+_MATH_FUNCS = {"abs": "abs", "ceil": "ceil", "floor": "floor", "sqrt": "sqrt",
+               "exp": "exp", "ln": "ln", "log": "ln", "log10": "log10",
+               "log2": "log2", "round": "round", "clamp_max": "clamp_max",
+               "clamp_min": "clamp_min", "pow": "^", "mod": "%"}
+_UNITLESS_MATH = {"sqrt", "exp", "ln", "log", "log10", "log2", "pow"}
+
+
+def _math_operand(ctx: "_Ctx", node: Any,
+                  extra: Optional[List[List[Matcher]]],
+                  numeric: Optional[List[NumericPred]]) -> str:
+    """Operand of a math function: an aggregation, arithmetic over
+    aggregations, or a number."""
+    if isinstance(node, Func):
+        return _translate_item(ctx, node, extra, list(numeric or []))
+    if isinstance(node, BinOp):
+        left = _math_operand(ctx, node.left, extra, numeric)
+        right = _math_operand(ctx, node.right, extra, numeric)
+        return "(%s %s %s)" % (left, node.op, right)
+    if isinstance(node, Lit) and isinstance(node.value, (int, float)) \
+            and not isinstance(node.value, bool):
+        return _fmt_num(float(node.value))
+    raise Untranslatable("math function operand %s has no metric equivalent"
+                         % expr_text(node))
 
 
 def _translate_item(ctx: _Ctx, fn: Func,
@@ -1808,6 +1970,81 @@ def _translate_item(ctx: _Ctx, fn: Func,
                 "getField(..., %s) has no metric equivalent" % fname)
         return _translate_item(ctx, Func(agg, args=[fn.args[0]]), extra,
                                numeric)
+    if fn.name == "uniques":
+        arg0 = fn.args[0] if fn.args else None
+        uattr, _ = unwrap_attr(arg0)
+        if uattr is None:
+            raise Untranslatable("uniques() needs an attribute argument")
+        label, mapped = map_attr(uattr.name, ctx.cfg)
+        if not mapped:
+            t.note("uniques attribute %r not in label_map; used %r"
+                   % (uattr.name, label), NEEDS_REVIEW)
+        ex = [list(b) for b in (extra or [[]])]
+        cspec = nrmetrics.infra_count_spec(ctx.event.lower()) \
+            if nrmetrics.is_infra_event(ctx.event.lower()) else None
+        if cspec is not None and cspec.kind == "count":
+            # the exporter's entity-population series carries the labels
+            fixed = [Matcher(l, o, v) for l, o, v in cspec.matchers]
+            ex = [b + fixed for b in ex]
+            sel = ctx.rf("", cspec.name, ex, None)
+            t.confidence = worst(t.confidence, cspec.conf)
+            if cspec.note:
+                t.note(cspec.note)
+        else:
+            src = _source_for(ctx, SelectItem(expr=Func("count",
+                                                        args=[Star()])))
+            t.confidence = worst(t.confidence, src.confidence)
+            if src.note:
+                t.note(src.note)
+            if isinstance(src, DerivedSource):
+                raise Untranslatable(
+                    "uniques(%s) FROM %s: the entity population is a "
+                    "derived expression; list the values with a dashboard "
+                    "variable (label_values) instead"
+                    % (uattr.name, ctx.event))
+            if src.extra_matchers:
+                ex = [b + list(src.extra_matchers) for b in ex]
+            sel = ctx.rf("", src.name("_count" if src.mtype == "histogram"
+                                      else ""), ex, None)
+        labels = list(dict.fromkeys([label] + ctx.by))
+        t.note("uniques(%s) listed as the distinct %r label values present "
+               "in the range (an instant table; the value column is 1)"
+               % (uattr.name, label), APPROXIMATE)
+        t.notes.append("panel-hint:table")
+        t.query_type = "instant"
+        t.legend = "{{%s}}" % label
+        return "group by (%s)(%s)" % (", ".join(labels), sel)
+
+    if fn.name in _MATH_FUNCS and fn.args:
+        pf = _MATH_FUNCS[fn.name]
+        notes_before = len(t.notes)
+        inner = _math_operand(ctx, fn.args[0], extra, numeric)
+        second = fn.args[1] if len(fn.args) > 1 else None
+        if fn.name == "round":
+            places = 0.0
+            if isinstance(second, Lit) and isinstance(second.value,
+                                                      (int, float)):
+                places = float(second.value)
+            out = ("round(%s, %s)" % (inner, _fmt_num(10.0 ** -places))
+                   if places else "round(%s)" % inner)
+        elif fn.name in ("clamp_max", "clamp_min"):
+            if second is None:
+                raise Untranslatable("%s() needs a bound" % fn.name)
+            out = "%s(%s, %s)" % (pf, inner, _math_operand(ctx, second,
+                                                           extra, numeric))
+        elif fn.name in ("pow", "mod"):
+            if second is None:
+                raise Untranslatable("%s() needs a second operand" % fn.name)
+            out = "(%s) %s (%s)" % (inner, pf, _math_operand(ctx, second,
+                                                             extra, numeric))
+        else:
+            out = "%s(%s)" % (pf, inner)
+        if fn.name in _UNITLESS_MATH:
+            t.notes[notes_before:] = [n for n in t.notes[notes_before:]
+                                      if not n.startswith("unit:")]
+        t.notes.append("%s() applied as PromQL %s" % (fn.name, pf))
+        return out
+
     if fn.name == "_ratio":
         # agg(x) / agg(y) — a ratio of two aggregations (error-rate shape).
         # Translate each operand against the SAME context (so they share
@@ -2027,7 +2264,7 @@ def translate_to_promql_with_offset(ctx: _Ctx) -> Optional[Translation]:
             return None
         expr = _translate_item(ctx, items[0].expr, numeric=list(ctx.numeric))
         if items[0].multiplier:
-            expr = "(%s) * %s" % (expr, _fmt_num(items[0].multiplier))
+            expr = "(%s) %s" % (expr, _scale_text(items[0].multiplier))
         sub.expr = _wrap_topk(ctx, expr)
         sub.group_by = list(ctx.by)
         return sub

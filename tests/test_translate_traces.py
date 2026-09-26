@@ -226,3 +226,38 @@ class TypedAttributeTests(unittest.TestCase):
         self.assertEqual(variable_field("http.statusCode"),
                          "span.http.response.status_code")
         self.assertEqual(variable_field("custom.attr"), ".custom.attr")
+
+
+class Iteration3TraceTests(unittest.TestCase):
+    def test_embedded_variables(self):
+        t = tr("SELECT * FROM Span WHERE service.name = '{{svc}}' "
+               "AND name LIKE '%{{op}}%' LIMIT 20")
+        self.assertEqual(
+            t.expr,
+            '{ resource.service.name = "$svc" && name =~ "(?i)^.*${op:regex}.*$" }')
+        t = tr("SELECT * FROM Span WHERE service.name = 'prod-{{svc}}'")
+        self.assertEqual(t.expr, '{ resource.service.name = "prod-$svc" }')
+
+    def test_root_span_predicates(self):
+        t = tr("SELECT * FROM Span WHERE service.name = 'checkout' "
+               "AND parentId IS NULL")
+        self.assertEqual(
+            t.expr, '{ resource.service.name = "checkout" && nestedSetParent < 0 }')
+        t = tr("SELECT * FROM Span WHERE parentId IS NOT NULL")
+        self.assertEqual(t.expr, "{ nestedSetParent >= 0 }")
+        t = tr("SELECT * FROM Span WHERE nr.entryPoint IS TRUE AND duration > 2")
+        self.assertEqual(t.expr, "{ nestedSetParent < 0 && duration > 2s }")
+
+    def test_distributed_trace_summary_uses_root_spans(self):
+        t = tr("SELECT count(*) FROM DistributedTraceSummary "
+               "WHERE root.entity.name = 'checkout' TIMESERIES")
+        self.assertEqual(t.datasource, "tempo")
+        self.assertEqual(t.query_type, "traceql-metrics")
+        self.assertEqual(
+            t.expr,
+            '{ nestedSetParent < 0 && resource.service.name = "checkout" } '
+            '| count_over_time()')
+        t = tr("SELECT average(duration.ms) FROM DistributedTraceSummary "
+               "WHERE root.entity.name = 'checkout' TIMESERIES")
+        self.assertTrue(t.expr.endswith("| avg_over_time(duration)"))
+        self.assertTrue(any("Tempo 2.6+" in n for n in t.notes))

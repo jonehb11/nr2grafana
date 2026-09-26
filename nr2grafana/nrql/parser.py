@@ -137,12 +137,24 @@ class FacetItem:
     alias: Optional[str] = None
 
 
+_VAR_TOKEN_RE = re.compile(r"\{\{\{?\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}?\}\}")
+
+
+def _var_token_name(tok: Any) -> Optional[str]:
+    """Name of a {{var}} placeholder token (any token kind), else None."""
+    if tok is None:
+        return None
+    m = _VAR_TOKEN_RE.fullmatch(tok.text.strip())
+    return m.group(1) if m else None
+
+
 @dataclass
 class TimeseriesSpec:
     auto: bool = True
     max: bool = False
     interval_seconds: Optional[float] = None
     slide_by: Optional[str] = None
+    interval_var: Optional[str] = None  # TIMESERIES {{var}}
 
 
 @dataclass
@@ -889,6 +901,13 @@ class _Parser:
             spec.auto = False
             spec.max = True
             return spec
+        var = _var_token_name(tok)
+        if var:
+            # TIMESERIES {{interval}}: the bucket width is a variable.
+            self.next()
+            spec.auto = False
+            spec.interval_var = var
+            return spec
         if tok.kind == "number":
             self.next()
             value = float(tok.text)
@@ -910,6 +929,10 @@ class _Parser:
             return int(float(tok.text))
         if tok.kind == "ident" and tok.upper() == "MAX":
             return "MAX"
+        var = _var_token_name(tok)
+        if var:
+            # LIMIT {{limit}}: a Grafana variable ($limit) in topk().
+            return "$" + var
         raise NrqlParseError("bad LIMIT %r" % tok.text, tok.pos, self.query)
 
     def parse_order_by(self) -> OrderBy:

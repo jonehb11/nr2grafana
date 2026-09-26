@@ -880,3 +880,204 @@ class ImpliedTimeseriesTests(unittest.TestCase):
                             load_config(), "viz.line")
         self.assertEqual(t.expr, '{level=~"(?i)error"}')
         self.assertFalse(any("no TIMESERIES clause" in n for n in t.notes))
+
+
+class MathFunctionTests(unittest.TestCase):
+    AVG = ('sum(rate(%s_sum{service_name="checkout"}[$__rate_interval])) / '
+           'sum(rate(%s_count{service_name="checkout"}[$__rate_interval]))'
+           % (HTTP, HTTP))
+
+    def test_round_with_places_and_inner_arithmetic(self):
+        t = tr("SELECT round(average(duration) * 1000, 2) FROM Transaction "
+               "WHERE appName = 'checkout' TIMESERIES")
+        self.assertEqual(t.expr, "round((%s * 1000), 0.01)" % self.AVG)
+        self.assertEqual(t.confidence, APPROXIMATE)
+
+    def test_abs_of_a_difference(self):
+        t = tr("SELECT abs(average(duration) - 0.5) FROM Transaction "
+               "WHERE appName = 'checkout' TIMESERIES")
+        self.assertEqual(t.expr, "abs((%s - 0.5))" % self.AVG)
+
+    def test_clamp_max_on_a_derived_infra_expression(self):
+        t = tr("SELECT clamp_max(average(cpuPercent), 100) FROM SystemSample "
+               "FACET hostname")
+        self.assertEqual(
+            t.expr,
+            'clamp_max(100 * (1 - avg by (instance)(rate(node_cpu_seconds_total'
+            '{mode="idle"}[$__range]))), 100)')
+
+    def test_log_is_the_natural_logarithm_and_drops_the_unit(self):
+        t = tr("SELECT log(average(duration)) FROM Transaction "
+               "WHERE appName = 'checkout'")
+        self.assertTrue(t.expr.startswith("ln(sum(rate("))
+        self.assertFalse(any(n.startswith("unit:") for n in t.notes))
+
+    def test_scale_text(self):
+        from nr2grafana.translate.metrics import _fmt_num, _scale_text
+        self.assertEqual(_scale_text(1 / 60.0), "/ 60")
+        self.assertEqual(_scale_text(1000.0), "* 1000")
+        self.assertEqual(_scale_text(0.5), "/ 2")
+        self.assertEqual(_scale_text(0.3), "* 0.3")
+        self.assertEqual(_fmt_num(1 / 1048576.0), "9.5367431640625e-07")
+        t = tr("SELECT count(*) / 60 FROM Transaction WHERE appName = 'c' "
+               "TIMESERIES 1 minute")
+        self.assertTrue(t.expr.endswith(") / 60"), t.expr)
+
+
+class UniquesTests(unittest.TestCase):
+    def test_uniques_lists_label_values_as_a_table(self):
+        t = tr("SELECT uniques(host) FROM Transaction WHERE appName = 'checkout'")
+        self.assertEqual(
+            t.expr,
+            'group by (instance)(%s_count{service_name="checkout"})' % HTTP)
+        self.assertEqual(t.query_type, "instant")
+        self.assertEqual(t.legend, "{{instance}}")
+        self.assertIn("panel-hint:table", t.notes)
+        self.assertEqual(t.confidence, APPROXIMATE)
+
+    def test_uniques_on_an_infra_entity_metric(self):
+        t = tr("SELECT uniques(hostname) FROM SystemSample "
+               "WHERE hostname LIKE 'web%'")
+        self.assertEqual(
+            t.expr, 'group by (instance)(node_uname_info{instance=~"(?i)web.*"})')
+
+    def test_string_attribute_has_a_real_reason(self):
+        t = tr("SELECT latest(error.message) FROM TransactionError "
+               "WHERE appName = 'checkout'")
+        self.assertEqual(t.confidence, UNTRANSLATABLE)
+        self.assertTrue(any("string attributes" in n for n in t.notes), t.notes)
+
+
+class VariableEverywhereTests(unittest.TestCase):
+    def test_percentile_from_a_variable(self):
+        t = tr("SELECT percentile(duration, {{pct}}) FROM Transaction "
+               "WHERE appName = 'checkout' TIMESERIES")
+        self.assertEqual(
+            t.expr,
+            'histogram_quantile($pct / 100, sum by (le)(rate(%s_bucket{'
+            'service_name="checkout"}[$__rate_interval])))' % HTTP)
+        t = tr("SELECT percentile(duration, {{pct}}, 99) FROM Transaction "
+               "WHERE appName = 'checkout' TIMESERIES")
+        self.assertEqual(t.legend, "p$pct")
+        self.assertEqual(t.extra[0].legend, "p99")
+
+    def test_limit_from_a_variable(self):
+        t = tr("SELECT count(*) FROM Transaction WHERE appName = 'checkout' "
+               "FACET name LIMIT {{limit}}")
+        self.assertTrue(t.expr.startswith("topk($limit, sum by (http_route)("),
+                        t.expr)
+
+    def test_metric_name_from_a_variable(self):
+        t = tr("SELECT count(*) FROM Metric WHERE metricName = '{{metric}}' "
+               "TIMESERIES")
+        self.assertEqual(
+            t.expr, "sum(rate($metric[$__rate_interval])) * $__interval_ms / 1000")
+        self.assertTrue(any("label_values(__name__)" in n for n in t.notes))
+        t = tr("SELECT average({{metric}}) FROM Metric WHERE host = '{{host}}' "
+               "TIMESERIES")
+        self.assertEqual(
+            t.expr,
+            'avg(avg_over_time($metric{instance=~"${host:regex}"}'
+            '[$__rate_interval]))')
+
+    def test_since_and_timeseries_from_variables(self):
+        t = tr("SELECT count(*) FROM Transaction WHERE appName = 'checkout' "
+               "SINCE {{since}} TIMESERIES {{interval}}")
+        self.assertIn("timefrom:$since", t.notes)
+        self.assertIn("interval:$interval", t.notes)
+        self.assertFalse(any("DROPPED" in n for n in t.notes))
+
+    def test_threshold_from_a_variable_is_explained(self):
+        t = tr("SELECT count(*) FROM Transaction WHERE appName = 'checkout' "
+               "AND duration > {{threshold}} TIMESERIES")
+        self.assertTrue(any("takes its threshold from a dashboard variable"
+                            in n for n in t.notes), t.notes)
+        self.assertFalse(any("'duration' not in label_map" in n
+                             for n in t.notes), t.notes)
+
+
+class FacetCaseShapeTests(unittest.TestCase):
+    def test_if_with_a_bare_boolean_condition(self):
+        t = tr("SELECT count(*) FROM Transaction WHERE appName = 'checkout' "
+               "FACET if(error, 'error', 'ok') TIMESERIES")
+        self.assertIn('http_response_status_code=~"5.."', t.expr)
+        self.assertEqual(t.legend, "error")
+        self.assertEqual(len(t.extra), 1)
+        self.assertIn('http_response_status_code!~"5.."', t.extra[0].expr)
+        self.assertEqual(t.extra[0].legend, "ok")
+
+    def test_cases_combined_with_an_attribute_facet(self):
+        t = tr("SELECT count(*) FROM Transaction WHERE appName = 'checkout' "
+               "FACET cases(WHERE duration < 0.1 AS 'fast', "
+               "WHERE duration >= 0.1 AS 'slow'), name")
+        self.assertEqual(
+            t.expr,
+            'sum by (http_route)(increase(%s_bucket{service_name="checkout",'
+            'le="0.1"}[$__range]))' % HTTP)
+        self.assertEqual(t.legend, "fast {{http_route}}")
+        self.assertEqual(t.extra[0].legend, "slow {{http_route}}")
+        self.assertEqual(t.group_by, ["http_route"])
+
+    def test_sum_if_bare_boolean_over_count(self):
+        t = tr("SELECT sum(if(error, 1, 0)) / count(*) FROM Transaction "
+               "WHERE appName = 'checkout' TIMESERIES")
+        self.assertTrue(t.expr.startswith(
+            '(sum(rate(%s_count{service_name="checkout",'
+            'http_response_status_code=~"5.."}' % HTTP), t.expr)
+
+
+class MetricNameHandlingTests(unittest.TestCase):
+    def test_rate_of_sum_uses_the_histogram_sum_series(self):
+        t = tr("SELECT rate(sum(jvm.gc.duration), 1 minute) FROM Metric "
+               "WHERE service.name = 'checkout' TIMESERIES")
+        self.assertEqual(
+            t.expr,
+            'sum(rate(jvm_gc_duration_seconds_sum{service_name="checkout"}'
+            '[$__rate_interval])) * 60')
+
+    def test_count_suffix_without_a_histogram_hint_is_a_gauge(self):
+        t = tr("SELECT average(process.runtime.jvm.threads.count) FROM Metric "
+               "WHERE service.name = 'checkout' TIMESERIES")
+        self.assertEqual(
+            t.expr,
+            'avg(avg_over_time(process_runtime_jvm_threads_count{'
+            'service_name="checkout"}[$__rate_interval]))')
+        t = tr("SELECT sum(custom.count) FROM Metric WHERE custom.count IS "
+               "NOT NULL TIMESERIES")
+        self.assertEqual(t.expr,
+                         "sum(avg_over_time(custom_count[$__rate_interval]))")
+
+    def test_metric_name_restated_in_where_is_consumed(self):
+        t = tr("SELECT average(custom.temp) FROM Metric WHERE metricName = "
+               "'custom.temp' TIMESERIES")
+        self.assertEqual(t.expr,
+                         "avg(avg_over_time(custom_temp[$__rate_interval]))")
+        t = tr("SELECT average(custom.temp) FROM Metric WHERE metricName = "
+               "'other.metric' TIMESERIES")
+        self.assertEqual(t.expr,
+                         "avg(avg_over_time(custom_temp[$__rate_interval]))")
+        self.assertTrue(any("different metric" in n for n in t.notes))
+
+    def test_unique_count_of_metric_names(self):
+        t = tr("SELECT uniqueCount(metricName) FROM Metric WHERE metricName "
+               "LIKE 'custom.%'")
+        self.assertEqual(
+            t.expr, 'count(count by (__name__)({__name__=~"(?i)custom_.*"}))')
+
+    def test_cloudwatch_sum_statistics_add_datapoints(self):
+        t = tr("SELECT sum(aws.sqs.NumberOfMessagesSent) FROM Metric "
+               "FACET aws.sqs.QueueName TIMESERIES")
+        self.assertEqual(
+            t.expr,
+            "sum by (dimension_QueueName)(sum_over_time("
+            "aws_sqs_number_of_messages_sent_sum[$__interval]))")
+        t = tr("SELECT sum(aws.sqs.NumberOfMessagesSent) FROM Metric")
+        self.assertEqual(
+            t.expr,
+            "sum(sum_over_time(aws_sqs_number_of_messages_sent_sum[$__range]))")
+
+    def test_span_metrics_status_code_words(self):
+        t = tr("SELECT percentage(count(*), WHERE otel.status_code = 'ERROR') "
+               "FROM Span WHERE service.name = 'checkout' FACET name")
+        self.assertIn('status_code="STATUS_CODE_ERROR"', t.expr)
+        self.assertNotIn('status_code="ERROR"', t.expr)

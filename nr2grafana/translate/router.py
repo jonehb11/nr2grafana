@@ -9,7 +9,7 @@ from ..nrql.parser import (
 )
 from .common import (
     APPROXIMATE, EXACT, NEEDS_REVIEW, UNTRANSLATABLE, Translation,
-    Untranslatable, route_event_type,
+    Untranslatable, _VAR_RE, route_event_type,
 )
 from .logs import translate_to_logql
 from .metrics import (
@@ -37,6 +37,11 @@ def _timing_notes(q, t) -> None:
                "equivalent; Grafana steps by the query interval, so the "
                "series will look more stepped than in NR" % ts.slide_by,
                APPROXIMATE)
+    if ts is not None and ts.interval_var:
+        t.notes.append("interval:$%s" % ts.interval_var)
+        t.note("TIMESERIES {{%s}}: the panel's min interval is the variable; "
+               "its value must be a Grafana interval such as 5m"
+               % ts.interval_var, NEEDS_REVIEW)
     if ts is not None and ts.interval_seconds:
         t.notes.append("interval:%s" % _interval_text(ts.interval_seconds))
         t.notes.append(
@@ -61,6 +66,9 @@ def _translate_span_aggregation(q, cfg: Dict[str, Any]) -> Translation:
     metrics when configured (span_aggregations: "traceql") or when span
     metrics cannot express the aggregation (uniqueCount(trace.id))."""
     mode = str(cfg.get("span_aggregations") or "spanmetrics").lower()
+    if q.from_ and q.from_[0].lower() == "distributedtracesummary":
+        # One row per trace: only TraceQL metrics can restrict to root spans.
+        return translate_span_metrics_traceql(q, cfg, root_only=True)
     aggs = [i.expr for i in q.select if isinstance(i.expr, Func)]
     first = aggs[0] if aggs else None
     trace_count = (first is not None
@@ -95,6 +103,14 @@ def _time_hints(q, t: Translation) -> None:
 
     SINCE a UNTIL b (both relative) is exactly a Grafana panel with
     timeFrom = a - b and timeShift = b."""
+    var = _VAR_RE.fullmatch((q.since or "").strip()) if q.since else None
+    if var is not None:
+        t.notes.append("timefrom:$%s" % var.group(1))
+        t.note("SINCE {{%s}}: the panel's relative time comes from the "
+               "variable; its value must be a Grafana span such as 1h or 7d "
+               "(New Relic wrote e.g. '1 hour ago')" % var.group(1),
+               NEEDS_REVIEW)
+        return
     since_s = _rel_seconds(q.since) if q.since else None
     until_s = _rel_seconds(q.until) if q.until else None
     if q.until and until_s is not None and until_s > 0:
