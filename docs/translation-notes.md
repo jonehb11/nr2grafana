@@ -505,3 +505,13 @@ counts):
 | an average / max / latest on a derived infra expression with a numeric WHERE it cannot take | silent | "cannot become a label matcher for this derived expression; dropped" |
 | `average(loadAverageOneMinute) / latest(coreCount)` and other ratios of plain numbers | `percentunit` | no unit; only counts over counts (and sums of counters) are proportions |
 | `allocatableCpuCoresUtilization`, `allocatableMemoryUtilization` on `K8sNodeSample` | unknown | used / allocatable per node (cAdvisor root cgroup over kube-state-metrics allocatable) |
+
+### Iteration 11 — Loki and Tempo shapes
+
+| Construct | Before | Now |
+| --- | --- | --- |
+| `parentId IS NULL` / `nr.entryPoint IS TRUE` on an aggregated `FROM Span` (span metrics) | a `parentId=""` label matcher (no such label: no data) | `span_kind=~"SPAN_KIND_SERVER\|SPAN_KIND_CONSUMER"` (entry spans) with a note; `span_aggregations: "traceql"` keeps the exact `nestedSetParent < 0` |
+| `errorCount > 0` on `DistributedTraceSummary` | `.errorCount > 0` (no such span attribute) | the trace-level condition `{ root filters } && { status = error }` for searches and TraceQL metrics; `errorCount = 0` is refused with the reason |
+| `newrelic.source`, `plugin.type`, `plugin.version`, ... in a log WHERE | parsed-field filters that never match | dropped with a note (New Relic ingest metadata) |
+| `filter(count(*), WHERE ...) / count(*)` on logs | legend `count(*)` | the NRQL expression |
+| `latest(message) ... FACET host` | the FACET vanished silently | noted as not expressible on a logs panel |

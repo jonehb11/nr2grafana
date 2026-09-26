@@ -108,6 +108,15 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "transactionType": "transaction_type",
         "transactionSubType": "transaction_sub_type",
         "error.expected": "error_expected",
+        # Span root markers (the fixups turn them into kind / TraceQL forms).
+        "parentId": "parent_id",
+        "parent.id": "parent_id",
+        "nr.entryPoint": "nr_entrypoint",
+        # New Relic log-ingest metadata (dropped with a note on Loki).
+        "newrelic.source": "newrelic_source",
+        "plugin.type": "plugin_type",
+        "plugin.version": "plugin_version",
+        "plugin.source": "plugin_source",
         "request.uri": "http_route",
         "http.route": "http_route",
         # Infrastructure agent dimensional metrics (host.* / k8s.*) name

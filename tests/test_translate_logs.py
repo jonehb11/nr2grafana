@@ -536,3 +536,26 @@ class Iteration8NestedLogTests(unittest.TestCase):
         self.assertEqual(t.confidence, "untranslatable")
         self.assertTrue(any("no quantile vector aggregation" in n
                             for n in t.notes))
+
+
+class Iteration11LogTests(unittest.TestCase):
+    def test_ratio_legend_and_ingest_metadata(self):
+        t = tr("SELECT filter(count(*), WHERE level = 'error') / count(*) "
+               "* 100 FROM Log WHERE service_name = 'checkout' TIMESERIES")
+        self.assertEqual(t.legend,
+                         "filter(count(*), WHERE level = error) / count(*)")
+        t = tr("SELECT count(*) FROM Log WHERE entity.name = 'checkout' AND "
+               "newrelic.source = 'api.logs' AND plugin.type = 'fluent-bit' "
+               "TIMESERIES")
+        self.assertEqual(
+            t.expr, 'sum(count_over_time({service_name="checkout"} [$__auto]))')
+        self.assertTrue(any("newrelic_source = 'api.logs' is New Relic ingest "
+                            "metadata" in n for n in t.notes))
+        self.assertEqual(t.confidence, APPROXIMATE)
+
+    def test_latest_message_facet_is_reported(self):
+        t = tr("SELECT latest(message) FROM Log WHERE service_name = "
+               "'checkout' FACET host")
+        self.assertEqual(t.expr, '{service_name="checkout"}')
+        self.assertTrue(any("FACET instance has no effect on a logs panel" in n
+                            for n in t.notes))

@@ -261,3 +261,29 @@ class Iteration3TraceTests(unittest.TestCase):
                "WHERE root.entity.name = 'checkout' TIMESERIES")
         self.assertTrue(t.expr.endswith("| avg_over_time(duration)"))
         self.assertTrue(any("Tempo 2.6+" in n for n in t.notes))
+
+
+class Iteration11TraceTests(unittest.TestCase):
+    def test_error_count_becomes_a_trace_level_condition(self):
+        from nr2grafana.config import load_config
+        from nr2grafana.translate.router import translate_query
+        cfg = load_config()
+        t = translate_query("SELECT count(*) FROM DistributedTraceSummary "
+                            "WHERE root.entity.name = 'checkout' AND "
+                            "errorCount > 0 TIMESERIES", cfg)
+        self.assertEqual(
+            t.expr,
+            '{ nestedSetParent < 0 && resource.service.name = "checkout" } '
+            '&& { status = error } | count_over_time()')
+        self.assertEqual(t.query_type, "traceql-metrics")
+        t = translate_query("SELECT * FROM DistributedTraceSummary WHERE "
+                            "root.entity.name = 'checkout' AND errorCount >= 1 "
+                            "LIMIT 20", cfg)
+        self.assertEqual(
+            t.expr,
+            '{ resource.service.name = "checkout" } && { status = error }')
+        t = translate_query("SELECT count(*) FROM DistributedTraceSummary "
+                            "WHERE errorCount = 0 TIMESERIES", cfg)
+        self.assertEqual(t.expr, "{ nestedSetParent < 0 } | count_over_time()")
+        self.assertTrue(any("errorCount = 0 cannot be expressed" in n
+                            for n in t.notes))

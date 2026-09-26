@@ -1731,3 +1731,21 @@ class Iteration10MetricTests(unittest.TestCase):
             "seconds_total"))
         self.assertIn("kube_node_status_allocatable", t.extra[0].expr)
         self.assertIn("unit:percent", t.notes)
+
+
+class Iteration11MetricTests(unittest.TestCase):
+    def test_root_span_filters_on_span_metrics(self):
+        t = tr("SELECT count(*) FROM Span WHERE service.name = 'checkout' "
+               "AND parentId IS NULL FACET name TIMESERIES")
+        self.assertEqual(
+            t.expr,
+            'sum by (span_name)(rate(traces_span_metrics_calls_total'
+            '{service_name="checkout",span_kind=~"SPAN_KIND_SERVER|'
+            'SPAN_KIND_CONSUMER"}[$__rate_interval])) * $__interval_ms / 1000')
+        self.assertTrue(any("root spans) approximated as server/consumer" in n
+                            for n in t.notes))
+        self.assertFalse(any("not in label_map" in n for n in t.notes))
+        t = tr("SELECT count(*) FROM Span WHERE service.name = 'checkout' "
+               "AND nr.entryPoint IS FALSE TIMESERIES")
+        self.assertIn('span_kind!~"SPAN_KIND_SERVER|SPAN_KIND_CONSUMER"',
+                      t.expr)

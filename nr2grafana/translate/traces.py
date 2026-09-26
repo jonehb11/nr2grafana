@@ -8,7 +8,7 @@ span metrics; this module handles trace search / listing widgets
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..nrql.parser import (
     Attr, BoolOp, Cmp, Cond, Func, InList, Lit, NotOp, NrqlQuery, NullCheck,
@@ -38,6 +38,41 @@ _TRACEQL_FIELDS = {
 }
 _ROOT_ATTRS = {"parentid", "parent.id", "parentspanid", "parent.span.id",
                "nr.entrypoint", "entrypoint"}
+
+# Sentinel for a trace-level condition (errorCount > 0) that the entry
+# points move out of the span filter: { spans } && { status = error }.
+ANY_ERROR_SPAN = "__ANY_ERROR_SPAN__"
+_ANY_ERROR_RE = re.compile(r"(\s*&&\s*)?__ANY_ERROR_SPAN__(\s*&&\s*)?")
+
+
+def hoist_trace_level(body: str, t: Translation) -> Tuple[str, str]:
+    """Remove the ANY_ERROR_SPAN sentinel from a span filter body; return
+    (body, trace-level suffix). Inside an OR it cannot be hoisted and
+    degrades to a span-level status filter."""
+    if ANY_ERROR_SPAN not in body:
+        return body, ""
+    suffix = ""
+
+    def sub(m: "re.Match[str]") -> str:
+        return " && " if (m.group(1) and m.group(2)) else ""
+    new = _ANY_ERROR_RE.sub(sub, body).strip()
+    if ANY_ERROR_SPAN in new:  # pragma: no cover - defensive
+        new = new.replace(ANY_ERROR_SPAN, "status = error")
+    if "||" in body and ("(" in body):
+        # an OR around the sentinel: approximate on the span itself
+        new = _ANY_ERROR_RE.sub(lambda m: (m.group(1) or "") +
+                                "status = error" + (m.group(2) or ""), body)
+        t.note("errorCount > 0 inside an OR became a span-level status = "
+               "error filter (TraceQL cannot OR a trace-level condition)",
+               NEEDS_REVIEW)
+        return new.strip(), ""
+    suffix = " && { status = error }"
+    t.note("errorCount > 0 became the trace-level condition "
+           "`&& { status = error }` (the trace has at least one errored "
+           "span)", APPROXIMATE)
+    if new.startswith("(") and new.endswith(")"):
+        new = new[1:-1]
+    return new, suffix
 
 _DURATION_ATTRS = {"duration", "duration.ms", "durationms", "duration_ms"}
 _KIND_VALUES = {"server", "client", "producer", "consumer", "internal"}
@@ -163,6 +198,20 @@ def _cmp_to_traceql(c: Cmp, t: Translation, cfg: Dict[str, Any]) -> str:
         text = str(getattr(c.right, "value", c.right)).strip().lower()
         wants_root = (text in ("true", "1")) == (c.op == "=")
         return "nestedSetParent %s 0" % ("<" if wants_root else ">=")
+    if low in ("errorcount", "error.count") and isinstance(c.right, Lit) \
+            and isinstance(c.right.value, (int, float)):
+        # DistributedTraceSummary.errorCount > 0: the trace has an errored
+        # span — a trace-level condition ({ ... } && { status = error })
+        # hoisted out of the span filter by the callers.
+        n = float(c.right.value)
+        any_error = (c.op == ">" and n <= 0) or (c.op == ">=" and n <= 1) \
+            or (c.op == "!=" and n == 0)
+        if any_error:
+            return ANY_ERROR_SPAN
+        t.note("errorCount %s %s cannot be expressed in TraceQL (a trace "
+               "with no errored span / an exact error count); dropped"
+               % (c.op, ("%g" % n)), NEEDS_REVIEW)
+        return ""
     field = _field_for(attr, t)
 
     # error IS TRUE handled by parser as Cmp(error, '=', Lit(True));
@@ -290,6 +339,7 @@ def translate_span_metrics_traceql(nq: NrqlQuery, cfg: Dict[str, Any],
     body = _cond_to_traceql(nq.where, t, cfg)
     if body.startswith("(") and body.endswith(")"):
         body = body[1:-1]
+    body, trace_level = hoist_trace_level(body, t)
     arg = fn.args[0] if fn.args else None
     attr = arg.name.lower() if isinstance(arg, Attr) else ""
     is_trace_count = fn.name in ("uniquecount", "cardinality") and attr in (
@@ -362,8 +412,8 @@ def translate_span_metrics_traceql(nq: NrqlQuery, cfg: Dict[str, Any],
         else:
             t.note("FACET %s has no TraceQL by() equivalent; dropped"
                    % getattr(item.expr, "name", "?"), NEEDS_REVIEW)
-    t.expr = "{ %s } | %s%s" % (body, agg,
-                                (" by (%s)" % ", ".join(by)) if by else "")
+    t.expr = "{ %s }%s | %s%s" % (body, trace_level, agg,
+                                  (" by (%s)" % ", ".join(by)) if by else "")
     t.group_by = by
     if by:
         t.legend = " / ".join("{{%s}}" % b for b in by)
@@ -385,7 +435,8 @@ def translate_to_traceql(nq: NrqlQuery, cfg: Dict[str, Any]) -> Translation:
     body = _cond_to_traceql(nq.where, t, cfg)
     if body.startswith("(") and body.endswith(")"):
         body = body[1:-1]
-    t.expr = "{ %s }" % body if body else "{ }"
+    body, trace_level = hoist_trace_level(body, t)
+    t.expr = ("{ %s }" % body if body else "{ }") + trace_level
     if not body:
         t.note("no WHERE filters; this searches all traces", NEEDS_REVIEW)
     if isinstance(nq.limit, int):

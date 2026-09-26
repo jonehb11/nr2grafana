@@ -81,6 +81,14 @@ def _render_pipe(m: Matcher) -> str:
     return "%s%s%s" % (m.label, m.op, q(m.value))
 
 
+# Attributes New Relic's log ingest adds (plugin / forwarder metadata).
+_NR_LOG_METADATA = {"newrelic_source", "newrelic.source", "newrelic_logs_batchindex",
+                    "newrelic.logs.batchindex", "plugin_type", "plugin.type",
+                    "plugin_version", "plugin.version", "plugin_source",
+                    "plugin.source", "newrelic_timestamp",
+                    "newrelic.ingest.timestamp"}
+
+
 def _split_matchers(matchers: List[Matcher], cfg: Dict[str, Any],
                     t: Translation) -> Tuple[List[Matcher], List[str],
                                              List[Matcher], List[Matcher]]:
@@ -100,6 +108,11 @@ def _split_matchers(matchers: List[Matcher], cfg: Dict[str, Any],
         if m.label == "timestamp":
             t.note("WHERE on timestamp dropped; the dashboard time range "
                    "selects the period", APPROXIMATE)
+            continue
+        if m.label.lower() in _NR_LOG_METADATA:
+            t.note("WHERE %s %s %r is New Relic ingest metadata that Loki "
+                   "does not carry; dropped" % (m.label, m.op, m.value),
+                   APPROXIMATE)
             continue
         if m.op in _NUMERIC_OPS:
             parsed.append(m)
@@ -713,6 +726,10 @@ def _translate_one(nq: NrqlQuery, cfg: Dict[str, Any],
                    "matching line" % (name, attr.name,
                                       "newest" if name == "latest"
                                       else "oldest"), APPROXIMATE)
+            if by:
+                t.note("FACET %s has no effect on a logs panel (one line "
+                       "per group is not expressible); grouping dropped"
+                       % ", ".join(by), NEEDS_REVIEW)
             return t
         over = "last_over_time" if name == "latest" else "first_over_time"
         field = unwrap_attr_name()
@@ -808,7 +825,8 @@ def _arith(nq: NrqlQuery, cfg: Dict[str, Any], item: SelectItem,
     l_expr = side(left)
     r_expr = side(right)
     out.expr = "%s %s %s" % (l_expr, op, r_expr)
-    out.legend = item.alias or out.legend
+    out.legend = item.alias or (out.legend if nq.facet
+                                else select_label(item.expr))
     out.note("arithmetic between log aggregations preserved as LogQL "
              "arithmetic (both sides share the stream selector and "
              "grouping)", APPROXIMATE)

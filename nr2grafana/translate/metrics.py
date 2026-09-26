@@ -464,7 +464,8 @@ def _http_fixups(matchers: List[Matcher], t: Translation,
 
 
 def _span_fixups(matchers: List[Matcher],
-                 cfg: Optional[Dict[str, Any]] = None) -> List[Matcher]:
+                 cfg: Optional[Dict[str, Any]] = None,
+                 t: Optional[Translation] = None) -> List[Matcher]:
     """Span-metrics label conventions: error flag -> status_code label;
     service identity label per span_service_label (Tempo emits `service`,
     the OTel spanmetrics connector emits `service_name`)."""
@@ -492,9 +493,29 @@ def _span_fixups(matchers: List[Matcher],
             # span.kind = 'server' -> span_kind="SPAN_KIND_SERVER" (the
             # OTel spanmetrics connector and Tempo both emit the enum name).
             out.append(Matcher("span_kind", m.op, _kind_values(m.value)))
+        elif m.label.lower() in _SPAN_ROOT_LABELS and m.value in ("", "true",
+                                                                "false"):
+            # parentId IS NULL / nr.entryPoint IS TRUE: root spans. Span
+            # metrics carry no parent label; entry spans are the server and
+            # consumer kinds.
+            wants_root = (m.value == "" and m.op == "=") or (
+                m.value == "true" and m.op in ("=", "=~")) or (
+                m.value == "false" and m.op in ("!=", "!~"))
+            out.append(Matcher("span_kind", "=~" if wants_root else "!~",
+                               "SPAN_KIND_SERVER|SPAN_KIND_CONSUMER"))
+            if t is not None:
+                t.note("%s (root spans) approximated as server/consumer "
+                       "span kinds on span metrics (no parent label); use "
+                       "span_aggregations: traceql for the exact root-span "
+                       "filter" % m.label, APPROXIMATE)
         else:
             out.append(m)
     return out
+
+
+_SPAN_ROOT_LABELS = {"parentid", "parent_id", "parent.id", "parentspanid",
+                     "parent_span_id", "nr_entrypoint", "nr.entrypoint",
+                     "entrypoint"}
 
 
 _SPAN_KINDS = ("server", "client", "producer", "consumer", "internal")
@@ -694,7 +715,7 @@ class _Ctx:
         if self.is_legacy_aws:
             return _legacy_aws_fixups(self, matchers)
         if self.is_span:
-            return _span_fixups(matchers, self.cfg)
+            return _span_fixups(matchers, self.cfg, self.t)
         if self.is_apm_http:
             return _http_fixups(matchers, self.t, self.cfg)
         return matchers
