@@ -771,12 +771,31 @@ def offset_selectors(expr: str, offset: str) -> str:
     return "".join(out)
 
 
+def matches_empty(m: Matcher) -> bool:
+    """True when the matcher also accepts a missing label (an empty value).
+    Prometheus and Loki reject a selector made only of such matchers."""
+    value = str(m.value)
+    if m.op == "=":
+        return value == ""
+    if m.op == "!=":
+        return value != ""
+    try:
+        hit = re.fullmatch(value, "") is not None
+    except re.error:
+        hit = False  # RE2 syntax Python lacks: assume it needs a value
+    return hit if m.op == "=~" else not hit
+
+
 def render_selector(metric: str, matchers: List[Matcher]) -> str:
     if metric and any(m.label == "__name__" for m in matchers):
         # A metricName filter next to a named metric: PromQL forbids
         # naming the metric twice, but allows several __name__ matchers.
         matchers = [Matcher("__name__", "=", metric)] + list(matchers)
         metric = ""
+    if not metric and matchers and all(matches_empty(m) for m in matchers):
+        # {__name__!="a"}: PromQL needs one matcher that does not match the
+        # empty value; every metric name is non-empty.
+        matchers = [Matcher("__name__", "=~", ".+")] + list(matchers)
     inner = ",".join(m.render() for m in matchers)
     if metric:
         return "%s{%s}" % (metric, inner) if inner else metric

@@ -2099,3 +2099,11 @@ class Iteration16ValueChecks(unittest.TestCase):
         t = tr("SELECT apdex(duration, t: 0.3) FROM Transaction")
         self.assertIn('le=~"0\\\\.3|0\\\\.5"', t.expr)
         self.assertIn('le=~"1\\\\.2|2\\\\.5"', t.expr)
+
+
+class Iteration17SelectorTests(unittest.TestCase):
+    def test_metric_less_selectors_with_only_negations_get_a_positive_matcher(self):
+        t = tr("SELECT uniqueCount(metricName) FROM Metric WHERE NOT "
+               "(metricName = 'a' OR topic = 'b')")
+        self.assertEqual(t.expr, 'count(count by (__name__)({__name__=~".+",'
+                                 '__name__!="a",topic!="b"}))')

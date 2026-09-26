@@ -23,7 +23,7 @@ from dataclasses import replace as _dc_replace
 
 from ..nrql.parser import Attr, BoolOp, Func, Lit, NrqlQuery, SelectItem, Star
 from .common import (
-    sanitize_label,
+    sanitize_label, matches_empty,
     fn_name,
     APPROXIMATE, EXACT, NEEDS_REVIEW, Matcher, NumericPred, Translation,
     Untranslatable, cond_text, cond_to_branches, event_map_entry, expr_text,
@@ -152,21 +152,6 @@ def _line_filter(m: Matcher, t: Translation) -> str:
     return "!~ %s" % q(m.value)
 
 
-def _matches_empty(m: Matcher) -> bool:
-    """True when the matcher also accepts streams that lack the label (an
-    empty value).  Loki rejects a selector made only of such matchers."""
-    value = str(m.value)
-    if m.op == "=":
-        return value == ""
-    if m.op == "!=":
-        return value != ""
-    try:
-        hit = re.fullmatch(value, "") is not None
-    except re.error:
-        hit = False  # RE2 syntax Python lacks: assume it needs a value
-    return hit if m.op == "=~" else not hit
-
-
 def _selector(stream: List[Matcher], t: Translation) -> str:
     if not stream:
         t.note("no stream-label filter found in WHERE; emitted "
@@ -174,7 +159,7 @@ def _selector(stream: List[Matcher], t: Translation) -> str:
                "filter", NEEDS_REVIEW)
         return '{service_name=~".+"}'
     rendered = ", ".join(m.render() for m in stream)
-    if all(_matches_empty(m) for m in stream):
+    if all(matches_empty(m) for m in stream):
         t.note("every stream-label matcher (%s) also matches streams "
                "without that label, which Loki rejects; service_name=~\".+\" "
                "was added and scans all streams — add a positive label "
