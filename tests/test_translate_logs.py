@@ -518,3 +518,21 @@ class Iteration7LogTests(unittest.TestCase):
         t = tr("SELECT count(*) FROM Log WHERE service_name = 'x' FACET level "
                "TIMESERIES")
         self.assertEqual(t.legend, "{{level}}")
+
+
+class Iteration8NestedLogTests(unittest.TestCase):
+    def test_average_of_per_level_counts(self):
+        t = tr("SELECT average(lines) FROM (SELECT count(*) AS lines FROM Log "
+               "WHERE service_name = 'checkout' FACET level) TIMESERIES")
+        self.assertEqual(
+            t.expr,
+            'avg(sum by (level)(count_over_time({service_name="checkout"} '
+            '[$__auto])))')
+        self.assertEqual(t.datasource, "loki")
+        self.assertEqual(t.confidence, APPROXIMATE)
+        t = tr("SELECT percentile(lines, 95) FROM (SELECT count(*) AS lines "
+               "FROM Log WHERE service_name = 'checkout' FACET level) "
+               "TIMESERIES")
+        self.assertEqual(t.confidence, "untranslatable")
+        self.assertTrue(any("no quantile vector aggregation" in n
+                            for n in t.notes))

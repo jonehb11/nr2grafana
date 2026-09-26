@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
+import copy
 
 from ..nrql.parser import (
-    Attr, Func, NrqlParseError, Star, TimeseriesSpec, parse_nrql,
+    Attr, BoolOp, Cmp, Func, Lit, NrqlParseError, NrqlQuery, Star,
+    TimeseriesSpec, parse_nrql,
 )
 from .common import (
     APPROXIMATE, EXACT, NEEDS_REVIEW, UNTRANSLATABLE, Translation,
-    Untranslatable, _VAR_RE, route_event_type,
+    Untranslatable, _VAR_RE, route_event_type, worst,
 )
 from .logs import translate_to_logql
 from .metrics import (
@@ -187,6 +190,220 @@ def _time_hints(q, t: Translation) -> None:
                    "dashboard default range applies" % q.since, NEEDS_REVIEW)
 
 
+# Nested queries: SELECT <outer agg>(alias) FROM (SELECT <inner agg> AS
+# alias FROM X ... FACET a). The inner query is one PromQL/LogQL vector per
+# facet value; the outer aggregation folds it.
+_NESTED_AGGS = {"average": "avg", "avg": "avg", "sum": "sum", "max": "max",
+                "min": "min", "count": "count", "stddev": "stddev",
+                "median": "quantile", "percentile": "quantile"}
+
+
+def _nested_where_filters(cond: Any, aliases: List[str], t: Translation) \
+        -> List[str]:
+    """Outer WHERE on the inner aliases (WHERE c > 100) -> PromQL
+    comparison filters on the inner vector."""
+    if cond is None:
+        return []
+    if isinstance(cond, BoolOp) and cond.op.lower() == "and":
+        out: List[str] = []
+        for item in cond.items:
+            out.extend(_nested_where_filters(item, aliases, t))
+        return out
+    if isinstance(cond, Cmp) and isinstance(cond.left, Attr) \
+            and cond.left.name in aliases and isinstance(cond.right, Lit) \
+            and isinstance(cond.right.value, (int, float)) \
+            and not isinstance(cond.right.value, bool) \
+            and cond.op in ("<", "<=", ">", ">=", "=", "!="):
+        return ["%s %s" % (cond.op, ("%g" % cond.right.value))]
+    t.note("the outer WHERE of the nested query (%s) is neither a numeric "
+           "comparison on an inner alias nor an AND of them; dropped"
+           % cond_text_safe(cond), NEEDS_REVIEW)
+    return []
+
+
+def cond_text_safe(cond: Any) -> str:
+    from .common import cond_text
+    try:
+        return cond_text(cond)
+    except Exception:  # pragma: no cover - defensive
+        return repr(cond)
+
+
+def _translate_nested(q: NrqlQuery, cfg: Dict[str, Any],
+                      widget_viz: str) -> Translation:
+    inner = q.subquery
+    assert inner is not None
+    fail = Translation(confidence=UNTRANSLATABLE)
+    if inner.subquery is not None:
+        fail.notes.append("a nested query inside a nested query has no "
+                          "PromQL/LogQL equivalent")
+        return fail
+    if not any(isinstance(i.expr, Func) for i in inner.select):
+        fail.notes.append("the inner query of a nested query must aggregate "
+                          "(SELECT agg(...) AS alias ... FACET attr)")
+        return fail
+    if not inner.facet:
+        fail.notes.append("a nested query only makes sense over a FACET "
+                          "in the inner query (one value per group to "
+                          "aggregate again); this inner query has no FACET")
+        return fail
+    outer_items = [i for i in q.select if isinstance(i.expr, Func)]
+    if not outer_items or len(outer_items) != len(q.select):
+        fail.notes.append("the outer SELECT of a nested query must be "
+                          "aggregations over the inner aliases")
+        return fail
+    implied = _imply_timeseries(q, widget_viz)
+    # The outer time clauses win; the inner query runs on the outer's
+    # TIMESERIES (New Relic requires them to agree).
+    inner = copy.deepcopy(inner)
+    inner.timeseries = copy.deepcopy(q.timeseries)
+    inner.since = q.since or inner.since
+    inner.until = q.until or inner.until
+    inner.compare_with = None
+    inner.limit = None
+    aliases = [i.alias for i in inner.select if i.alias]
+    inner_attrs = [f.expr.name if isinstance(f.expr, Attr) else None
+                   for f in inner.facet]
+    outer_attrs = [f.expr.name if isinstance(f.expr, Attr) else None
+                   for f in q.facet]
+    for a in outer_attrs:
+        if a is None or a not in inner_attrs:
+            fail.notes.append("the outer FACET of a nested query must be "
+                              "one of the inner FACET attributes (%s)"
+                              % ", ".join(str(x) for x in inner_attrs))
+            return fail
+    probe = Translation()
+    filters = _nested_where_filters(q.where, aliases, probe)
+    from .common import legend_for, select_label
+
+    class _Fail(Exception):
+        pass
+
+    def fold(fn: Func, t: Translation) -> Tuple[str, List[str], str]:
+        """PromQL/LogQL for one outer aggregation over the inner vector:
+        (expr, group labels, unit note or '')."""
+        if fn.name in ("_ratio", "_arith") and len(fn.args) >= 2:
+            # sum(errors) / sum(total) over the inner per-host counts.
+            operands = fn.args[1:] if fn.name == "_arith" else fn.args
+            op = str(getattr(fn.args[0], "value", "/")) \
+                if fn.name == "_arith" else "/"
+            sides = []
+            for side in operands:
+                if not isinstance(side, Func):
+                    raise _Fail("arithmetic over a nested query must "
+                                "combine aggregations of the inner aliases")
+                sides.append(fold(side, t))
+            expr = "(%s) %s (%s)" % (sides[0][0], op, sides[1][0])
+            unit = ""
+            if op == "/" and all(s[2] in ("unit:short", "") for s in sides):
+                unit = "unit:percentunit"
+            return expr, sides[0][1], unit
+        word = _NESTED_AGGS.get(fn.name)
+        if word is None:
+            raise _Fail("%s() over a nested query has no PromQL "
+                        "aggregation; only average/sum/max/min/count/"
+                        "stddev/percentile/median fold the inner series"
+                        % fn.name)
+        arg = fn.args[0] if fn.args else None
+        if fn.name == "count" and (arg is None or isinstance(arg, Star)):
+            target = inner.select[0]
+        elif isinstance(arg, Attr) and arg.name in aliases:
+            target = next(i for i in inner.select if i.alias == arg.name)
+        elif isinstance(arg, Attr) and len(inner.select) == 1 \
+                and inner.select[0].alias is None:
+            target = inner.select[0]
+        else:
+            raise _Fail("%s refers to %r, which is not an alias of the "
+                        "inner SELECT (%s)"
+                        % (fn.name, getattr(arg, "name", arg),
+                           ", ".join(aliases) or "no aliases"))
+        sub = copy.deepcopy(inner)
+        sub.select = [copy.deepcopy(target)]
+        t_in = translate_parsed(sub, cfg, "")
+        if t_in.confidence == UNTRANSLATABLE:
+            raise _Fail("; ".join(t_in.notes) or "inner query untranslatable")
+        if t_in.datasource == "tempo":
+            raise _Fail("a nested query over span searches has no TraceQL "
+                        "equivalent; aggregate spans with span metrics "
+                        "instead")
+        if word == "quantile":
+            if t_in.datasource == "loki":
+                raise _Fail("percentile() over a nested LogQL query: LogQL "
+                            "has no quantile vector aggregation")
+            pct = 50.0
+            if fn.name == "percentile":
+                nums = [a.value for a in fn.args[1:]
+                        if isinstance(a, Lit)
+                        and isinstance(a.value, (int, float))]
+                pct = float(nums[0]) if nums else 95.0
+            head = "quantile(%s, " % ("%g" % (pct / 100.0))
+        else:
+            head = word + "("
+        by_labels = [t_in.group_by[inner_attrs.index(a)]
+                     for a in outer_attrs
+                     if inner_attrs.index(a) < len(t_in.group_by)]
+        if by_labels:
+            head = head.replace("(", " by (%s)(" % ", ".join(by_labels), 1)
+        body = t_in.expr
+        for f in filters:
+            body = "(%s) %s" % (body, f)
+        t.datasource = t_in.datasource
+        t.query_type = t_in.query_type
+        t.confidence = worst(t.confidence, t_in.confidence)
+        unit = ""
+        for n in t_in.notes:
+            if n.startswith("unit:"):
+                unit = n
+            elif not n.startswith(("timefrom:", "timeshift:", "interval:")):
+                t.note(n)
+        if word == "count":
+            unit = "unit:short"
+        t.note("nested query: %s over the inner per-%s %s → %s of the inner "
+               "vector%s" % (select_label(fn), "/".join(
+                   str(a) for a in inner_attrs), select_label(target.expr),
+                   word, (" filtered by %s" % ", ".join(filters)) if filters
+                   else ""), APPROXIMATE)
+        return "%s%s)" % (head, body), by_labels, unit
+
+    primary: Optional[Translation] = None
+    for item in outer_items:
+        fn = item.expr
+        assert isinstance(fn, Func)
+        t = Translation(confidence=APPROXIMATE)
+        try:
+            expr, by_labels, unit = fold(fn, t)
+        except _Fail as e:
+            fail.notes.append(str(e))
+            return fail
+        if q.facet and isinstance(q.limit, int):
+            expr = "topk(%d, %s)" % (q.limit, expr)
+        tag = item.alias or select_label(fn)
+        legend = legend_for(by_labels)
+        t.expr = expr
+        t.legend = (legend + " " + tag).strip() if by_labels else tag
+        t.group_by = by_labels
+        if unit:
+            t.notes.append(unit)
+        for n in probe.notes:
+            t.note(n, NEEDS_REVIEW)
+        if primary is None:
+            primary = t
+        else:
+            primary.extra.append(t)
+    assert primary is not None
+    if implied:
+        primary.note("the NRQL has no TIMESERIES clause but a %s widget "
+                     "plots over time; translated as a range query (one "
+                     "point per Grafana interval) — add TIMESERIES in New "
+                     "Relic to make this exact" % widget_viz, APPROXIMATE)
+    _timing_notes(q, primary)
+    _time_hints(q, primary)
+    if q.compare_with:
+        primary.note("COMPARE WITH on a nested query is not supported; the "
+                     "comparison series was dropped", NEEDS_REVIEW)
+    return primary
+
+
 # Widget kinds that plot over time: New Relic renders them only with a
 # TIMESERIES query, so a query lacking the clause still means "over time".
 _TIME_CHART_VIZ = {"viz.line", "viz.area", "viz.stacked-bar", "viz.sparkline",
@@ -223,6 +440,14 @@ def translate_query(nrql_text: str, cfg: Dict[str, Any],
         t = Translation(confidence=UNTRANSLATABLE)
         t.notes.append("NRQL could not be parsed: %s" % e)
         return t
+    if q.subquery is not None:
+        return _translate_nested(q, cfg, widget_viz)
+    return translate_parsed(q, cfg, widget_viz)
+
+
+def translate_parsed(q: NrqlQuery, cfg: Dict[str, Any],
+                     widget_viz: str = "") -> Translation:
+    """translate_query() for an already parsed query."""
     had_timeseries = q.timeseries is not None
     implied = _imply_timeseries(q, widget_viz)
     snapshot = had_timeseries and q.timeseries is None

@@ -473,11 +473,11 @@ class ArithmeticAndSyntaxTests(unittest.TestCase):
                        "appName = 'x'")
         self.assertEqual(q.where.items[0], Cmp(Attr("error"), "=", Lit(True)))
 
-    def test_subquery_in_from_rejected_with_reason(self):
-        with self.assertRaises(NrqlParseError) as ctx:
-            parse_nrql("SELECT average(c) FROM (SELECT count(*) AS c FROM "
+    def test_subquery_in_from_is_parsed(self):
+        q = parse_nrql("SELECT average(c) FROM (SELECT count(*) AS c FROM "
                        "Transaction FACET host)")
-        self.assertIn("subquery", str(ctx.exception))
+        self.assertEqual(q.from_, ["Transaction"])
+        self.assertEqual(q.subquery.select[0].alias, "c")
 
     def test_subquery_in_in_list_rejected_with_reason(self):
         with self.assertRaises(NrqlParseError) as ctx:
@@ -538,3 +538,32 @@ class CasesOtherBucketTests(unittest.TestCase):
         self.assertIsNotNone(q.timeseries)
         self.assertEqual(q.since, "1 hour ago")
         self.assertIsNone(q.facet[0].alias)
+
+
+class TrailingSemicolonTests(unittest.TestCase):
+    def test_trailing_semicolon_is_tolerated(self):
+        q = parse_nrql("SELECT count(*) FROM Transaction WHERE appName = 'x' "
+                       "TIMESERIES; ")
+        self.assertIsNotNone(q.timeseries)
+        self.assertEqual(q.from_, ["Transaction"])
+
+
+class NestedSubqueryParseTests(unittest.TestCase):
+    def test_from_subquery_is_parsed_recursively(self):
+        q = parse_nrql("SELECT average(c) FROM (SELECT count(*) AS c FROM "
+                       "Transaction WHERE appName = 'x' FACET host "
+                       "TIMESERIES 1 minute) WHERE c > 5 TIMESERIES "
+                       "SINCE 1 hour ago")
+        self.assertEqual(q.from_, ["Transaction"])
+        self.assertIsNotNone(q.subquery)
+        inner = q.subquery
+        self.assertEqual(inner.select[0].alias, "c")
+        self.assertEqual([f.expr.name for f in inner.facet], ["host"])
+        self.assertIsNotNone(inner.timeseries)
+        self.assertEqual(q.since, "1 hour ago")
+        self.assertIsNotNone(q.timeseries)
+        self.assertEqual(q.where, Cmp(Attr("c"), ">", Lit(5)))
+        self.assertIsNone(inner.subquery)
+        with self.assertRaises(NrqlParseError):
+            parse_nrql("SELECT average(c) FROM (SELECT count(*) AS c FROM "
+                       "Transaction FACET host")

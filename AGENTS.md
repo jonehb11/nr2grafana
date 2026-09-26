@@ -143,10 +143,13 @@ create folders). Never print or commit them.
   `ElasticsearchClusterSample`, `RabbitmqQueueSample`, …) map their common
   attributes to the matching Prometheus exporter; anything else names the
   exporter to rebuild on.
+- Nested queries `SELECT avg(c) FROM (SELECT count(*) AS c FROM X FACET a)`
+  fold the inner per-facet vector (`avg(sum by (a)(...))`, `count((...) >
+  n)`, `quantile(0.95, ...)`); the outer FACET must name inner facets.
 - Never translatable: `funnel()`, service maps, custom nerdpack
   visualizations, browser/mobile RUM (Faro is the LGTM equivalent), synthetics
-  (blackbox_exporter), `Nr*` account data, subqueries. The tool says so per
-  widget; do not invent look-alikes.
+  (blackbox_exporter), `Nr*` account data, subqueries in WHERE/IN. The tool
+  says so per widget; do not invent look-alikes.
 
 ## Working on the code
 

@@ -185,6 +185,9 @@ class NrqlQuery:
     with_: Dict[str, Any] = field(default_factory=dict)
     # Anything at the tail we recognized but do not model.
     extras: List[str] = field(default_factory=list)
+    # SELECT agg(alias) FROM (SELECT ... AS alias FROM X FACET a): the inner
+    # query; from_ then mirrors the inner FROM so routing sees the event.
+    subquery: Optional["NrqlQuery"] = None
 
 
 # ---------------------------------------------------------------------------
@@ -406,6 +409,7 @@ class _Parser:
 
     def parse(self) -> NrqlQuery:
         q = NrqlQuery(raw=self.query.strip())
+        self._subquery: Optional[NrqlQuery] = None
         # WITH <expr> AS <alias> may lead the query.
         if self.at_kw("WITH") and not self._with_is_tail_clause():
             self.next()
@@ -424,6 +428,7 @@ class _Parser:
             q.select = self.parse_select_list()
             if self.eat_kw("FROM"):
                 q.from_ = self.parse_from_list()
+        q.subquery = self._subquery
         while self.peek() is not None:
             tok = self.peek()
             assert tok is not None
@@ -519,13 +524,35 @@ class _Parser:
                 continue
             return out
 
+    def parse_subquery(self) -> NrqlQuery:
+        """FROM (SELECT ...): parse the parenthesised inner query."""
+        lparen = self.next()
+        depth = 1
+        j = self.i
+        while j < len(self.toks) and depth:
+            kind = self.toks[j].kind
+            if kind == "lparen":
+                depth += 1
+            elif kind == "rparen":
+                depth -= 1
+            j += 1
+        if depth:
+            raise NrqlParseError("unterminated subquery", lparen.pos,
+                                 self.query)
+        rparen = self.toks[j - 1]
+        inner_text = self.query[lparen.pos + 1:rparen.pos].strip()
+        self.i = j
+        try:
+            return _Parser(inner_text).parse()
+        except NrqlParseError as e:
+            raise NrqlParseError("in subquery: %s" % e.args[0]
+                                 if e.args else "in subquery",
+                                 lparen.pos, self.query)
+
     def parse_from_list(self) -> List[str]:
         if self._at_subquery():
-            tok = self.peek()
-            raise NrqlParseError(
-                "nested subquery (FROM (SELECT ...)) has no equivalent in "
-                "PromQL/LogQL; rewrite as a single-level query",
-                tok.pos if tok else -1, self.query)
+            self._subquery = self.parse_subquery()
+            return list(self._subquery.from_)
         names = [self.parse_name()]
         while self.peek() is not None and self.peek().kind == "comma":  # type: ignore[union-attr]
             self.next()
@@ -1112,4 +1139,9 @@ def _lift_arg_scale(fn: Any) -> Optional[float]:
 
 def parse_nrql(query: str) -> NrqlQuery:
     """Parse an NRQL query string into an NrqlQuery AST."""
+    # A trailing semicolon (pasted from a query editor) is not NRQL, but
+    # New Relic tolerates it.
+    query = (query or "").strip()
+    while query.endswith(";"):
+        query = query[:-1].rstrip()
     return _Parser(query).parse()

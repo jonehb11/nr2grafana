@@ -99,6 +99,7 @@ General invariants:
 
 | Clause | Status | Notes |
 | --- | --- | --- |
+| `SELECT agg(alias) FROM (SELECT agg2(...) AS alias FROM X ... FACET a [, b]) [WHERE alias > n] [FACET a] [TIMESERIES]` (nested query) | approximate | the inner query is one vector per facet value; the outer aggregation folds it: `avg(sum by (instance)(...))`, `count((...) > 100)`, `quantile(0.95, ...)`, `sum(a) / sum(b)`; an outer FACET must name inner facets (`avg by (http_route)(...)`); LogQL likewise (no `percentile`); a nested query inside a nested query, `uniqueCount()` outer, or an inner query without FACET is refused with the reason |
 | `WHERE a = / != v` | exact | label matcher (`=~ ${var:regex}` for dashboard variables) |
 | `WHERE a IN (...)` / `NOT IN` | exact | anchored regex alternation; `IN ({{var}})` -> `=~ ${var:regex}` |
 | `WHERE a LIKE p` | exact | `%`/`_` -> `.*`/`.`; case-insensitive `(?i)` to match NRQL LIKE |
@@ -456,3 +457,25 @@ etc.) all render. The `PromQL info: input to histogram_quantile needed to
 be fixed for monotonicity` notice Prometheus attaches to a
 `histogram_quantile` over non-monotonic synthetic buckets appears as a
 panel warning; it comes from the data, not the query.
+
+### Iteration 8 — a crafted edge dashboard on the live stack, nested queries
+
+A dashboard exercising every time/variable/mixed-datasource shape was
+exported to the local Grafana 12.1 and rendered; the NRQL parser and
+translator gained nested queries. Findings:
+
+| Construct | Before | Now |
+| --- | --- | --- |
+| `TIMESERIES {{interval}}` with a New Relic ENUM/STRING variable whose values are `1 minute` / `5 minutes` | the panel failed in Grafana ("Invalid interval string") | the variable's values are rewritten to Grafana spans (`1m`, `5m`) when the variable feeds a panel interval; `SINCE {{since}}` values (`1 hour ago`, `today`) become `now-1h` / `now/d`; plain numbers (`now-${n}m`) stay |
+| `SINCE yesterday UNTIL today` in a dashboard with other ranges | the `now/d` half could win the dashboard default range, leaving the panel with only `timeShift 1d/d` (correct only for a sub-day dashboard range) | the panel always carries both `timeFrom now/d` and `timeShift 1d/d`; calendar ranges no longer vote for the dashboard default |
+| a table mixing units (`average(duration)`, `count(*)`) | the count column showed seconds: `byFrameRefID` unit overrides do not survive the merge transformation | unit overrides match the renamed column (`byName`) |
+| `FACET name AS 'Endpoint'` in a table | column `http_route` | column `Endpoint` |
+| `SELECT average(c) FROM (SELECT count(*) AS c FROM Transaction FACET host)` and the other nested shapes (`count(*) ... WHERE c > 100`, `percentile(c, 95)`, `sum(errors) / sum(total)`, outer `FACET`, `LIMIT`) | "nested subquery has no equivalent" | translated (see the clause table); refused with the reason when the shape has no vector-aggregation form |
+| a trailing `;` | parse error | tolerated |
+
+Verified on the live stack: `now-${n}m` and `$interval` overrides, the
+`-- Mixed --` panel datasource for a widget with a Loki and a Prometheus
+query, `FACET cases(...)` stacked bars, billboard thresholds and
+percent-change comparisons, logs / pie / gauge / bargauge / heatmap /
+markdown panels, and the query-variable `label_values(...)` definitions
+all render without panel errors.

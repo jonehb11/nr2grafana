@@ -774,6 +774,15 @@ class Iteration7BuilderTests(Iteration2BuilderTests):
         self.assertEqual(
             multi["transformations"][1]["options"]["renameByName"],
             {"Value #A": "count(*)", "Value #B": "average(duration)"})
+        dash = self._build([self._widget(
+            "Alias", "viz.table",
+            "SELECT count(*) AS 'Requests' FROM Transaction WHERE "
+            "appName = 'c' FACET name AS 'Endpoint', host")])
+        self.assertEqual(
+            self._panel(dash, "Alias")["transformations"][1]["options"][
+                "renameByName"],
+            {"http_route": "Endpoint", "Value #A": "Requests",
+             "Value": "Requests"})
 
     def test_series_legend_is_the_nrql_expression_not_promql(self):
         dash = self._build([self._widget(
@@ -782,3 +791,59 @@ class Iteration7BuilderTests(Iteration2BuilderTests):
             "appName = 'c' TIMESERIES")])
         tgt = self._panel(dash, "Tp")["targets"][0]
         self.assertEqual(tgt["legendFormat"], "rate(count(*), 1 minute)")
+
+
+class Iteration8BuilderTests(Iteration2BuilderTests):
+    def test_interval_and_range_variables_get_grafana_spans(self):
+        dash = self._build([
+            self._widget("Int", "viz.line",
+                         "SELECT count(*) FROM Transaction TIMESERIES "
+                         "{{interval}} SINCE 1 hour ago"),
+            self._widget("Since", "viz.line",
+                         "SELECT count(*) FROM Transaction SINCE {{since}} "
+                         "TIMESERIES", col=5),
+            self._widget("Mins", "viz.line",
+                         "SELECT count(*) FROM Transaction SINCE {{mins}} "
+                         "minutes ago TIMESERIES", col=9),
+        ], [{"name": "interval", "type": "ENUM",
+             "items": [{"title": "1m", "value": "1 minute"},
+                       {"title": "5m", "value": "5 minutes"}],
+             "defaultValues": [{"value": {"string": "5 minutes"}}]},
+            {"name": "since", "type": "STRING",
+             "defaultValues": [{"value": {"string": "1 hour ago"}}]},
+            {"name": "mins", "type": "STRING",
+             "defaultValues": [{"value": {"string": "30"}}]}])
+        by_name = {v["name"]: v for v in dash["templating"]["list"]}
+        interval = by_name["interval"]
+        self.assertEqual([o["value"] for o in interval["options"]],
+                         ["1m", "5m"])
+        self.assertEqual(interval["query"], "1m : 1m, 5m : 5m")
+        self.assertEqual(interval["current"]["value"], "5m")
+        self.assertEqual(by_name["since"]["query"], "now-1h")
+        self.assertEqual(by_name["since"]["current"]["value"], "now-1h")
+        self.assertEqual(by_name["mins"]["query"], "30")
+        self.assertEqual(self._panel(dash, "Int")["interval"], "$interval")
+        self.assertEqual(self._panel(dash, "Since")["timeFrom"], "$since")
+        self.assertEqual(self._panel(dash, "Mins")["timeFrom"],
+                         "now-${mins}m")
+
+    def test_whole_unit_shift_panels_always_keep_their_time_from(self):
+        dash = self._build([self._widget(
+            "Yesterday", "viz.billboard",
+            "SELECT count(*) FROM Transaction SINCE yesterday UNTIL today")])
+        p = self._panel(dash, "Yesterday")
+        self.assertEqual(p["timeFrom"], "now/d")
+        self.assertEqual(p["timeShift"], "1d/d")
+        # the calendar range does not become the dashboard default
+        self.assertEqual(dash["time"], {"from": "now-1h", "to": "now"})
+
+    def test_table_unit_overrides_match_renamed_columns(self):
+        dash = self._build([self._widget(
+            "Mix", "viz.table",
+            "SELECT average(duration) AS 'Avg', count(*) AS 'Requests' "
+            "FROM Transaction WHERE appName = 'c' FACET name")])
+        p = self._panel(dash, "Mix")
+        self.assertEqual(p["fieldConfig"]["defaults"]["unit"], "s")
+        self.assertEqual(p["fieldConfig"]["overrides"], [
+            {"matcher": {"id": "byName", "options": "Requests"},
+             "properties": [{"id": "unit", "value": "short"}]}])

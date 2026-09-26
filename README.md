@@ -166,8 +166,11 @@ dashboard with the same uid/title already exists.
 - `Span` searches → **TraceQL**; `Span` aggregations → PromQL over span
   metrics (or TraceQL metrics with `span_aggregations: "traceql"`);
   `uniqueCount(trace.id)` → root-span count.
-- Browser/mobile RUM, synthetics, `Nr*` account data, subqueries,
-  `funnel()` → untranslatable, each with the LGTM equivalent named.
+- Nested queries (`SELECT average(c) FROM (SELECT count(*) AS c FROM
+  Transaction FACET host)`) → the outer aggregation over the inner
+  per-facet vector (`avg(sum by (instance)(...))`).
+- Browser/mobile RUM, synthetics, `Nr*` account data, subqueries in
+  WHERE/IN, `funnel()` → untranslatable, each with the LGTM equivalent named.
 
 **Semantics preserved**: `TIMESERIES` → range queries with
 `$__rate_interval`; no `TIMESERIES` → instant queries over `$__range` (NR

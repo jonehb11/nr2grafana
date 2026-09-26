@@ -432,9 +432,14 @@ class InspectExplainTests(unittest.TestCase):
         self.assertIn(" or ", t["expr"])
 
     def test_explain_parse_error(self):
-        m = pipeline.explain("SELECT count(*) FROM (SELECT 1)")
+        m = pipeline.explain("SELECT count(*) FROM Transaction WHERE name IN "
+                             "(SELECT name FROM Transaction)")
         self.assertIn("subquery", m["parse_error"])
         self.assertEqual(m["translation"]["confidence"], "untranslatable")
+        m = pipeline.explain("SELECT count(*) FROM (SELECT 1)")
+        self.assertEqual(m["translation"]["confidence"], "untranslatable")
+        self.assertTrue(any("must aggregate" in n
+                            for n in m["translation"]["notes"]))
 
 
 if __name__ == "__main__":

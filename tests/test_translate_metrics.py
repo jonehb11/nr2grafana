@@ -1481,3 +1481,97 @@ class Iteration7MetricTests(unittest.TestCase):
                "appName = 'c' TIMESERIES")
         self.assertEqual([t.legend] + [x.legend for x in t.extra],
                          ["p50", "p95"])
+
+
+class Iteration8NestedQueryTests(unittest.TestCase):
+    INNER = ("(SELECT count(*) AS c FROM Transaction WHERE appName = "
+             "'checkout' FACET host)")
+    PER_HOST = ('sum by (instance)(rate(%s_count{service_name="checkout"}'
+                '[$__rate_interval])) * $__interval_ms / 1000' % HTTP)
+
+    def test_average_of_per_group_counts(self):
+        t = tr("SELECT average(c) FROM %s TIMESERIES" % self.INNER)
+        self.assertEqual(t.expr, "avg(%s)" % self.PER_HOST)
+        self.assertEqual(t.confidence, APPROXIMATE)
+        self.assertEqual(t.legend, "average(c)")
+        self.assertEqual(t.query_type, "range")
+        self.assertIn("unit:short", t.notes)
+        self.assertTrue(any(n.startswith("nested query: average(c) over the "
+                                         "inner per-host count(*)")
+                            for n in t.notes))
+        t = tr("SELECT average(c) FROM %s" % self.INNER)
+        self.assertEqual(
+            t.expr,
+            'avg(sum by (instance)(increase(%s_count{service_name='
+            '"checkout"}[$__range])))' % HTTP)
+        self.assertEqual(t.query_type, "instant")
+
+    def test_outer_where_count_and_percentile(self):
+        t = tr("SELECT count(*) FROM %s WHERE c > 100 TIMESERIES"
+               % self.INNER)
+        self.assertEqual(t.expr, "count((%s) > 100)" % self.PER_HOST)
+        self.assertIn("unit:short", t.notes)
+        t = tr("SELECT percentile(c, 95), max(c) FROM %s TIMESERIES"
+               % self.INNER)
+        self.assertEqual(t.expr, "quantile(0.95, %s)" % self.PER_HOST)
+        self.assertEqual(t.extra[0].expr, "max(%s)" % self.PER_HOST)
+        self.assertEqual([t.legend, t.extra[0].legend],
+                         ["percentile(c, 95)", "max(c)"])
+        t = tr("SELECT average(c) FROM %s WHERE c > 10 AND c < 1000 "
+               "TIMESERIES" % self.INNER)
+        self.assertEqual(t.expr, "avg(((%s) > 10) < 1000)" % self.PER_HOST)
+
+    def test_outer_facet_over_inner_facets_and_limit(self):
+        t = tr("SELECT average(p95) FROM (SELECT percentile(duration, 95) AS "
+               "p95 FROM Transaction WHERE appName = 'checkout' FACET name, "
+               "host) FACET name LIMIT 5")
+        self.assertEqual(
+            t.expr,
+            'topk(5, avg by (http_route)(histogram_quantile(0.95, sum by '
+            '(le, http_route, instance)(rate(%s_bucket{service_name='
+            '"checkout"}[$__range])))))' % HTTP)
+        self.assertEqual(t.legend, "{{http_route}} average(p95)")
+        self.assertEqual(t.group_by, ["http_route"])
+        self.assertIn("unit:s", t.notes)
+
+    def test_ratio_over_nested_query(self):
+        t = tr("SELECT sum(errors) / sum(total) FROM (SELECT filter(count(*), "
+               "WHERE error IS TRUE) AS errors, count(*) AS total FROM "
+               "Transaction WHERE appName = 'checkout' FACET host) TIMESERIES")
+        errors = ('sum(sum by (instance)(rate(%s_count{service_name='
+                  '"checkout",http_response_status_code=~"5.."}'
+                  '[$__rate_interval])) * $__interval_ms / 1000)' % HTTP)
+        self.assertEqual(t.expr, "(%s) / (sum(%s))" % (errors, self.PER_HOST))
+        self.assertIn("unit:percentunit", t.notes)
+        self.assertEqual(t.legend, "sum(errors) / sum(total)")
+
+    def test_nested_over_infra_and_span_aggregations(self):
+        t = tr("SELECT max(c) FROM (SELECT average(cpuPercent) AS c FROM "
+               "SystemSample FACET hostname) TIMESERIES")
+        self.assertEqual(
+            t.expr,
+            'max(100 * (1 - avg by (instance)(rate(node_cpu_seconds_total'
+            '{mode="idle"}[$__rate_interval]))))')
+        self.assertIn("unit:percent", t.notes)
+        t = tr("SELECT average(c) FROM (SELECT count(*) AS c FROM Span WHERE "
+               "service.name = 'x' FACET name) TIMESERIES")
+        self.assertTrue(t.expr.startswith("avg(sum by (span_name)("))
+
+    def test_nested_refusals_say_why(self):
+        cases = [
+            ("SELECT average(c) FROM (SELECT count(*) AS c FROM Transaction "
+             "WHERE appName = 'x') TIMESERIES", "no FACET"),
+            ("SELECT uniqueCount(c) FROM %s TIMESERIES" % self.INNER,
+             "uniquecount() over a nested query"),
+            ("SELECT average(c) FROM %s FACET name TIMESERIES" % self.INNER,
+             "must be one of the inner FACET attributes"),
+            ("SELECT average(x) FROM %s TIMESERIES" % self.INNER,
+             "not an alias of the inner SELECT"),
+            ("SELECT average(c) FROM (SELECT average(c) FROM (SELECT count(*) "
+             "AS c FROM Transaction FACET host) FACET host) TIMESERIES",
+             "nested query inside a nested query"),
+        ]
+        for nrql, reason in cases:
+            t = tr(nrql)
+            self.assertEqual(t.confidence, UNTRANSLATABLE, nrql)
+            self.assertTrue(any(reason in n for n in t.notes), (nrql, t.notes))

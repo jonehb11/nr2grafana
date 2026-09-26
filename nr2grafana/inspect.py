@@ -152,6 +152,7 @@ def explain_nrql(nrql: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
                      if q.order_by is not None else None),
         "timezone": q.timezone, "extrapolate": q.extrapolate,
         "with": {k: expr_text(v) for k, v in q.with_.items()},
+        "subquery": q.subquery.raw if q.subquery is not None else None,
         "attributes": attrs,
         "variables": nr_var_names(nrql),
         "unparsed_fragments": list(q.extras),
@@ -393,6 +394,8 @@ def render_explanation_text(model: Dict[str, Any]) -> str:
     p = model["parsed"]
     lines.append("  FROM %s  (%s)" % (", ".join(p["from"]) or "?",
                                       p["family"]))
+    if p.get("subquery"):
+        lines.append("  nested over: (%s)" % p["subquery"])
     for item in p["select"]:
         extra = ""
         if item["alias"]:

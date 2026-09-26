@@ -19,7 +19,10 @@ from ..translate.common import (
     route_event_type, worst, _VAR_RE,
 )
 from ..translate.logs import variable_scope as loki_variable_scope
-from ..translate.metrics import variable_scope as prom_variable_scope
+from ..translate.metrics import (
+    nr_duration_to_grafana_range, nr_duration_to_prom,
+    variable_scope as prom_variable_scope,
+)
 from ..translate.router import translate_query
 from ..translate.traces import variable_field as tempo_variable_field
 
@@ -82,6 +85,12 @@ class _Build:
         # (panel, range) pairs so differing panels get timeFrom overrides
         # once the dashboard-level range is decided.
         self.panel_ranges: List[Tuple[Dict[str, Any], str]] = []
+        # Variables whose values reach Grafana as a query interval or a
+        # relative time (TIMESERIES {{v}}, SINCE {{v}}): New Relic wrote
+        # their values as '5 minutes' / '1 hour ago'; Grafana needs 5m /
+        # now-1h.
+        self.interval_vars: set = set()
+        self.range_vars: set = set()
 
     def next_id(self) -> int:
         self.panel_id += 1
@@ -217,14 +226,34 @@ def _select_item_labels(queries: List[str]) -> List[str]:
     return out
 
 
+def _facet_aliases(queries: List[str],
+                   trans: List[Translation]) -> Dict[str, str]:
+    """FACET name AS 'Endpoint' -> {'http_route': 'Endpoint'}: the group
+    label column takes the facet alias."""
+    out: Dict[str, str] = {}
+    for qtext, t in zip(queries, trans):
+        try:
+            q = parse_nrql(qtext)
+        except NrqlParseError:
+            continue
+        aliases = [f.alias for f in q.facet]
+        if len(aliases) == len(t.group_by):
+            for label, alias in zip(t.group_by, aliases):
+                if alias and label:
+                    out[label] = alias
+    return out
+
+
 def _table_column_names(targets: List[Dict[str, Any]],
-                        queries: List[str]) -> Dict[str, str]:
+                        queries: List[str],
+                        trans: Optional[List[Translation]] = None
+                        ) -> Dict[str, str]:
     """Names for the value columns of a table built from instant queries.
     Grafana calls them 'Value' / 'Value #A'; New Relic showed the alias or
     the aggregation, which the legend (minus its {{label}} parts) or the
-    SELECT item provides."""
+    SELECT item provides. Facet aliases rename the group columns."""
     labels = _select_item_labels(queries)
-    rename: Dict[str, str] = {}
+    rename: Dict[str, str] = dict(_facet_aliases(queries, trans or []))
     for i, tgt in enumerate(targets):
         legend = _LEGEND_LABEL_RE.sub("", tgt.get("legendFormat") or "")
         legend = legend.strip(" /:-")
@@ -261,8 +290,18 @@ def _apply_notes_to_panel(panel: Dict[str, Any], trans: List[Translation],
             panel["fieldConfig"]["defaults"].setdefault("unit", unit)
         elif unit != default_unit:
             ref = chr(ord("A") + idx) if idx < 26 else "T%d" % idx
+            matcher = {"id": "byFrameRefID", "options": ref}
+            if panel.get("type") == "table":
+                # The merge transformation drops the frames' refIds; the
+                # renamed value column is what survives.
+                for tr in panel.get("transformations") or []:
+                    names = (tr.get("options") or {}).get("renameByName") \
+                        if tr.get("id") == "organize" else None
+                    col = (names or {}).get("Value #%s" % ref)
+                    if col:
+                        matcher = {"id": "byName", "options": col}
             panel["fieldConfig"]["overrides"].append({
-                "matcher": {"id": "byFrameRefID", "options": ref},
+                "matcher": matcher,
                 "properties": [{"id": "unit", "value": unit}],
             })
     rc = widget.raw_configuration or {}
@@ -277,6 +316,11 @@ def _apply_notes_to_panel(panel: Dict[str, Any], trans: List[Translation],
     ignore_picker = bool((rc.get("platformOptions") or {}).get(
         "ignoreTimeRange"))
     for t in trans:
+        # SINCE yesterday UNTIL today: timeFrom now/d + timeShift 1d/d only
+        # mean "the whole previous day" together, so the panel keeps its
+        # own timeFrom whatever the dashboard range is.
+        whole_unit = any(n.startswith("timeshift:") and "/" in n
+                         for n in t.notes)
         for note in t.notes:
             if note.startswith("timefrom:") and ignore_picker:
                 # NR "ignore time picker": the query's SINCE always applies.
@@ -287,11 +331,13 @@ def _apply_notes_to_panel(panel: Dict[str, Any], trans: List[Translation],
                 continue
             if note.startswith("timefrom:"):
                 rng = note.split(":", 1)[1]
-                if "$" in rng:
-                    # SINCE {{var}} / {{n}} minutes ago: a per-panel
-                    # override, never the dashboard default.
+                if "$" in rng or whole_unit:
+                    # SINCE {{var}} / {{n}} minutes ago / a whole calendar
+                    # unit: a per-panel override, never the dashboard
+                    # default.
                     panel["timeFrom"] = rng
                     panel["hideTimeOverride"] = False
+                    b.range_vars.update(_VAR_NAME_RE.findall(rng))
                     continue
                 b.timefroms.append(rng)
                 b.panel_ranges.append((panel, rng))
@@ -301,6 +347,52 @@ def _apply_notes_to_panel(panel: Dict[str, Any], trans: List[Translation],
             elif note.startswith("interval:"):
                 # TIMESERIES <n unit> -> the panel's min interval.
                 panel["interval"] = note.split(":", 1)[1]
+                b.interval_vars.update(_VAR_NAME_RE.findall(panel["interval"]))
+
+
+_VAR_NAME_RE = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?")
+
+
+def _grafana_span(value: Any, kind: str) -> str:
+    """A New Relic variable value used as a Grafana interval or relative
+    time: '5 minutes' -> '5m'; '1 hour ago' / 'today' -> 'now-1h' /
+    'now/d'. Values that are not durations (a plain number in
+    now-${n}m, free text) are left alone."""
+    text = str(value).strip()
+    if not text:
+        return text
+    if kind == "interval":
+        span = nr_duration_to_prom(text)
+        return span or text
+    rng = nr_duration_to_grafana_range(text)
+    if not rng:
+        span = nr_duration_to_prom(text)
+        rng = ("now-" + span) if span else ""
+    return rng or text
+
+
+def _span_variable_values(tvars: List[Dict[str, Any]], b: _Build) -> None:
+    """Rewrite the values of variables that reach Grafana as intervals or
+    relative times (see _Build.interval_vars / range_vars)."""
+    for var in tvars:
+        name = var.get("name") or ""
+        kind = "interval" if name in b.interval_vars else (
+            "range" if name in b.range_vars else "")
+        if not kind:
+            continue
+        if var.get("type") == "custom":
+            for opt in var.get("options") or []:
+                opt["value"] = _grafana_span(opt.get("value"), kind)
+            var["query"] = ", ".join(
+                "%s : %s" % (o.get("text"), o.get("value"))
+                for o in var.get("options") or [])
+            cur = var.get("current") or {}
+            if isinstance(cur.get("value"), str):
+                cur["value"] = _grafana_span(cur["value"], kind)
+        elif var.get("type") == "textbox":
+            val = _grafana_span(var.get("query"), kind)
+            var["query"] = val
+            var["current"] = {"selected": False, "text": val, "value": val}
 
 
 def _describe(widget: NRWidget, trans: List[Translation]) -> str:
@@ -686,7 +778,7 @@ def _convert_widget(widget: NRWidget, b: _Build,
             {"id": "organize",
              "options": {"excludeByName": {"Time": True},
                          "renameByName": _table_column_names(
-                             panel["targets"], queries)}}]
+                             panel["targets"], queries, trans)}}]
 
     # Panel-level datasource: first target's datasource (mixed if several).
     ds_set = {(t["datasource"]["type"], t["datasource"]["uid"])
@@ -1029,6 +1121,7 @@ def _finish_dashboard(dash: Dict[str, Any], b: _Build,
     tvars.extend(_datasource_variables(b))
     tvars.extend(converted)
     tvars.extend(copy.deepcopy(b.cfg.get("extra_variables") or []))
+    _span_variable_values(tvars, b)
     dash["templating"]["list"] = tvars
     if b.refresh_ms:
         secs = max(5, min(b.refresh_ms) // 1000)
