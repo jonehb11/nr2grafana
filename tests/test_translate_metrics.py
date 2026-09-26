@@ -9,7 +9,7 @@ import unittest
 
 from nr2grafana.config import load_config
 from nr2grafana.translate.common import (
-    APPROXIMATE, EXACT, NEEDS_REVIEW, UNTRANSLATABLE,
+    APPROXIMATE, EXACT, NEEDS_REVIEW, UNTRANSLATABLE, offset_selectors,
 )
 from nr2grafana.translate.router import translate_query
 
@@ -509,7 +509,7 @@ class ConstructCoverageTests(unittest.TestCase):
         t = tr("SELECT predictLinear(some.gauge, 2 hours) FROM Metric "
                "TIMESERIES")
         self.assertEqual(t.expr,
-                         "predict_linear(some_gauge[$__rate_interval], 7200)")
+                         "predict_linear(some_gauge[$__range], 7200)")
 
     def test_stddev_gauge_over_time(self):
         t = tr("SELECT stddev(some.gauge) FROM Metric")
@@ -1563,7 +1563,7 @@ class Iteration8NestedQueryTests(unittest.TestCase):
             ("SELECT average(c) FROM (SELECT count(*) AS c FROM Transaction "
              "WHERE appName = 'x') TIMESERIES", "no FACET"),
             ("SELECT uniqueCount(c) FROM %s TIMESERIES" % self.INNER,
-             "uniquecount() over a nested query"),
+             "uniqueCount() over a nested query"),
             ("SELECT average(c) FROM %s FACET name TIMESERIES" % self.INNER,
              "must be one of the inner FACET attributes"),
             ("SELECT average(x) FROM %s TIMESERIES" % self.INNER,
@@ -1749,3 +1749,146 @@ class Iteration11MetricTests(unittest.TestCase):
                "AND nr.entryPoint IS FALSE TIMESERIES")
         self.assertIn('span_kind!~"SPAN_KIND_SERVER|SPAN_KIND_CONSUMER"',
                       t.expr)
+
+
+class Iteration12FuzzTests(unittest.TestCase):
+    """Randomised sweep findings: every emitted query must parse, and a
+    COMPARE WITH target must come from the same WHERE as the primary."""
+
+    def test_count_spec_with_fixed_matchers_is_not_doubled(self):
+        t = tr("SELECT count(*) FROM StorageSample WHERE mountPoint = '/'")
+        self.assertEqual(t.expr, 'count(node_filesystem_size_bytes{fstype!~'
+                                 '"tmpfs|overlay|squashfs",mountpoint="/"})')
+
+    def test_compare_with_restores_the_phase_filter(self):
+        t = tr("SELECT count(*) FROM K8sPodSample WHERE status = 'Running' "
+               "COMPARE WITH 1 day ago TIMESERIES")
+        self.assertEqual(t.expr, 'sum(kube_pod_status_phase{phase="Running"})')
+        self.assertEqual(t.extra[0].expr,
+                         'sum(kube_pod_status_phase{phase="Running"} offset 1d)')
+        self.assertEqual(t.extra[0].legend, "count(*) (1d earlier)")
+
+    def test_compare_with_keeps_numeric_population_filters(self):
+        t = tr("SELECT count(*) FROM K8sDeploymentSample WHERE podsMissing > 0 "
+               "COMPARE WITH 1 day ago")
+        self.assertEqual(
+            t.extra[0].expr,
+            "count(((avg by (namespace, deployment)(kube_deployment_spec_"
+            "replicas offset 1d - kube_deployment_status_replicas_available "
+            "offset 1d)) > 0))")
+
+    def test_offset_applies_to_every_selector_of_a_template(self):
+        t = tr("SELECT average(memoryUsedPercent) FROM SystemSample TIMESERIES "
+               "COMPARE WITH 1 day ago")
+        self.assertEqual(t.extra[0].expr,
+                         "100 * (1 - avg(node_memory_MemAvailable_bytes offset "
+                         "1d / node_memory_MemTotal_bytes offset 1d))")
+        t = tr("SELECT count(*) FROM K8sPodSample WHERE namespaceName = 'shop' "
+               "COMPARE WITH 1 week ago TIMESERIES")
+        self.assertEqual(t.extra[0].expr,
+                         'count(kube_pod_info{namespace="shop"} offset 1w)')
+
+    def test_offset_skips_braces_inside_quoted_regexes(self):
+        t = tr("SELECT sum(cpuPercent) FROM ProcessSample WHERE "
+               "processDisplayName LIKE '%{{proc}}%' COMPARE WITH 1 week ago "
+               "TIMESERIES")
+        self.assertEqual(
+            t.extra[0].expr,
+            '100 * sum(rate(namedprocess_namegroup_cpu_seconds_total{groupname'
+            '=~"(?i).*${proc:regex}.*"}[$__rate_interval] offset 1w))')
+
+    def test_offset_selectors_helper(self):
+        self.assertEqual(
+            offset_selectors('max_over_time(rate(m{a="b}"}[5m])[1h:])',
+                             " offset 1w"),
+            'max_over_time(rate(m{a="b}"}[5m] offset 1w)[1h:])')
+        self.assertEqual(
+            offset_selectors('count(up{}) + m{a=~"${v:regex}"} offset 5m',
+                             " offset 1w"),
+            'count(up{} offset 1w) + m{a=~"${v:regex}"} offset 5m')
+        self.assertEqual(offset_selectors("42", " offset 1w"), "42")
+
+    def test_unique_count_of_process_groups_counts_distinct_labels(self):
+        t = tr("SELECT uniqueCount(processDisplayName) FROM ProcessSample "
+               "FACET hostname")
+        self.assertEqual(t.expr, "count by (instance)(count by (groupname, "
+                                 "instance)(namedprocess_namegroup_num_procs))")
+        t = tr("SELECT uniqueCount(hostname) FROM ProcessSample")
+        self.assertEqual(t.expr, "count(count by (instance)("
+                                 "namedprocess_namegroup_num_procs))")
+        self.assertEqual(t.legend, "uniqueCount(hostname)")
+
+    def test_unique_count_of_process_ids_is_the_process_count(self):
+        t = tr("SELECT uniqueCount(processId) FROM ProcessSample "
+               "WHERE hostname = 'web-1'")
+        self.assertEqual(t.expr,
+                         'sum(namedprocess_namegroup_num_procs{instance="web-1"})')
+        self.assertEqual(t.legend, "uniqueCount(processId)")
+
+    def test_numeric_filters_on_an_aggregated_population(self):
+        t = tr("SELECT count(*) FROM ProcessSample WHERE cpuPercent > 50 "
+               "FACET hostname")
+        self.assertEqual(t.expr, "count by (instance)(((100 * (rate("
+                                 "namedprocess_namegroup_cpu_seconds_total"
+                                 "[$__range]))) > 50))")
+        t = tr("SELECT uniqueCount(processDisplayName) FROM ProcessSample "
+               "WHERE memoryResidentSizeBytes > 1000000")
+        self.assertEqual(t.expr, 'count(count by (groupname)(('
+                                 'namedprocess_namegroup_memory_bytes{memtype='
+                                 '"resident"} > 1000000)))')
+
+    def test_over_time_functions_of_derived_expressions_use_subqueries(self):
+        t = tr("SELECT predictLinear(diskUsedPercent, 4 hours) FROM "
+               "StorageSample WHERE mountPoint = '/' SINCE 1 day ago")
+        fs = '{fstype!~"tmpfs|overlay|squashfs",mountpoint="/"}'
+        self.assertEqual(t.expr, "predict_linear((100 * (1 - avg("
+                                 "node_filesystem_avail_bytes%s / "
+                                 "node_filesystem_size_bytes%s)))[$__range:], "
+                                 "14400)" % (fs, fs))
+        self.assertEqual(t.confidence, NEEDS_REVIEW)
+        self.assertEqual(t.legend, "predictLinear(diskUsedPercent, 4 hours)")
+        t = tr("SELECT derivative(cpuPercent, 1 minute) FROM SystemSample "
+               "FACET hostname TIMESERIES")
+        self.assertEqual(t.expr, 'deriv((100 * (1 - avg by (instance)(rate('
+                                 'node_cpu_seconds_total{mode="idle"}'
+                                 '[$__rate_interval]))))[$__rate_interval:]) '
+                                 '* 60')
+        t = tr("SELECT stddev(cpuPercent) FROM SystemSample WHERE "
+               "hostname = 'web-1'")
+        self.assertEqual(t.expr, 'stddev_over_time((100 * (1 - avg(rate('
+                                 'node_cpu_seconds_total{mode="idle",instance='
+                                 '"web-1"}[$__range]))))[$__range:])')
+
+    def test_rate_of_count_on_infra_samples_is_refused_with_the_reason(self):
+        t = tr("SELECT rate(count(*), 1 minute) FROM K8sContainerSample")
+        self.assertEqual(t.confidence, UNTRANSLATABLE)
+        self.assertTrue(any(n.startswith(
+            "rate(count(*), 1 minute): rate(count(*)) FROM K8sContainerSample "
+            "measures New Relic's sampling rate") for n in t.notes), t.notes)
+
+    def test_container_status_lists_select_the_state_series(self):
+        t = tr("SELECT count(*) FROM K8sContainerSample WHERE status IN "
+               "('Waiting', 'Terminated') FACET containerName TIMESERIES")
+        self.assertEqual(t.expr, 'sum by (container)({__name__=~"kube_pod_'
+                                 'container_status_(waiting|terminated)"})')
+        self.assertEqual(t.confidence, APPROXIMATE)
+        t = tr("SELECT count(*) FROM K8sContainerSample WHERE status LIKE "
+               "'Wait%' FACET containerName")
+        self.assertEqual(t.expr,
+                         "sum by (container)(kube_pod_container_status_waiting)")
+        t = tr("SELECT count(*) FROM K8sContainerSample WHERE status IN "
+               "('a', 'b')")
+        self.assertEqual(t.expr, "count(kube_pod_container_info)")
+        self.assertTrue(any("matches none of the container states" in n
+                            for n in t.notes))
+
+    def test_consumed_status_filters_leave_no_label_map_note(self):
+        t = tr("SELECT count(*) FROM K8sContainerSample WHERE status = 'Waiting'")
+        self.assertEqual(t.expr, "sum(kube_pod_container_status_waiting)")
+        self.assertFalse(any("not in label_map" in n for n in t.notes), t.notes)
+        self.assertEqual(t.confidence, APPROXIMATE)
+
+    def test_one_note_about_counting_exporter_series(self):
+        t = tr("SELECT count(*) FROM K8sPodSample WHERE namespaceName = 'shop'")
+        self.assertEqual(
+            sum(1 for n in t.notes if "exporter's series" in n), 1, t.notes)

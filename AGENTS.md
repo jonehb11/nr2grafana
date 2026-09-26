@@ -114,9 +114,12 @@ create folders). Never print or commit them.
   histogram select its `_count` / `_sum` series; anything else is
   name-normalised and type-guessed → needs-review.
 - `FROM Log` → LogQL: stream labels from `loki_stream_labels`, `message`
-  predicates become line filters, everything else a parsed-field filter.
+  predicates become line filters, everything else a parsed-field filter. A
+  WHERE with only negative/empty stream matchers (`NOT level = 'x'`) gets
+  `service_name=~".+"` added — Loki needs one positive matcher.
 - `FROM Span` raw → TraceQL search; aggregated → span metrics (or TraceQL
-  metrics); `uniqueCount(trace.id)` → root-span count.
+  metrics); `uniqueCount(trace.id)` → root-span count. `attr IS NULL` emits
+  `= nil`, which Tempo 2.7 rejects (needs-review; drop the predicate there).
 - Infra samples (`SystemSample`, `K8s*Sample`, `ProcessSample`,
   `ContainerSample`, …) → node_exporter / kube-state-metrics / cAdvisor /
   process-exporter / kubelet metrics; `count(*) WHERE <metric attribute> >
@@ -135,8 +138,11 @@ create folders). Never print or commit them.
 - Math around an aggregation (`round`, `abs`, `floor`, `ceil`, `sqrt`, `exp`,
   `log`, `clamp_max`, `pow`, …) becomes the PromQL function; `uniques(attr)`
   becomes a `group by (label)` table; `predictLinear`, `bucketPercentile`,
-  `getCdfValue` map; `rate()` of anything but `count()`/`sum()` and
-  `derivative()` of a per-second attribute are refused with the reason.
+  `getCdfValue` map (`predictLinear`/`derivative`/`stddev` of a derived
+  infra expression such as `diskUsedPercent` become PromQL subqueries);
+  `rate()` of anything but `count()`/`sum()`, `derivative()` of a
+  per-second attribute and `rate(count(*))` on infra samples are refused
+  with the reason.
 - Widget settings that Grafana can express are carried over: thresholds,
   units, legend, series colours, right axis, null handling (`preserve`),
   entity links, refresh interval, "ignore time picker" (a panel time

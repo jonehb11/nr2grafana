@@ -506,6 +506,28 @@ counts):
 | `average(loadAverageOneMinute) / latest(coreCount)` and other ratios of plain numbers | `percentunit` | no unit; only counts over counts (and sums of counters) are proportions |
 | `allocatableCpuCoresUtilization`, `allocatableMemoryUtilization` on `K8sNodeSample` | unknown | used / allocatable per node (cAdvisor root cgroup over kube-state-metrics allocatable) |
 
+### Iteration 12 — randomised sweep (every emitted query must parse)
+
+A randomised generator (event × aggregation × WHERE × FACET × time clause,
+several thousand queries over four seeds) ran every emitted query through
+promtool, Loki and Tempo 2.7. What it caught:
+
+| Construct | Before | Now |
+| --- | --- | --- |
+| `count(*)` on a sample whose population metric carries fixed matchers (`StorageSample`, `ContainerSample`, …) | `count(node_filesystem_size_bytes{fstype!~"…"}{mountpoint="/"})` — two selector blocks, rejected | one selector with both |
+| `COMPARE WITH` on a derived infra expression whose matcher contains `}` (`LIKE '%{{proc}}%'`) or several selectors | the offset landed inside the regex, or on the range selectors only; a bare metric name got none and a note | every vector selector (and nothing inside a quoted string) is offset; the comparison target is re-translated from the original WHERE, so a phase filter (`status = 'Running'`) or a numeric population filter (`podsMissing > 0`) is not lost in it |
+| `uniqueCount(<attr>)` on `ProcessSample` (an aggregated population, `sum(namedprocess_namegroup_num_procs)`) | `avg by (…)(namedprocess_namegroup_num_procs)` | distinct label values among the aggregated series: `count(count by (groupname)(namedprocess_namegroup_num_procs))`; `uniqueCount(processId)` is the process count `sum(…num_procs)`; `count(*) WHERE cpuPercent > 50` counts the process groups whose CPU series exceeds 50 |
+| `predictLinear` / `derivative` / `stddev` of a derived infra expression (`diskUsedPercent`, `cpuPercent`) | refused | a PromQL subquery: `predict_linear((expr)[$__range:], s)`, `deriv((expr)[W:]) * 60`, `stddev_over_time((expr)[W:])` (approximate); `predict_linear` of a plain gauge regresses over `$__range` too (New Relic regresses over the query window, not over a few scrapes) |
+| `status IN ('Waiting', 'Terminated')` / `status LIKE 'Wait%'` on `K8sContainerSample` | `kube_pod_container_status_a\|b` (rejected) | the states the regex matches among running/waiting/terminated: `{__name__=~"kube_pod_container_status_(waiting\|terminated)"}`; no match → dropped with the reason. A consumed `status`/`reason` filter no longer leaves a "not in label_map" note |
+| `rate(count(*), 1 minute)` on infra samples | "needs an attribute argument" | refused as New Relic's sampling rate (nothing to translate) |
+| Loki selector made only of empty-compatible matchers (`NOT level = 'x'`, `level IS NULL`, `service_name NOT LIKE 'x%'`) | `{level!~"(?i)x"}` — Loki: "queries require at least one regexp or equality matcher that does not have an empty-compatible value" | `{service_name=~".+", level!~"(?i)x"}` with a needs-review note asking for a positive label filter |
+| `FACET {{var}}` on TraceQL metrics | `by (.{{var}})` (rejected) | grouping dropped with a note |
+| `FACET root.entity.name` on TraceQL metrics | `by (.root.entity.name)` | the WHERE field resolution: `by (resource.service.name)` |
+| `sum(duration)` as TraceQL metrics | `sum_over_time` noted as Tempo 2.7+ | needs-review: Tempo 2.8+ (2.7 rejects it) |
+| `<attr> IS NULL` on spans | `= nil`, silently | `= nil` with a needs-review note: Tempo 2.7 rejects it (`{.a = nil} not yet supported`) and cannot select spans that lack an attribute at all (`!(x != nil)` matches nothing — verified on 2.7.2) |
+| function spelling in legends, notes and reports | the parser's lowercase (`uniquecount(host)`, `predictlinear(x, 3600)`) | New Relic's (`uniqueCount(host)`, `predictLinear(x, 1 hour)`) |
+| `count(*)` on template-backed samples | two notes saying the count is the exporter's series | one |
+
 ### Iteration 11 — Loki and Tempo shapes
 
 | Construct | Before | Now |

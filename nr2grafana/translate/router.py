@@ -12,6 +12,7 @@ from ..nrql.parser import (
     TimeseriesSpec, parse_nrql,
 )
 from .common import (
+    fn_name,
     APPROXIMATE, EXACT, NEEDS_REVIEW, UNTRANSLATABLE, Translation,
     Untranslatable, _VAR_RE, route_event_type, worst,
 )
@@ -303,7 +304,7 @@ def _translate_nested(q: NrqlQuery, cfg: Dict[str, Any],
             raise _Fail("%s() over a nested query has no PromQL "
                         "aggregation; only average/sum/max/min/count/"
                         "stddev/percentile/median fold the inner series"
-                        % fn.name)
+                        % fn_name(fn.name))
         arg = fn.args[0] if fn.args else None
         if fn.name == "count" and (arg is None or isinstance(arg, Star)):
             target = inner.select[0]
@@ -315,7 +316,7 @@ def _translate_nested(q: NrqlQuery, cfg: Dict[str, Any],
         else:
             raise _Fail("%s refers to %r, which is not an alias of the "
                         "inner SELECT (%s)"
-                        % (fn.name, getattr(arg, "name", arg),
+                        % (fn_name(fn.name), getattr(arg, "name", arg),
                            ", ".join(aliases) or "no aliases"))
         sub = copy.deepcopy(inner)
         sub.select = [copy.deepcopy(target)]

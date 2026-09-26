@@ -345,7 +345,8 @@ class LevelCaseTests(unittest.TestCase):
     def test_level_inequality(self):
         t = tr("SELECT count(*) FROM Log WHERE severity != 'error' TIMESERIES")
         self.assertEqual(t.expr,
-                         'sum(count_over_time({level!~"(?i)error"} [$__auto]))')
+                         'sum(count_over_time({service_name=~".+", level!~"(?i)error"} '
+                         '[$__auto]))')
 
     def test_message_like_with_an_embedded_variable(self):
         t = tr("SELECT count(*) FROM Log WHERE message LIKE '%{{needle}}%' "
@@ -559,3 +560,32 @@ class Iteration11LogTests(unittest.TestCase):
         self.assertEqual(t.expr, '{service_name="checkout"}')
         self.assertTrue(any("FACET instance has no effect on a logs panel" in n
                             for n in t.notes))
+
+
+class Iteration12LogTests(unittest.TestCase):
+    """Loki needs one matcher that does not match the empty value."""
+
+    def test_selectors_of_only_empty_compatible_matchers_get_a_positive_one(
+            self):
+        from nr2grafana.translate.common import NEEDS_REVIEW as review
+        t = tr("SELECT count(*) FROM Log WHERE NOT level = 'x' TIMESERIES")
+        self.assertEqual(t.expr, 'sum(count_over_time({service_name=~".+", '
+                                 'level!~"(?i)x"} [$__auto]))')
+        self.assertEqual(t.confidence, review)
+        self.assertTrue(any("which Loki rejects" in n for n in t.notes))
+        t = tr("SELECT count(*) FROM Log WHERE level IS NULL")
+        self.assertEqual(t.expr, 'sum(count_over_time({service_name=~".+", '
+                                 'level=""} [$__range]))')
+        t = tr("SELECT count(*) FROM Log WHERE service_name NOT LIKE 'x%'")
+        self.assertEqual(t.expr, 'sum(count_over_time({service_name=~".+", '
+                                 'service_name!~"(?i)x.*"} [$__range]))')
+
+    def test_a_positive_matcher_needs_no_fallback(self):
+        from nr2grafana.translate.common import EXACT as exact
+        t = tr("SELECT count(*) FROM Log WHERE level != ''")
+        self.assertEqual(t.expr, 'sum(count_over_time({level!=""} [$__range]))')
+        self.assertEqual(t.confidence, exact)
+        t = tr("SELECT count(*) FROM Log WHERE service_name != 'x' AND "
+               "level = 'error'")
+        self.assertEqual(t.expr, 'sum(count_over_time({service_name!="x", '
+                                 'level=~"(?i)error"} [$__range]))')

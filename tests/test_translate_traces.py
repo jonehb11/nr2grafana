@@ -287,3 +287,43 @@ class Iteration11TraceTests(unittest.TestCase):
         self.assertEqual(t.expr, "{ nestedSetParent < 0 } | count_over_time()")
         self.assertTrue(any("errorCount = 0 cannot be expressed" in n
                             for n in t.notes))
+
+
+class Iteration12TraceTests(unittest.TestCase):
+    """TraceQL shapes the randomised sweep found Tempo 2.7 rejects."""
+
+    def setUp(self):
+        self.cfg = load_config()
+        self.cfg["span_aggregations"] = "traceql"
+
+    def test_variable_facets_are_dropped_with_a_note(self):
+        t = tr("SELECT count(*) FROM DistributedTraceSummary FACET {{f}}",
+               self.cfg)
+        self.assertEqual(t.expr, "{ nestedSetParent < 0 } | count_over_time()")
+        self.assertTrue(any("FACET {{f}}: a dashboard variable cannot name"
+                            in n for n in t.notes))
+
+    def test_sum_over_time_needs_tempo_28(self):
+        from nr2grafana.translate.common import NEEDS_REVIEW as review
+        t = tr("SELECT sum(duration) FROM DistributedTraceSummary TIMESERIES",
+               self.cfg)
+        self.assertEqual(t.expr,
+                         "{ nestedSetParent < 0 } | sum_over_time(duration)")
+        self.assertEqual(t.confidence, review)
+        self.assertIn("sum_over_time() needs Tempo 2.8+ (2.7 rejects it)",
+                      t.notes)
+
+    def test_facets_resolve_fields_like_where(self):
+        t = tr("SELECT count(*) FROM DistributedTraceSummary WHERE "
+               "root.entity.name IS NULL FACET root.entity.name", self.cfg)
+        self.assertEqual(t.expr, "{ nestedSetParent < 0 && resource.service."
+                                 "name = nil } | count_over_time() by "
+                                 "(resource.service.name)")
+        self.assertTrue(any("Tempo 2.7 rejects it" in n for n in t.notes))
+
+    def test_is_not_null_has_no_caveat(self):
+        t = tr("SELECT count(*) FROM Span WHERE service.name = 'a' AND "
+               "http.url IS NOT NULL FACET name TIMESERIES", self.cfg)
+        self.assertEqual(t.expr, '{ resource.service.name = "a" && .http.url '
+                                 '!= nil } | count_over_time() by (name)')
+        self.assertFalse(any("= nil" in n for n in t.notes))

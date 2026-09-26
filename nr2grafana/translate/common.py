@@ -732,6 +732,45 @@ def merge_status_bands(matchers: List[Matcher]) -> List[Matcher]:
     return out
 
 
+def offset_selectors(expr: str, offset: str) -> str:
+    """Append ``offset`` (e.g. ``" offset 1w"``) to every vector selector of
+    a PromQL expression: after the ``{...}`` of an instant selector, after
+    the ``[...]`` of a range selector, and never inside a quoted string, so
+    a ``}`` or ``]`` in a regex matcher (``=~"${host:regex}"``, ``[a-z]+``)
+    is not mistaken for the end of a selector.  Subquery ranges
+    (``[1h:]``) are left alone because their inner selectors already carry
+    the offset; selectors that already have one are not shifted twice.
+    Returns the expression unchanged when it has no selector."""
+    out: List[str] = []
+    i, n = 0, len(expr)
+    while i < n:
+        c = expr[i]
+        if c in "\"'`":
+            j = i + 1
+            while j < n and expr[j] != c:
+                j += 2 if expr[j] == "\\" else 1
+            out.append(expr[i:j + 1])
+            i = j + 1
+            continue
+        if c == "}" or c == "[":
+            subquery = False
+            if c == "}":
+                out.append(c)
+                i += 1
+            if i < n and expr[i] == "[":
+                j = expr.find("]", i)
+                j = n - 1 if j < 0 else j
+                subquery = ":" in expr[i:j]
+                out.append(expr[i:j + 1])
+                i = j + 1
+            if not subquery and not expr[i:].lstrip().startswith("offset "):
+                out.append(offset)
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
 def render_selector(metric: str, matchers: List[Matcher]) -> str:
     inner = ",".join(m.render() for m in matchers)
     if metric:
@@ -878,6 +917,25 @@ def facet_labels(query: NrqlQuery, cfg: Dict[str, Any],
     return labels
 
 
+# The parser lowercases function names; legends and reports show New
+# Relic's own spelling.
+_CANON_FN = {
+    "uniquecount": "uniqueCount", "predictlinear": "predictLinear",
+    "bucketpercentile": "bucketPercentile", "getcdfvalue": "getCdfValue",
+    "getfield": "getField", "eventtype": "eventType",
+    "latestrate": "latestRate", "hourof": "hourOf", "minuteof": "minuteOf",
+    "dateof": "dateOf", "dayof": "dayOf", "weekof": "weekOf",
+    "weekdayof": "weekdayOf", "monthof": "monthOf", "yearof": "yearOf",
+    "todatetime": "toDatetime", "totimestamp": "toTimestamp",
+    "isempty": "isEmpty",
+}
+
+
+def fn_name(name: str) -> str:
+    """New Relic's spelling of a (lowercased) NRQL function name."""
+    return _CANON_FN.get(name, name)
+
+
 def expr_text(node: Any) -> str:
     """Human-readable rendering of a SELECT/WHERE expression."""
     if isinstance(node, BinOp):
@@ -894,7 +952,7 @@ def expr_text(node: Any) -> str:
         inner = ", ".join(expr_text(a) for a in node.args)
         if node.where is not None:
             inner += (", " if inner else "") + "WHERE " + cond_text(node.where)
-        return "%s(%s)" % (node.name, inner)
+        return "%s(%s)" % (fn_name(node.name), inner)
     if isinstance(node, Lit):
         return _lit_str(node)
     if isinstance(node, Attr):
@@ -929,7 +987,7 @@ def select_label(node: Any) -> str:
                 parts.append(duration_text(float(a.value)))
             else:
                 parts.append(expr_text(a))
-        return "%s(%s)" % (node.name, ", ".join(parts))
+        return "%s(%s)" % (fn_name(node.name), ", ".join(parts))
     if isinstance(node, Func) and node.name in ("_ratio", "_arith"):
         return expr_text(node)
     if isinstance(node, Func) and node.name in _UNWRAP_FUNCS and node.args:
@@ -938,7 +996,7 @@ def select_label(node: Any) -> str:
         inner = ", ".join(select_label(a) for a in node.args)
         if node.where is not None:
             inner += (", " if inner else "") + "WHERE " + cond_text(node.where)
-        return "%s(%s)" % (node.name, inner)
+        return "%s(%s)" % (fn_name(node.name), inner)
     return expr_text(node)
 
 

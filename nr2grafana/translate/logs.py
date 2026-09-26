@@ -16,12 +16,14 @@ Strategy per the migration spec:
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from dataclasses import replace as _dc_replace
 
 from ..nrql.parser import Attr, BoolOp, Func, Lit, NrqlQuery, SelectItem, Star
 from .common import (
+    fn_name,
     APPROXIMATE, EXACT, NEEDS_REVIEW, Matcher, NumericPred, Translation,
     Untranslatable, cond_text, cond_to_branches, event_map_entry, expr_text,
     facet_labels, hoist_rate_filter, legend_for, map_attr, regex_escape, q,
@@ -149,13 +151,35 @@ def _line_filter(m: Matcher, t: Translation) -> str:
     return "!~ %s" % q(m.value)
 
 
+def _matches_empty(m: Matcher) -> bool:
+    """True when the matcher also accepts streams that lack the label (an
+    empty value).  Loki rejects a selector made only of such matchers."""
+    value = str(m.value)
+    if m.op == "=":
+        return value == ""
+    if m.op == "!=":
+        return value != ""
+    try:
+        hit = re.fullmatch(value, "") is not None
+    except re.error:
+        hit = False  # RE2 syntax Python lacks: assume it needs a value
+    return hit if m.op == "=~" else not hit
+
+
 def _selector(stream: List[Matcher], t: Translation) -> str:
     if not stream:
         t.note("no stream-label filter found in WHERE; emitted "
                '{service_name=~".+"} which scans all streams — add a label '
                "filter", NEEDS_REVIEW)
         return '{service_name=~".+"}'
-    return "{%s}" % ", ".join(m.render() for m in stream)
+    rendered = ", ".join(m.render() for m in stream)
+    if all(_matches_empty(m) for m in stream):
+        t.note("every stream-label matcher (%s) also matches streams "
+               "without that label, which Loki rejects; service_name=~\".+\" "
+               "was added and scans all streams — add a positive label "
+               "filter" % rendered, NEEDS_REVIEW)
+        return '{service_name=~".+", %s}' % rendered
+    return "{%s}" % rendered
 
 
 def _pipeline(meta: List[Matcher], parsed: List[Matcher],
@@ -293,7 +317,7 @@ def _rewrite_if_agg(item: SelectItem) -> Optional[SelectItem]:
     if branch.where is None:
         raise Untranslatable(
             "the if() condition could not be parsed as a predicate; "
-            "rewrite the query as filter(%s(...), WHERE ...)" % fn.name)
+            "rewrite the query as filter(%s(...), WHERE ...)" % fn_name(fn.name))
     vals = branch.args  # then [, else] — the condition is branch.where
     then = vals[0] if vals else None
     els = vals[1] if len(vals) > 1 else None
@@ -313,7 +337,7 @@ def _rewrite_if_agg(item: SelectItem) -> Optional[SelectItem]:
         raise Untranslatable(
             "%s(if(cond, x, y)): the ELSE value enters the aggregation "
             "for every non-matching row, which has no LogQL equivalent — "
-            "split into separate filtered queries" % fn.name)
+            "split into separate filtered queries" % fn_name(fn.name))
     return SelectItem(expr=Func("filter", args=[new], where=branch.where),
                       alias=item.alias)
 
@@ -370,7 +394,7 @@ def translate_to_logql(nq: NrqlQuery, cfg: Dict[str, Any]) -> Translation:
             sub = _translate_one(_sub_query(nq, item, nq.where), cfg,
                                  extra_stream)
         except Untranslatable as e:
-            failures.append("%s: %s" % (expr_text(item.expr), e))
+            failures.append("%s: %s" % (select_label(item.expr), e))
             continue
         if primary is None:
             primary = sub
@@ -770,7 +794,7 @@ def _translate_one(nq: NrqlQuery, cfg: Dict[str, Any],
         raise Untranslatable(
             "funnel() is event-sequence analysis with no LogQL equivalent")
     if name in ("eventtype", "keyset"):
-        raise Untranslatable("%s() is NRDB introspection" % name)
+        raise Untranslatable("%s() is NRDB introspection" % fn_name(name))
 
     if name in _LOG_MATH:
         inner = fn.args[0] if fn.args else None

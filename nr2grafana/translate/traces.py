@@ -14,6 +14,7 @@ from ..nrql.parser import (
     Attr, BoolOp, Cmp, Cond, Func, InList, Lit, NotOp, NrqlQuery, NullCheck,
 )
 from .common import (
+    fn_name,
     APPROXIMATE, NEEDS_REVIEW, Translation, Untranslatable, _VAR_RE,
     grafana_var, is_nr_variable, q, regex_escape,
 )
@@ -181,6 +182,12 @@ def _cond_to_traceql(cond: Optional[Cond], t: Translation,
                 return "nestedSetParent %s 0" % (">=" if cond.negated
                                                  else "<")
             field = _field_for(cond.left.name, t)
+            if not cond.negated:
+                t.note("%s IS NULL became `%s = nil`; Tempo 2.7 rejects it "
+                       "({.a = nil} not yet supported) and cannot select "
+                       "spans that lack an attribute at all — drop the "
+                       "predicate there" % (cond.left.name, field),
+                       NEEDS_REVIEW)
             return "%s %s nil" % (field, "!=" if cond.negated else "=")
         return ""
     t.note("unsupported WHERE construct dropped in TraceQL", NEEDS_REVIEW)
@@ -375,7 +382,7 @@ def translate_span_metrics_traceql(nq: NrqlQuery, cfg: Dict[str, Any],
         if attr not in _DURATION_ATTRS:
             raise Untranslatable(
                 "TraceQL metrics aggregate duration only; %s(%s) has no "
-                "equivalent" % (fn.name, attr or "?"))
+                "equivalent" % (fn_name(fn.name), attr or "?"))
         if fn.name in ("average", "avg"):
             agg = "avg_over_time(duration)"
             t.note("avg_over_time() needs Tempo 2.6+", APPROXIMATE)
@@ -387,7 +394,8 @@ def translate_span_metrics_traceql(nq: NrqlQuery, cfg: Dict[str, Any],
             t.note("min_over_time() needs Tempo 2.6+", APPROXIMATE)
         elif fn.name == "sum":
             agg = "sum_over_time(duration)"
-            t.note("sum_over_time() needs Tempo 2.7+", APPROXIMATE)
+            t.note("sum_over_time() needs Tempo 2.8+ (2.7 rejects it)",
+                   NEEDS_REVIEW)
         elif fn.name == "histogram":
             agg = "histogram_over_time(duration)"
             t.notes.append("panel-hint:heatmap")
@@ -403,12 +411,19 @@ def translate_span_metrics_traceql(nq: NrqlQuery, cfg: Dict[str, Any],
                "metrics-generator window; values are seconds", APPROXIMATE)
     else:
         raise Untranslatable(
-            "%s() has no TraceQL metrics equivalent" % fn.name)
+            "%s() has no TraceQL metrics equivalent" % fn_name(fn.name))
     by = []
     for item in nq.facet:
-        if isinstance(item.expr, Attr):
-            by.append(_TRACEQL_BY_FIELDS.get(
-                item.expr.name.lower(), "." + item.expr.name))
+        if isinstance(item.expr, Attr) and "{{" in item.expr.name:
+            t.note("FACET %s: a dashboard variable cannot name a TraceQL "
+                   "by() attribute; grouping dropped" % item.expr.name,
+                   NEEDS_REVIEW)
+        elif isinstance(item.expr, Attr):
+            # The same field resolution as WHERE (root.entity.name ->
+            # resource.service.name), so a facet never names a field the
+            # filter spelled differently.
+            by.append(_TRACEQL_BY_FIELDS.get(item.expr.name.lower())
+                      or _field_for(item.expr.name, t))
         else:
             t.note("FACET %s has no TraceQL by() equivalent; dropped"
                    % getattr(item.expr, "name", "?"), NEEDS_REVIEW)

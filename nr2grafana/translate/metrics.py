@@ -19,6 +19,7 @@ Semantics follow the migration spec in docs/translation-spec.md:
 
 from __future__ import annotations
 
+import copy
 import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
@@ -28,11 +29,12 @@ from ..nrql.parser import (
     SelectItem, Star,
 )
 from .common import (
+    fn_name,
     APPROXIMATE, EXACT, NEEDS_REVIEW, UNTRANSLATABLE,
     Matcher, NumericPred, Translation, Untranslatable,
     cond_text, cond_to_branches, expr_text, facet_labels, hoist_rate_filter,
-    legend_for, map_attr, merge_status_bands, render_selector,
-    sanitize_label, select_label, unwrap_attr, worst,
+    legend_for, map_attr, merge_status_bands, offset_selectors,
+    render_selector, sanitize_label, select_label, unwrap_attr, worst,
 )
 from . import nrmetrics
 from .nrmetrics import Spec
@@ -108,9 +110,11 @@ def _spec_to_source(spec: Spec, cfg: Dict[str, Any], t: Translation) -> Any:
     if spec.kind == "expr":
         return DerivedSource(spec.expr, spec.unit, spec.conf, spec.note)
     if spec.kind == "count":
-        return DerivedSource("count <BY>(%s{<SELBARE>})" % _with_fixed(
-            spec.name, spec.matchers), "short", spec.conf,
-            spec.note or "")
+        sel = _with_fixed(spec.name, spec.matchers)
+        if "{" not in sel:
+            sel += "{<SELBARE>}"  # a bare name takes the WHERE matchers
+        return DerivedSource("count <BY>(%s)" % sel, "short", spec.conf,
+                             spec.note or "")
     matchers = [Matcher(l, o, v) for l, o, v in spec.matchers] or None
     return MetricSource(spec.name, spec.kind, unit=spec.unit,
                         confidence=spec.conf, note=spec.note,
@@ -592,9 +596,22 @@ def _uses_apm_http_metric(q: NrqlQuery) -> bool:
 
 
 class _Ctx:
+    _STATIC = ("q", "cfg", "t", "initial")
+
+    def snapshot(self) -> Dict[str, Any]:
+        """Copy of the mutable translation state (matchers, facet labels,
+        numeric predicates); translating an item consumes parts of it."""
+        return {k: copy.deepcopy(v) for k, v in self.__dict__.items()
+                if k not in self._STATIC}
+
+    def restore(self, snap: Dict[str, Any]) -> None:
+        for k, v in snap.items():
+            setattr(self, k, copy.deepcopy(v))
+
     def __init__(self, q: NrqlQuery, cfg: Dict[str, Any], t: Translation):
         self.q = q
         self.t = t
+        self.initial: Optional[Dict[str, Any]] = None
         self.is_range = q.timeseries is not None
         self.window = "$__rate_interval" if self.is_range else "$__range"
         self.event = (q.from_[0] if q.from_ else "Metric")
@@ -1115,7 +1132,8 @@ def _agg_expr(ctx: _Ctx, fn: Func, src: MetricSource,
                                                           "filter"):
             raise Untranslatable(
                 "rate(%s(...)) has no metric equivalent: only rate(count(...))"
-                " and rate(sum(...)) map to PromQL rate()" % inner_fn.name)
+                " and rate(sum(...)) map to PromQL rate()"
+                % fn_name(inner_fn.name))
         per_seconds = 60.0
         for a in fn.args:
             if isinstance(a, Lit) and isinstance(a.value, (int, float)):
@@ -1193,7 +1211,7 @@ def _agg_expr(ctx: _Ctx, fn: Func, src: MetricSource,
                    "reported metric", NEEDS_REVIEW)
         t.note("predictLinear() mapped to predict_linear() (linear "
                "regression over the query window)", APPROXIMATE)
-        inner = hsel("", fnname="predict_linear",
+        inner = hsel("", window="$__range", fnname="predict_linear",
                      tail=", %s" % _fmt_num(horizon))
         return "avg%s(%s)" % (by, inner) if ctx.by else inner
 
@@ -1285,7 +1303,7 @@ def _agg_expr(ctx: _Ctx, fn: Func, src: MetricSource,
             "first_over_time function)")
     if name in ("eventtype", "keyset", "aggregationendtime",
                 "bytecountestimate"):
-        raise Untranslatable("%s() is NRDB introspection" % name)
+        raise Untranslatable("%s() is NRDB introspection" % fn_name(name))
 
     raise Untranslatable("aggregation %s() is not supported by the "
                          "translator" % name)
@@ -1300,11 +1318,10 @@ def _derived_expr(ctx: _Ctx, fn: Func, src: DerivedSource,
         raise Untranslatable(
             "earliest() has no PromQL equivalent (PromQL lacks a "
             "first_over_time function)")
-    if fn.name in ("percentile", "median", "stddev", "histogram", "apdex",
-                   "derivative", "predictlinear"):
+    if fn.name in ("percentile", "median", "histogram", "apdex"):
         raise Untranslatable(
             "%s() cannot be applied to %s: the LGTM equivalent is a derived "
-            "expression, not a raw histogram/gauge" % (fn.name, ctx.event))
+            "expression, not a raw histogram/gauge" % (fn_name(fn.name), ctx.event))
     extra_m = (extra or [[]])[0]
     if extra and len(extra) > 1:
         t.note("an OR inside filter()/percentage() on this derived infra "
@@ -1329,18 +1346,41 @@ def _derived_expr(ctx: _Ctx, fn: Func, src: DerivedSource,
             .replace("<SELBARE>", ctx.sel_bare(extra_m))
             .replace("<HTTP>", http))
     expr = re.sub(r"\{,", "{", expr)   # tidy leading comma when no matchers
-    expr = expr.replace("{}", "")      # drop empty matcher braces
-    expr = re.sub(r"(\b(?:avg|sum|max|min|count)) \(", r"\1(", expr)
     if ctx.offset:
-        # Offset every range/instant selector in the template.
-        if "[" in expr:
-            expr = re.sub(r"(\[[^\]]+\])", r"\1" + ctx.offset, expr)
-        elif "{" in expr:
-            expr = re.sub(r"(\{[^{}]*\})", r"\1" + ctx.offset, expr)
-        else:
+        # Offset every range/instant selector in the template (quoted
+        # strings are skipped, so a "}" inside a regex is not a selector;
+        # a bare name still has its "{}" here, so it is offset too).
+        shifted = offset_selectors(expr, ctx.offset)
+        if shifted == expr:
             t.note("COMPARE WITH could not be applied to this derived "
                    "expression (no selector to offset); the comparison "
                    "target repeats the current values", NEEDS_REVIEW)
+        expr = shifted
+    expr = expr.replace("{}", "")      # drop empty matcher braces
+    expr = re.sub(r"(\b(?:avg|sum|max|min|count)) \(", r"\1(", expr)
+    if fn.name in ("derivative", "predictlinear", "stddev"):
+        # Over-time functions of a derived expression: a PromQL subquery
+        # turns the expression into the range vector they need.
+        secs = 60.0 if fn.name == "derivative" else 3600.0
+        for a in fn.args[1:]:
+            if isinstance(a, Lit) and isinstance(a.value, (int, float)):
+                secs = float(a.value)
+        if fn.name == "derivative":
+            mult = "" if secs == 1 else " * %s" % _fmt_num(secs)
+            t.note("derivative() of a derived expression: deriv() (linear "
+                   "regression) over a subquery of it", APPROXIMATE)
+            expr = "deriv((%s)[%s:])%s" % (expr, window, mult)
+        elif fn.name == "predictlinear":
+            t.note("predictLinear() of a derived expression: predict_linear() "
+                   "over a subquery of it across the query window",
+                   APPROXIMATE)
+            expr = "predict_linear((%s)[$__range:], %s)" % (
+                expr, _fmt_num(secs))
+        else:
+            t.note("stddev() of a derived expression: stddev_over_time over "
+                   "a subquery of it (per series, over the window); NR "
+                   "computes it over all events in the window", APPROXIMATE)
+            expr = "stddev_over_time((%s)[%s:])" % (expr, window)
     if fn.name == "rate":
         per = 60.0
         for a in fn.args[1:]:
@@ -1348,15 +1388,17 @@ def _derived_expr(ctx: _Ctx, fn: Func, src: DerivedSource,
                 per = float(a.value)
         if "rate(" not in src.expr and "_total{" in src.expr:
             # A cumulative counter inside the template: rate() it in place.
-            expr = re.sub(r"([A-Za-z_:][A-Za-z0-9_:]*_total(?:\{[^}]*\})?)",
-                          r"rate(\1[%s])" % window, expr)
+            expr = re.sub(r"([A-Za-z_:][A-Za-z0-9_:]*_total(?:\{[^}]*\})?)"
+                          r"((?: offset \S+)?)",
+                          r"rate(\1[%s]\2)" % window, expr)
             t.note("rate() of a cumulative counter applied inside the derived "
                    "expression", APPROXIMATE)
         if per != 1:
             t.note("rate(..., %s seconds) of a per-second quantity scaled by "
                    "%s" % (_fmt_num(per), _fmt_num(per)), APPROXIMATE)
             expr = "(%s) * %s" % (expr, _fmt_num(per))
-    if fn.name == "count" and not src.expr.startswith("count"):
+    if fn.name == "count" and not src.expr.startswith("count") and not any(
+            "counts the exporter's series" in n for n in t.notes):
         t.note("count(*) on %s counts the exporter's series, not New Relic "
                "samples" % ctx.event, APPROXIMATE)
     return expr
@@ -1756,6 +1798,9 @@ def _numeric_count_filters(ctx: _Ctx, etl: str, src: Any) -> Any:
     saying "entities whose value satisfies the predicate"."""
     if not isinstance(src, DerivedSource) or not ctx.numeric:
         return src
+    if not (src.expr.startswith("count ") or src.expr.startswith("sum ")
+            or src.expr.startswith("<AGG> <BY>(")):
+        return src  # not a population count: the leftover note applies
     filters: List[str] = []
     names: List[str] = []
     for p in list(ctx.numeric):
@@ -1801,6 +1846,10 @@ def _numeric_count_filters(ctx: _Ctx, etl: str, src: Any) -> Any:
             ctx.t.note("the status filter was dropped next to the numeric "
                        "comparison (no entity labels known to intersect on)",
                        NEEDS_REVIEW)
+    elif head.startswith("<AGG> <BY>"):
+        # sum of per-entity gauges (process counts): the entities whose
+        # value satisfies the predicate are counted instead.
+        head = "count <BY>" + head[len("<AGG> <BY>"):]
     src.expr = head + "(%s)" % joined
     shown = joined.replace("<SELBARE>", "...").replace("<SEL>", "")
     ctx.t.note("WHERE %s: the entities are selected by the attribute's own "
@@ -1874,6 +1923,25 @@ def _infra_source(ctx: _Ctx, item: SelectItem, fn: Optional[Func],
                        ctx.event, ctx.event.replace("Sample", "").
                        replace("K8s", "").lower() or "entity"), APPROXIMATE)
         src = _numeric_count_filters(ctx, etl, src)
+        if is_unique and isinstance(src, DerivedSource) \
+                and count_spec.kind == "expr":
+            # An aggregated population (namedprocess_namegroup_num_procs
+            # summed over process groups) is not one series per entity:
+            # count the distinct label values among the series instead.
+            label, mapped = map_attr(attr_name, ctx.cfg)
+            group = "count by (%s%s)(" % (
+                label, "".join(", " + l for l in ctx.by))
+            if mapped and src.expr.startswith("count <BY>("):
+                # numeric WHERE filters already turned it into a count
+                src.expr = src.expr.replace(
+                    "count <BY>(", "count <BY>(" + group, 1) + ")"
+            elif mapped and src.expr.startswith("<AGG> <BY>("):
+                src.expr = "count <BY>(%s%s)" % (
+                    group, src.expr[len("<AGG> <BY>("):])
+            elif src.expr.startswith("<AGG> <BY>("):
+                # No label for the attribute (pid): every member of the
+                # aggregated series is one entity, so the population itself.
+                src.expr = "sum" + src.expr[len("<AGG>"):]
         _drop_implicit(ctx)
         return src
     if is_unique and count_spec is not None:
@@ -1885,10 +1953,21 @@ def _infra_source(ctx: _Ctx, item: SelectItem, fn: Optional[Func],
             t.note("uniqueCount attribute %r not in label_map; used %r"
                    % (attr_name, label), NEEDS_REVIEW)
         src = _numeric_count_filters(ctx, etl, src)
-        if isinstance(src, DerivedSource):
+        if isinstance(src, DerivedSource) and "count <BY>(" in src.expr:
             src.expr = src.expr.replace(
                 "count <BY>(", "count <BY>(count by (%s%s)(" % (
                     label, "".join(", " + l for l in ctx.by)), 1) + ")"
+        elif isinstance(src, DerivedSource) and \
+                src.expr.startswith("<AGG> <BY>("):
+            # An aggregated population (namedprocess_namegroup_num_procs
+            # summed over groups): distinct label values among the series.
+            src.expr = "count <BY>(count by (%s%s)(%s)" % (
+                label, "".join(", " + l for l in ctx.by),
+                src.expr[len("<AGG> <BY>("):])
+        elif isinstance(src, DerivedSource):
+            t.note("uniqueCount(%s) on %s: the population expression cannot "
+                   "be grouped by %r; emitted the population itself"
+                   % (attr_name, ctx.event, label), NEEDS_REVIEW)
         _drop_implicit(ctx)
         return src
 
@@ -1897,6 +1976,12 @@ def _infra_source(ctx: _Ctx, item: SelectItem, fn: Optional[Func],
                                                  "k8spodsample"):
         ctx.by = list(dict.fromkeys(ctx.by + ["reason"]))
     if spec is None and attr is None:
+        if fn is not None and fn.name == "rate":
+            raise Untranslatable(
+                "rate(count(*)) FROM %s measures New Relic's sampling rate "
+                "(samples per interval), not a metric; the exporter scrapes "
+                "on a fixed interval, so there is nothing to translate"
+                % ctx.event)
         raise Untranslatable(
             "%s() FROM %s needs an attribute argument" % (agg or "?",
                                                           ctx.event))
@@ -1933,6 +2018,10 @@ def _infra_source(ctx: _Ctx, item: SelectItem, fn: Optional[Func],
            "Mimir (node_exporter / kube-state-metrics / cAdvisor / "
            "process-exporter)", NEEDS_REVIEW)
     return src
+
+
+# kube_pod_container_status_<state>: one boolean series per state.
+_CONTAINER_STATES = ("running", "waiting", "terminated")
 
 
 def _apply_phase(ctx: _Ctx, src: Any, metric: str, label: str,
@@ -1978,6 +2067,28 @@ def _apply_phase(ctx: _Ctx, src: Any, metric: str, label: str,
                        "series (one boolean series per state); filter "
                        "dropped" % (m.op, m.value), NEEDS_REVIEW)
             return None
+        if m.op == "=~":
+            # status IN ('Waiting', 'Terminated') / LIKE 'Wait%': one
+            # boolean series per state, so the regex selects among the
+            # known state names (a metric-name regex must not catch
+            # kube_pod_container_status_waiting_reason and friends).
+            try:
+                states = [s for s in _CONTAINER_STATES
+                          if re.fullmatch(m.value, s, re.IGNORECASE)]
+            except re.error:
+                states = []
+            if not states:
+                ctx.t.note("status =~ %r matches none of the container "
+                           "states (%s); filter dropped"
+                           % (m.value, ", ".join(_CONTAINER_STATES)),
+                           NEEDS_REVIEW)
+                return None
+            if len(states) > 1:
+                return DerivedSource(
+                    'sum <BY>({__name__=~"%s(%s)"<SEL>})' % (
+                        metric.replace("%s", ""), "|".join(states)),
+                    "short", EXACT, nrmetrics.KSM_NOTE)
+            m = Matcher(m.label, "=", states[0])
         state = m.value.lower()
         has_reason = any(r.label == "reason" for b in ctx.branches for r in b)
         if has_reason and state in ("waiting", "terminated"):
@@ -2179,6 +2290,7 @@ def translate_to_promql(q: NrqlQuery, cfg: Dict[str, Any]) -> Translation:
     t = Translation(datasource="prometheus")
     case_specs, case_other = _extract_facet_cases(q)
     ctx = _Ctx(q, cfg, t)
+    ctx.initial = ctx.snapshot()  # COMPARE WITH re-translates from here
     t.query_type = "range" if ctx.is_range else "instant"
 
     items = [i for i in q.select if not isinstance(i.expr, Star)]
@@ -2225,7 +2337,7 @@ def translate_to_promql(q: NrqlQuery, cfg: Dict[str, Any]) -> Translation:
             expr = _wrap_topk(ctx, _translate_item(
                 ctx, fn, numeric=list(ctx.numeric)))
         except Untranslatable as e:
-            failures.append("%s: %s" % (expr_text(fn), e))
+            failures.append("%s: %s" % (select_label(fn), e))
             t.notes[notes_before:] = []
             t.confidence = conf_before
             del t.extra[extras_before:]
@@ -2401,7 +2513,7 @@ def _rewrite_if(ctx: _Ctx, fn: Func) -> Tuple[Func, Optional[List[List[Matcher]]
     if cond is None:
         raise Untranslatable(
             "the if() condition could not be parsed as a predicate; "
-            "rewrite the query as filter(%s(...), WHERE ...)" % fn.name)
+            "rewrite the query as filter(%s(...), WHERE ...)" % fn_name(fn.name))
     then = vals[0] if vals else None
     els = vals[1] if len(vals) > 1 else None
     zero_else = els is None or _is_lit(els, 0)
@@ -2418,7 +2530,7 @@ def _rewrite_if(ctx: _Ctx, fn: Func) -> Tuple[Func, Optional[List[List[Matcher]]
         raise Untranslatable(
             "%s(if(cond, x, y)): the ELSE value enters the aggregation for "
             "every non-matching row, which has no PromQL equivalent — "
-            "split into separate filtered queries" % fn.name)
+            "split into separate filtered queries" % fn_name(fn.name))
     ctx.t.note("if(%s, ...) translated as a filtered aggregation "
                "(the condition became label matchers)"
                % cond_text(cond), APPROXIMATE)
@@ -2573,12 +2685,12 @@ def _translate_item(ctx: _Ctx, fn: Func,
                    if places else "round(%s)" % inner)
         elif fn.name in ("clamp_max", "clamp_min"):
             if second is None:
-                raise Untranslatable("%s() needs a bound" % fn.name)
+                raise Untranslatable("%s() needs a bound" % fn_name(fn.name))
             out = "%s(%s, %s)" % (pf, inner, _math_operand(ctx, second,
                                                            extra, numeric))
         elif fn.name in ("pow", "mod"):
             if second is None:
-                raise Untranslatable("%s() needs a second operand" % fn.name)
+                raise Untranslatable("%s() needs a second operand" % fn_name(fn.name))
             out = "(%s) %s (%s)" % (inner, pf, _math_operand(ctx, second,
                                                              extra, numeric))
         else:
@@ -2586,7 +2698,7 @@ def _translate_item(ctx: _Ctx, fn: Func,
         if fn.name in _UNITLESS_MATH:
             t.notes[notes_before:] = [n for n in t.notes[notes_before:]
                                       if not n.startswith("unit:")]
-        t.notes.append("%s() applied as PromQL %s" % (fn.name, pf))
+        t.notes.append("%s() applied as PromQL %s" % (fn_name(fn.name), pf))
         return out
 
     if fn.name == "_ratio":
@@ -2753,7 +2865,7 @@ def _latest_timestamp(ctx: _Ctx, fn: Func, src: MetricSource,
     if fn.name not in ("latest", "max"):
         raise Untranslatable(
             "%s(timestamp) has no metric equivalent (only latest(timestamp) "
-            "— time of the last sample — translates)" % fn.name)
+            "— time of the last sample — translates)" % fn_name(fn.name))
     t.notes[:] = [n for n in t.notes if not n.startswith("unit:")]
     t.notes.append("unit:dateTimeAsIso")
     t.note("latest(timestamp) rendered as the timestamp of the most recent "
@@ -2773,10 +2885,17 @@ def _apply_compare_with(ctx: _Ctx, t: Translation) -> None:
         return
     if "month" in ctx.q.compare_with.lower():
         t.note("COMPARE WITH month approximated as 30 days", APPROXIMATE)
+    # The first pass consumed matchers (phase filters, numeric predicates)
+    # and facet labels; the comparison series must start from the same
+    # WHERE, not from what was left over.
+    saved = ctx.snapshot()
+    if ctx.initial is not None:
+        ctx.restore(ctx.initial)
     ctx.offset = " offset %s" % off
     try:
         shifted = translate_to_promql_with_offset(ctx)
     finally:
+        ctx.restore(saved)
         ctx.offset = ""
     if shifted:
         shifted.legend = ((t.legend + " " if t.legend else "")
