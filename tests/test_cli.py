@@ -2221,3 +2221,25 @@ class ExposeAiWizardTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class JsonValidateEnvelopeTests(unittest.TestCase):
+    """--json validate prints human per-file lines before its JSON summary;
+    the envelope must still carry the summary as ``result``."""
+
+    def test_result_is_the_validation_summary(self):
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            run_cli(["convert", SAMPLE, "-o", tmp.name])
+            code, out, err = run_cli(["--json", "validate", tmp.name])
+            self.assertEqual(code, 0, err)
+            env = json.loads(out)
+            self.assertEqual(env["command"], "validate")
+            self.assertTrue(env["ok"])
+            self.assertIsInstance(env["result"], dict)
+            self.assertIn("dashboards", env["result"])
+            self.assertEqual(env["result"]["totals"]["dashboards"], 1)
+            self.assertNotIn('"dashboards"', err)  # the JSON stays on stdout
+            self.assertIn(": OK", err)  # the human lines moved to stderr
+        finally:
+            tmp.cleanup()

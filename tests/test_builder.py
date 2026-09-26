@@ -847,3 +847,59 @@ class Iteration8BuilderTests(Iteration2BuilderTests):
         self.assertEqual(p["fieldConfig"]["overrides"], [
             {"matcher": {"id": "byName", "options": "Requests"},
              "properties": [{"id": "unit", "value": "short"}]}])
+
+
+def _nr(widgets, variables=None):
+    return parse_nr_dashboard({
+        "name": "T", "pages": [{"name": "P", "widgets": widgets}],
+        "variables": variables or []})
+
+
+def _w(query, column=1, width=4, title="W"):
+    return {"title": title,
+            "layout": {"column": column, "row": 1, "width": width, "height": 3},
+            "visualization": {"id": "viz.line"},
+            "rawConfiguration": {"nrqlQueries": [
+                {"accountId": 1, "query": query}]}}
+
+
+class Iteration13BuilderTests(unittest.TestCase):
+    Q = "SELECT count(*) FROM Transaction WHERE appName = 'x' TIMESERIES"
+
+    def test_layouts_outside_the_grid_are_clamped_and_noted(self):
+        fn, dash, report = build_dashboards(
+            _nr([_w(self.Q, column=5, width=12), _w(self.Q, column=13)]),
+            load_config())[0]
+        panels = list(iter_panels(dash))
+        self.assertEqual((panels[0]["gridPos"]["x"], panels[0]["gridPos"]["w"]),
+                         (8, 16))
+        self.assertLessEqual(panels[1]["gridPos"]["x"]
+                             + panels[1]["gridPos"]["w"], 24)
+        self.assertFalse([e for e in validate_dashboard(dash)
+                          if "gridPos" in e])
+        self.assertTrue(any("outside New Relic's 12-column grid" in n
+                            for n in report[0]["notes"]))
+
+    def test_undefined_variable_references_get_a_textbox(self):
+        fn, dash, report = build_dashboards(_nr([_w(
+            "SELECT count(*) FROM Transaction WHERE appName = {{app}} "
+            "FACET {{f}} TIMESERIES")]), load_config())[0]
+        names = {v["name"]: v for v in dash["templating"]["list"]}
+        self.assertIn("app", names)
+        self.assertEqual(names["f"]["type"], "textbox")
+        self.assertEqual(names["f"]["label"],
+                         "f (undefined in the New Relic dashboard)")
+        self.assertFalse([e for e in validate_dashboard(dash)
+                          if "not defined" in e])
+
+    def test_duplicate_variable_names_keep_the_first(self):
+        var = {"name": "app", "title": "App", "type": "STRING",
+               "defaultValues": [{"value": {"string": "a"}}]}
+        fn, dash, report = build_dashboards(
+            _nr([_w(self.Q)], [var, dict(var, title="Again")]),
+            load_config())[0]
+        apps = [v for v in dash["templating"]["list"] if v["name"] == "app"]
+        self.assertEqual(len(apps), 1)
+        self.assertIn("duplicate name", apps[0].get("description", ""))
+        self.assertFalse([e for e in validate_dashboard(dash)
+                          if "duplicate" in e])

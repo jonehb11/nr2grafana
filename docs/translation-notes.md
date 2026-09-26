@@ -506,6 +506,32 @@ counts):
 | `average(loadAverageOneMinute) / latest(coreCount)` and other ratios of plain numbers | `percentunit` | no unit; only counts over counts (and sums of counters) are proportions |
 | `allocatableCpuCoresUtilization`, `allocatableMemoryUtilization` on `K8sNodeSample` | unknown | used / allocatable per node (cAdvisor root cgroup over kube-state-metrics allocatable) |
 
+### Iteration 13 — wider sweep through the builder and a live Grafana
+
+The generator grew to 40 event types (infra, on-host integrations, legacy
+AWS, Lambda, browser/synthetics, custom events), 60 aggregation shapes,
+nested and `WITH` queries, and random widget configurations, variables and
+layouts; every generated dashboard was built, statically validated and run
+through `validate --test` on a local Grafana/Prometheus/Loki/Tempo. Fixed:
+
+| Construct | Before | Now |
+| --- | --- | --- |
+| `earliest(x)` without `TIMESERIES` | refused | the value at the start of the time range: `x @ ${__from:date:seconds}` (approximate); derived infra expressions use `last_over_time((expr)[W:] @ …)`; `latest(x) - earliest(x)` therefore works. With `TIMESERIES` still refused (no first-in-bucket function) |
+| `percentile` / `median` of a derived infra expression (`memoryUsedPercent`, `diskUsedPercent`) | refused | `quantile_over_time(q, (expr)[W:])` (needs-review; the first percentile only, with a note for the others) |
+| `count(<label attribute>)` on infra samples (`count(jobName)`, `count(interfaceName)`) | "no known exporter metric for attribute" | the entity population (NR counts samples carrying the attribute) |
+| `latest(timestamp)` / `max(timestamp)` / `min(timestamp)` on infra samples | refused | `max(timestamp(<population metric>)) * 1000` (the last sample), `min(min_over_time(timestamp(…)[$__range:])) * 1000` (the first), unit `dateTimeAsIso` |
+| `latest(<label attribute>)` (`latest(deploymentName)`) | "add it to metric_map" | refused as a label, pointing at `FACET` / `uniques()` |
+| every SELECT item failing for one reason (`count(*), average(duration) FROM PageView`) | the reason repeated per item | one reason naming the items |
+| `dimensions()` | "not supported" | NRDB introspection, like `keyset()` / `eventType()` |
+| `WHERE a = 1 OR a = 2` on `DistributedTraceSummary` (TraceQL metrics) | `nestedSetParent < 0 && a = 1 \|\| a = 2` — `&&` binds tighter, the OR escaped the root filter | `nestedSetParent < 0 && (a = 1 \|\| a = 2)` |
+| `trace.id = 500` (a number against a string field) | `trace:id = 500` (Tempo: "binary operations must operate on the same type") | `trace:id = "500"` |
+| `spanCount` / `entityCount` in a `DistributedTraceSummary` WHERE | `.spanCount > 5` (no such attribute) | dropped with a note (a trace-level count has no TraceQL field); `root.span.name` maps to the root span's `name` |
+| `round(percentile(duration, 99), 1)` as TraceQL metrics | refused | the wrapper is dropped with a note (use the panel's decimals); `numeric(duration)` casts are unwrapped; arithmetic is refused in plain words instead of naming the internal `_arith` |
+| a widget layout outside New Relic's 12-column grid | a Grafana `gridPos` outside 24 columns (validation error, export refused) | clamped to the grid with a note in the report |
+| `{{var}}` used by a widget but not defined among the dashboard's variables | "references variable $var which is not defined" (export refused) | a textbox variable labelled "var (undefined in the New Relic dashboard)" is added |
+| two New Relic variables with one name | duplicate Grafana variables (validation error) | the first wins, its description says so |
+| `--json validate` | `"result": null` on stdout, the summary JSON on stderr (the human per-file lines broke the envelope) | the envelope carries the summary; human lines go to stderr |
+
 ### Iteration 12 — randomised sweep (every emitted query must parse)
 
 A randomised generator (event × aggregation × WHERE × FACET × time clause,

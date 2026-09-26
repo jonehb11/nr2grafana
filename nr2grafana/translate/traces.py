@@ -14,7 +14,7 @@ from ..nrql.parser import (
     Attr, BoolOp, Cmp, Cond, Func, InList, Lit, NotOp, NrqlQuery, NullCheck,
 )
 from .common import (
-    fn_name,
+    fn_name, expr_text, unwrap_attr,
     APPROXIMATE, NEEDS_REVIEW, Translation, Untranslatable, _VAR_RE,
     grafana_var, is_nr_variable, q, regex_escape,
 )
@@ -36,14 +36,70 @@ _TRACEQL_FIELDS = {
     "db.system": "span.db.system",
     "root.entity.name": "resource.service.name",
     "root.entityName": "resource.service.name",
+    "root.span.name": "name",
+    "root.spanName": "name",
 }
+# round(percentile(duration, 99), 1): cosmetic wrappers TraceQL lacks.
+_TRACE_MATH_WRAPPERS = {"round", "abs", "floor", "ceil"}
+# Trace-level counts of DistributedTraceSummary with no TraceQL field.
+_TRACE_LEVEL_COUNTS = {"spancount", "span.count", "entitycount",
+                       "entity.count", "servicecount", "service.count"}
 _ROOT_ATTRS = {"parentid", "parent.id", "parentspanid", "parent.span.id",
                "nr.entrypoint", "entrypoint"}
+# TraceQL fields typed string: a bare numeric literal against them is a
+# type error ("binary operations must operate on the same type").
+_STRING_FIELDS = {"trace:id", "span:id", "name", "span:name",
+                  "resource.service.name", "span.http.request.method",
+                  "span.db.system", "rootName", "rootServiceName"}
 
 # Sentinel for a trace-level condition (errorCount > 0) that the entry
 # points move out of the span filter: { spans } && { status = error }.
 ANY_ERROR_SPAN = "__ANY_ERROR_SPAN__"
 _ANY_ERROR_RE = re.compile(r"(\s*&&\s*)?__ANY_ERROR_SPAN__(\s*&&\s*)?")
+
+
+def _top_level_or(body: str) -> bool:
+    """True when the body has a || outside parentheses and quotes."""
+    depth, quote = 0, ""
+    for i, ch in enumerate(body):
+        if quote:
+            if ch == quote and body[i - 1] != "\\":
+                quote = ""
+        elif ch in "\"'`":
+            quote = ch
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        elif ch == "|" and depth == 0 and body[i:i + 2] == "||":
+            return True
+    return False
+
+
+def strip_outer_parens(body: str, keep_or: bool = False) -> str:
+    """'(a && b)' -> 'a && b' when one pair of parentheses wraps the whole
+    body. With ``keep_or`` a body whose top level is an OR keeps them: a
+    root-span filter is ANDed in front of it and && binds tighter than ||
+    in TraceQL, so `nestedSetParent < 0 && a || b` would change meaning."""
+    if not (body.startswith("(") and body.endswith(")")):
+        return body
+    depth, quote = 0, ""
+    for i, ch in enumerate(body):
+        if quote:
+            if ch == quote and body[i - 1] != "\\":
+                quote = ""
+        elif ch in "\"'`":
+            quote = ch
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0 and i != len(body) - 1:
+                return body  # '(a) || (b)': not a single group
+    inner = body[1:-1]
+    if keep_or and _top_level_or(inner):
+        return body
+    return inner
 
 
 def hoist_trace_level(body: str, t: Translation) -> Tuple[str, str]:
@@ -71,9 +127,7 @@ def hoist_trace_level(body: str, t: Translation) -> Tuple[str, str]:
     t.note("errorCount > 0 became the trace-level condition "
            "`&& { status = error }` (the trace has at least one errored "
            "span)", APPROXIMATE)
-    if new.startswith("(") and new.endswith(")"):
-        new = new[1:-1]
-    return new, suffix
+    return strip_outer_parens(new, keep_or=True), suffix
 
 _DURATION_ATTRS = {"duration", "duration.ms", "durationms", "duration_ms"}
 _KIND_VALUES = {"server", "client", "producer", "consumer", "internal"}
@@ -200,6 +254,11 @@ def _cmp_to_traceql(c: Cmp, t: Translation, cfg: Dict[str, Any]) -> str:
         return ""
     attr = c.left.name
     low = attr.lower()
+    if low in _TRACE_LEVEL_COUNTS:
+        t.note("WHERE %s %s %s: a trace's span/entity count has no TraceQL "
+               "field; filter dropped" % (attr, c.op,
+                                          expr_text(c.right)), NEEDS_REVIEW)
+        return ""
     if low in _ROOT_ATTRS and c.op in ("=", "!="):
         # nr.entryPoint IS TRUE: the trace's root span.
         text = str(getattr(c.right, "value", c.right)).strip().lower()
@@ -252,6 +311,11 @@ def _cmp_to_traceql(c: Cmp, t: Translation, cfg: Dict[str, Any]) -> str:
     var = is_nr_variable(c.right)
     if var:
         rhs = q("$%s" % grafana_var(var, cfg))
+    elif field in _STRING_FIELDS and isinstance(c.right, Lit) \
+            and isinstance(c.right.value, (int, float)) \
+            and not isinstance(c.right.value, bool):
+        n = c.right.value  # trace.id = 500: the id is a string in TraceQL
+        rhs = q(str(int(n)) if float(n) == int(n) else str(n))
     else:
         rhs = _value_text(c.right, cfg)
 
@@ -343,14 +407,20 @@ def translate_span_metrics_traceql(nq: NrqlQuery, cfg: Dict[str, Any],
         raise Untranslatable("TraceQL metrics need an aggregation")
     fn = aggs[0].expr
     assert isinstance(fn, Func)
-    body = _cond_to_traceql(nq.where, t, cfg)
-    if body.startswith("(") and body.endswith(")"):
-        body = body[1:-1]
-    body, trace_level = hoist_trace_level(body, t)
+    while fn.name in _TRACE_MATH_WRAPPERS and fn.args \
+            and isinstance(fn.args[0], Func):
+        t.note("%s() dropped: TraceQL metrics have no math functions (use "
+               "the panel's decimals / unit settings)" % fn_name(fn.name),
+               APPROXIMATE)
+        fn = fn.args[0]
     arg = fn.args[0] if fn.args else None
-    attr = arg.name.lower() if isinstance(arg, Attr) else ""
+    attr_node, _cast = unwrap_attr(arg) if arg is not None else (None, None)
+    attr = attr_node.name.lower() if isinstance(attr_node, Attr) else ""
     is_trace_count = fn.name in ("uniquecount", "cardinality") and attr in (
         "trace.id", "traceid", "trace_id")
+    body = _cond_to_traceql(nq.where, t, cfg)
+    body = strip_outer_parens(body, keep_or=root_only or is_trace_count)
+    body, trace_level = hoist_trace_level(body, t)
     if root_only and not is_trace_count:
         # FROM DistributedTraceSummary: one row per trace = its root span.
         body = ("nestedSetParent < 0" + (" && " + body if body else ""))
@@ -411,6 +481,9 @@ def translate_span_metrics_traceql(nq: NrqlQuery, cfg: Dict[str, Any],
                "metrics-generator window; values are seconds", APPROXIMATE)
     else:
         raise Untranslatable(
+            "arithmetic between aggregations has no TraceQL metrics "
+            "equivalent (Tempo cannot combine metrics queries); split it "
+            "into panels" if fn.name in ("_arith", "_ratio") else
             "%s() has no TraceQL metrics equivalent" % fn_name(fn.name))
     by = []
     for item in nq.facet:
@@ -448,8 +521,7 @@ def translate_to_traceql(nq: NrqlQuery, cfg: Dict[str, Any]) -> Translation:
     t = Translation(datasource="tempo", query_type="traceql",
                     confidence=APPROXIMATE)
     body = _cond_to_traceql(nq.where, t, cfg)
-    if body.startswith("(") and body.endswith(")"):
-        body = body[1:-1]
+    body = strip_outer_parens(body)
     body, trace_level = hoist_trace_level(body, t)
     t.expr = ("{ %s }" % body if body else "{ }") + trace_level
     if not body:

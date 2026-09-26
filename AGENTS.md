@@ -135,6 +135,10 @@ create folders). Never print or commit them.
   `interval` set to the variable (its value must be a Grafana span). NRQL
   dashboard variables become `label_values(<metric>{<WHERE>}, label)` on the
   datasource family their FROM maps to (Prometheus / Loki / Tempo).
+- `earliest(x)` without `TIMESERIES` is the value at the range start
+  (`x @ ${__from:date:seconds}`); `latest(timestamp)` on infra samples is
+  the time of the last sample; `count(<label attribute>)` is the entity
+  population; a `{{var}}` no variable defines becomes a textbox variable.
 - Math around an aggregation (`round`, `abs`, `floor`, `ceil`, `sqrt`, `exp`,
   `log`, `clamp_max`, `pow`, …) becomes the PromQL function; `uniques(attr)`
   becomes a `group by (label)` table; `predictLinear`, `bucketPercentile`,

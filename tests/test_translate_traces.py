@@ -327,3 +327,47 @@ class Iteration12TraceTests(unittest.TestCase):
         self.assertEqual(t.expr, '{ resource.service.name = "a" && .http.url '
                                  '!= nil } | count_over_time() by (name)')
         self.assertFalse(any("= nil" in n for n in t.notes))
+
+
+class Iteration13TraceTests(unittest.TestCase):
+    """OR precedence under the root filter, typed literals, wrappers."""
+
+    def setUp(self):
+        self.cfg = load_config()
+        self.cfg["span_aggregations"] = "traceql"
+
+    def test_or_keeps_its_parentheses_under_the_root_filter(self):
+        t = tr("SELECT count(*) FROM DistributedTraceSummary WHERE "
+               "trace.id = 500 OR trace.id = 503", self.cfg)
+        self.assertEqual(t.expr, '{ nestedSetParent < 0 && (trace:id = "500" '
+                                 '|| trace:id = "503") } | count_over_time()')
+        t = tr("SELECT * FROM Span WHERE (name = 'a' OR name = 'b') AND "
+               "service.name = 'x'", self.cfg)
+        self.assertEqual(t.expr, '{ (name = "a" || name = "b") && '
+                                 'resource.service.name = "x" }')
+
+    def test_trace_level_counts_are_dropped_with_a_note(self):
+        t = tr("SELECT average(numeric(duration)) FROM DistributedTraceSummary "
+               "WHERE spanCount > 5", self.cfg)
+        self.assertEqual(t.expr,
+                         "{ nestedSetParent < 0 } | avg_over_time(duration)")
+        self.assertTrue(any("span/entity count has no TraceQL field" in n
+                            for n in t.notes))
+
+    def test_math_wrappers_are_dropped_and_root_span_name_maps(self):
+        t = tr("SELECT round(percentile(duration, 99), 1) FROM "
+               "DistributedTraceSummary", self.cfg)
+        self.assertEqual(t.expr, "{ nestedSetParent < 0 } | "
+                                 "quantile_over_time(duration, 0.99)")
+        self.assertTrue(any(n.startswith("round() dropped") for n in t.notes))
+        t = tr("SELECT count(*) FROM DistributedTraceSummary WHERE "
+               "root.span.name = 'GET /x'", self.cfg)
+        self.assertEqual(t.expr, '{ nestedSetParent < 0 && name = "GET /x" } '
+                                 '| count_over_time()')
+
+    def test_arithmetic_is_refused_with_a_plain_reason(self):
+        t = tr("SELECT count(*) - filter(count(*), WHERE trace.id = 'a') "
+               "FROM DistributedTraceSummary", self.cfg)
+        self.assertTrue(any(n.startswith("arithmetic between aggregations has "
+                                         "no TraceQL metrics equivalent")
+                            for n in t.notes), t.notes)

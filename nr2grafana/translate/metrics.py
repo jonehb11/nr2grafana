@@ -759,7 +759,7 @@ class _Ctx:
                 if offset and self.offset:
                     sel += self.offset
                 rendered = "%s(%s%s%s)" % (fn, prefix, sel, suffix) if fn \
-                    else sel
+                    else sel + suffix
                 if rendered not in seen:
                     seen.add(rendered)
                     parts.append(rendered)
@@ -1298,12 +1298,26 @@ def _agg_expr(ctx: _Ctx, fn: Func, src: MetricSource,
         raise Untranslatable(
             "funnel() is event-sequence analysis with no metric equivalent")
     if name in ("earliest",):
-        raise Untranslatable(
-            "earliest() has no PromQL equivalent (PromQL lacks a "
-            "first_over_time function)")
-    if name in ("eventtype", "keyset", "aggregationendtime",
+        leftover(numeric)
+        if ctx.is_range:
+            raise Untranslatable(
+                "earliest() with TIMESERIES has no PromQL equivalent (no "
+                "first-in-bucket function); without TIMESERIES it is the "
+                "value at the start of the time range")
+        if src.mtype == "histogram":
+            raise Untranslatable(
+                "earliest() on a histogram-backed source has no PromQL "
+                "equivalent (only _bucket/_sum/_count series exist)")
+        t.note("earliest() rendered as the value at the start of the time "
+               "range (the first sample in the window): a PromQL @ modifier "
+               "on $__from", APPROXIMATE)
+        inner = hsel("", window=None, tail=" @ ${__from:date:seconds}")
+        return "avg%s(%s)" % (by, inner) if ctx.by else inner
+    if name in ("eventtype", "keyset", "dimensions", "aggregationendtime",
                 "bytecountestimate"):
-        raise Untranslatable("%s() is NRDB introspection" % fn_name(name))
+        raise Untranslatable("%s() is NRDB introspection (attribute names "
+                             "and event metadata); Grafana's label browser "
+                             "is the equivalent" % fn_name(name))
 
     raise Untranslatable("aggregation %s() is not supported by the "
                          "translator" % name)
@@ -1314,11 +1328,12 @@ def _derived_expr(ctx: _Ctx, fn: Func, src: DerivedSource,
     """Render a template source (nrmetrics kind 'expr' / 'count')."""
     t = ctx.t
     agg = _AGG_WORD.get(fn.name, "avg")
-    if fn.name == "earliest":
+    if fn.name == "earliest" and ctx.is_range:
         raise Untranslatable(
-            "earliest() has no PromQL equivalent (PromQL lacks a "
-            "first_over_time function)")
-    if fn.name in ("percentile", "median", "histogram", "apdex"):
+            "earliest() with TIMESERIES has no PromQL equivalent (no "
+            "first-in-bucket function); without TIMESERIES it is the value "
+            "at the start of the time range")
+    if fn.name in ("histogram", "apdex"):
         raise Untranslatable(
             "%s() cannot be applied to %s: the LGTM equivalent is a derived "
             "expression, not a raw histogram/gauge" % (fn_name(fn.name), ctx.event))
@@ -1358,6 +1373,35 @@ def _derived_expr(ctx: _Ctx, fn: Func, src: DerivedSource,
         expr = shifted
     expr = expr.replace("{}", "")      # drop empty matcher braces
     expr = re.sub(r"(\b(?:avg|sum|max|min|count)) \(", r"\1(", expr)
+    if fn.name in ("percentile", "median"):
+        # The quantile of the derived value's samples per series over the
+        # window (a subquery); NR ranks all raw events.
+        qs: List[str] = []
+        for a in fn.args[1:]:
+            if isinstance(a, Lit) and isinstance(a.value, (int, float)):
+                qs.append(_fmt_q(float(a.value)))
+            elif is_nr_variable(a):
+                gv = grafana_var(is_nr_variable(a), ctx.cfg)
+                qs.append("$%s / 100" % gv)
+                t.note("the percentile comes from dashboard variable "
+                       "{{%s}}; its value must be a number from 0 to 100"
+                       % is_nr_variable(a), APPROXIMATE)
+        if not qs:
+            qs = ["0.5" if fn.name == "median" else "0.95"]
+        if len(qs) > 1:
+            t.note("only the first percentile was translated for this "
+                   "derived expression; add panels for the others",
+                   NEEDS_REVIEW)
+        t.note("%s() of a derived expression: quantile_over_time over a "
+               "subquery of it (per series, over the window); NR ranks all "
+               "raw events" % fn_name(fn.name), NEEDS_REVIEW)
+        expr = "quantile_over_time(%s, (%s)[%s:])" % (qs[0], expr, window)
+    if fn.name == "earliest":
+        t.note("earliest() rendered as the value at the start of the time "
+               "range (the first sample in the window): a PromQL @ modifier "
+               "on $__from", APPROXIMATE)
+        expr = ("last_over_time((%s)[$__rate_interval:] @ "
+                "${__from:date:seconds})" % expr)
     if fn.name in ("derivative", "predictlinear", "stddev"):
         # Over-time functions of a derived expression: a PromQL subquery
         # turns the expression into the range vector they need.
@@ -1888,8 +1932,13 @@ def _infra_source(ctx: _Ctx, item: SelectItem, fn: Optional[Func],
     phase = nrmetrics.PHASE_ATTRS.get(etl)
 
     # count(*) / uniqueCount(<entity attr>) -> entity population.
-    is_count = fn is not None and (
-        fn.name == "count" and (attr is None or isinstance(arg, Star)))
+    is_count = fn is not None and fn.name == "count" and (
+        attr is None or isinstance(arg, Star)
+        or (count_spec is not None and attr_name.lower() != "timestamp"
+            and nrmetrics.infra_lookup(etl, attr_name) is None))
+    if is_count and attr is not None and not isinstance(arg, Star):
+        t.note("count(%s) counts the samples that carry the attribute, "
+               "i.e. the entity population" % attr_name, APPROXIMATE)
     is_unique = fn is not None and fn.name in ("uniquecount", "cardinality") \
         and attr is not None
     if etl == "k8spodsample" and (is_count or is_unique) and any(
@@ -1971,6 +2020,30 @@ def _infra_source(ctx: _Ctx, item: SelectItem, fn: Optional[Func],
         _drop_implicit(ctx)
         return src
 
+    if attr_name.lower() == "timestamp" and fn is not None \
+            and count_spec is not None and count_spec.kind == "count":
+        # latest(timestamp): when the entity last reported.
+        if fn.name not in ("latest", "max", "min", "earliest"):
+            raise Untranslatable(
+                "%s(timestamp) FROM %s has no metric equivalent (only "
+                "latest/max/min(timestamp) — the time of the last or first "
+                "sample — translate)" % (fn_name(fn.name), ctx.event))
+        sel = _with_fixed(count_spec.name, count_spec.matchers)
+        if "{" not in sel:
+            sel += "{<SELBARE>}"
+        _drop_implicit(ctx)
+        if fn.name in ("latest", "max"):
+            t.note("latest(timestamp) rendered as the timestamp of the most "
+                   "recent sample (epoch milliseconds)", APPROXIMATE)
+            return DerivedSource("max <BY>(timestamp(%s)) * 1000" % sel,
+                                 "dateTimeAsIso", APPROXIMATE,
+                                 count_spec.note or "")
+        t.note("%s(timestamp) rendered as the timestamp of the first sample "
+               "in the range (epoch milliseconds)" % fn_name(fn.name),
+               APPROXIMATE)
+        return DerivedSource(
+            "min <BY>(min_over_time(timestamp(%s)[$__range:])) * 1000" % sel,
+            "dateTimeAsIso", APPROXIMATE, count_spec.note or "")
     spec = nrmetrics.infra_lookup(etl, attr_name) if attr is not None else None
     if attr_name.lower() == "reason" and etl in ("k8scontainersample",
                                                  "k8spodsample"):
@@ -2002,6 +2075,14 @@ def _infra_source(ctx: _Ctx, item: SelectItem, fn: Optional[Func],
             return DerivedSource(
                 "max <BY>(%s{<SELBARE>} == 1)" % metric, "short",
                 NEEDS_REVIEW, nrmetrics.KSM_NOTE)
+        label, mapped = map_attr(attr_name, ctx.cfg)
+        if mapped or (count_spec is not None and attr_name.lower() in
+                      [a.lower() for a in count_spec.entity_attrs]):
+            raise Untranslatable(
+                "%s(%s) FROM %s: %s is a label (%s) on the exporter's "
+                "metrics, not a value; FACET %s or uniques(%s) list its "
+                "values" % (agg, attr_name, ctx.event, attr_name, label,
+                            attr_name, attr_name))
         raise Untranslatable(
             "%s(%s) FROM %s: no known exporter metric for attribute %r; "
             "add it to metric_map (keyed \"%s.%s\") with the Prometheus "
@@ -2385,6 +2466,10 @@ def translate_to_promql(q: NrqlQuery, cfg: Dict[str, Any]) -> Translation:
                 legend=item_legend, confidence=t.confidence,
                 group_by=list(ctx.by), notes=unit_notes))
     if primary_expr is None:
+        reasons = [f.split(": ", 1)[1] if ": " in f else f for f in failures]
+        if len(failures) > 1 and len(set(reasons)) == 1:
+            raise Untranslatable("%s: %s" % (
+                ", ".join(f.split(": ", 1)[0] for f in failures), reasons[0]))
         raise Untranslatable("; ".join(failures) if failures
                              else "no translatable SELECT items")
     for f in failures:

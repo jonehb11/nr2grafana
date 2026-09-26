@@ -520,10 +520,21 @@ class ConstructCoverageTests(unittest.TestCase):
         self.assertEqual(t.confidence, UNTRANSLATABLE)
         self.assertTrue(any("sum-of-squares" in n for n in t.notes))
 
-    def test_earliest_untranslatable_on_metrics(self):
+    def test_earliest_is_the_value_at_the_range_start(self):
         t = tr("SELECT earliest(some.gauge) FROM Metric")
+        self.assertEqual(t.expr, "some_gauge @ ${__from:date:seconds}")
+        self.assertEqual(t.confidence, NEEDS_REVIEW)
+        t = tr("SELECT latest(some.gauge) - earliest(some.gauge) FROM Metric "
+               "WHERE host.name = 'a'")
+        self.assertEqual(t.expr, '(some_gauge{instance="a"}) - '
+                                 '(some_gauge{instance="a"} @ '
+                                 '${__from:date:seconds})')
+        t = tr("SELECT earliest(some.gauge) FROM Metric TIMESERIES")
         self.assertEqual(t.confidence, UNTRANSLATABLE)
-        self.assertTrue(any("first_over_time" in n for n in t.notes))
+        self.assertTrue(any("no first-in-bucket function" in n
+                            for n in t.notes))
+        t = tr("SELECT earliest(duration) FROM Transaction")
+        self.assertEqual(t.confidence, UNTRANSLATABLE)
 
     def test_count_on_metric_counter_notes_datapoint_semantics(self):
         t = tr("SELECT count(orders) FROM Metric TIMESERIES")
@@ -1388,10 +1399,17 @@ class Iteration6MetricTests(unittest.TestCase):
         self.assertTrue(any("used as a whole WHERE condition" in n
                             for n in t.notes))
 
-    def test_earliest_on_derived_infra_expressions_is_refused(self):
+    def test_earliest_on_derived_infra_expressions(self):
         t = tr("SELECT earliest(cpuPercent) FROM SystemSample TIMESERIES")
         self.assertEqual(t.confidence, UNTRANSLATABLE)
-        self.assertTrue(any("first_over_time" in n for n in t.notes))
+        self.assertTrue(any("no first-in-bucket function" in n
+                            for n in t.notes))
+        t = tr("SELECT earliest(cpuPercent) FROM SystemSample "
+               "WHERE hostname = 'web-1'")
+        self.assertEqual(t.expr, 'last_over_time((100 * (1 - avg(rate('
+                                 'node_cpu_seconds_total{mode="idle",instance='
+                                 '"web-1"}[$__range]))))[$__rate_interval:] @ '
+                                 '${__from:date:seconds})')
 
     def test_facet_cases_on_a_duration_threshold_needs_count(self):
         t = self.q("average(duration)", " FACET cases(WHERE duration < 1 "
@@ -1892,3 +1910,66 @@ class Iteration12FuzzTests(unittest.TestCase):
         t = tr("SELECT count(*) FROM K8sPodSample WHERE namespaceName = 'shop'")
         self.assertEqual(
             sum(1 for n in t.notes if "exporter's series" in n), 1, t.notes)
+
+
+class Iteration13WideFuzzTests(unittest.TestCase):
+    """Wider randomised sweep: refusals that had a sound translation."""
+
+    def test_count_of_a_label_attribute_is_the_population(self):
+        t = tr("SELECT count(jobName) FROM K8sJobSample WHERE "
+               "namespaceName = 'batch'")
+        self.assertEqual(t.expr, 'count(kube_job_info{namespace="batch"})')
+        self.assertTrue(any("i.e. the entity population" in n
+                            for n in t.notes))
+
+    def test_timestamp_aggregations_on_infra_samples(self):
+        t = tr("SELECT latest(timestamp) FROM SystemSample WHERE "
+               "hostname = 'web-1'")
+        self.assertEqual(t.expr,
+                         'max(timestamp(node_uname_info{instance="web-1"})) '
+                         '* 1000')
+        self.assertEqual(t.confidence, APPROXIMATE)
+        self.assertIn("unit:dateTimeAsIso", t.notes)
+        t = tr("SELECT max(timestamp) - min(timestamp) FROM K8sPodSample "
+               "WHERE namespaceName = 'shop'")
+        self.assertEqual(
+            t.expr,
+            '(max(timestamp(kube_pod_info{namespace="shop"})) * 1000) - '
+            '(min(min_over_time(timestamp(kube_pod_info{namespace="shop"})'
+            '[$__range:])) * 1000)')
+        t = tr("SELECT sum(timestamp) FROM SystemSample")
+        self.assertEqual(t.confidence, UNTRANSLATABLE)
+
+    def test_percentiles_of_derived_expressions_use_subqueries(self):
+        t = tr("SELECT percentile(memoryUsedPercent, 50, 99) FROM "
+               "SystemSample FACET hostname")
+        self.assertEqual(t.expr, "quantile_over_time(0.5, (100 * (1 - avg by "
+                                 "(instance)(node_memory_MemAvailable_bytes / "
+                                 "node_memory_MemTotal_bytes)))[$__range:])")
+        self.assertTrue(any("only the first percentile" in n
+                            for n in t.notes))
+        self.assertEqual(t.confidence, NEEDS_REVIEW)
+        t = tr("SELECT percentile(cpuPercent, {{p}}) FROM SystemSample")
+        self.assertTrue(t.expr.startswith("quantile_over_time($p / 100, "))
+        t = tr("SELECT median(diskUsedPercent) FROM StorageSample WHERE "
+               "mountPoint = '/' TIMESERIES")
+        self.assertTrue(t.expr.startswith("quantile_over_time(0.5, (100 * "))
+        self.assertTrue(t.expr.endswith("[$__rate_interval:])"))
+
+    def test_one_reason_when_every_item_fails_alike(self):
+        t = tr("SELECT count(*) AS 'Total', average(duration) AS 'Avg' "
+               "FROM PageView")
+        self.assertEqual(t.confidence, UNTRANSLATABLE)
+        self.assertEqual(len(t.notes), 1)
+        self.assertTrue(t.notes[0].startswith(
+            "count(*), average(duration): no metric mapping for FROM "
+            "PageView"), t.notes)
+
+    def test_introspection_and_label_attribute_refusals_say_why(self):
+        t = tr("SELECT dimensions() FROM Transaction")
+        self.assertTrue(any("NRDB introspection" in n and "label browser" in n
+                            for n in t.notes), t.notes)
+        t = tr("SELECT latest(deploymentName) FROM K8sDeploymentSample")
+        self.assertEqual(t.confidence, UNTRANSLATABLE)
+        self.assertTrue(any("deploymentName is a label (deployment)" in n
+                            for n in t.notes), t.notes)

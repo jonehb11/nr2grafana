@@ -2927,8 +2927,22 @@ def _run_json(command: str, func, args: argparse.Namespace) -> int:
         try:
             result = json.loads(out_text)
         except (json.JSONDecodeError, ValueError):
-            # Not JSON: it is human text -> stderr, keep stdout clean.
-            real_stderr.write(out_text)
+            # Human text followed by the JSON summary (validate prints
+            # per-file lines first): the last JSON line is the result,
+            # everything else is human text -> stderr, stdout stays clean.
+            lines = out_text.splitlines()
+            keep = lines
+            for i in range(len(lines) - 1, -1, -1):
+                s = lines[i].strip()
+                if s.startswith("{") or s.startswith("["):
+                    try:
+                        result = json.loads(s)
+                    except (json.JSONDecodeError, ValueError):
+                        continue
+                    keep = lines[:i] + lines[i + 1:]
+                    break
+            if any(l.strip() for l in keep):
+                real_stderr.write("\n".join(keep) + "\n")
     real_stderr.flush()
     if not isinstance(rc, int):
         rc = 0 if rc is None else 1

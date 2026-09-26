@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -143,8 +144,23 @@ def _grid_pos(widget: NRWidget, cfg: Dict[str, Any]) -> Dict[str, int]:
     row = int(lay.get("row", 1) or 1)
     width = int(lay.get("width", 4) or 4)
     height = int(lay.get("height", 3) or 3)
-    return {"x": (col - 1) * 2, "y": (row - 1) * hm,
-            "w": max(1, min(24, width * 2)), "h": max(2, height * hm)}
+    # New Relic's grid is 12 columns; a layout outside it (column 13,
+    # column 5 + width 12) is clamped so Grafana's 24-column grid accepts
+    # the panel (see _layout_notes).
+    x = max(0, min(22, (col - 1) * 2))
+    return {"x": x, "y": max(0, (row - 1) * hm),
+            "w": max(1, min(24 - x, width * 2)), "h": max(2, height * hm)}
+
+
+def _layout_notes(widget: NRWidget) -> List[str]:
+    lay = widget.layout or {}
+    col = int(lay.get("column", 1) or 1)
+    width = int(lay.get("width", 4) or 4)
+    if col < 1 or width < 1 or col + width - 1 > 12:
+        return ["layout column %d width %d is outside New Relic's 12-column "
+                "grid; the panel was clamped to fit (check its position)"
+                % (col, width)]
+    return []
 
 
 _PANEL_TYPES = {
@@ -911,6 +927,7 @@ def _report(b: _Build, page: str, widget: NRWidget, panel: Dict[str, Any],
         entry["notes"].extend(t.notes)
     if extra_notes:
         entry["notes"].extend(extra_notes)
+    entry["notes"].extend(_layout_notes(widget))
     if fallback:
         entry["fallback"] = fallback
     b.report.append(entry)
@@ -1115,6 +1132,14 @@ def _finish_dashboard(dash: Dict[str, Any], b: _Build,
     converted: List[Dict[str, Any]] = []
     for v in nr_vars:
         gv = _convert_variable(v, b, b.cfg)
+        if gv and any(c.get("name") == gv.get("name") for c in converted):
+            # Two New Relic variables with one name (an invalid export):
+            # Grafana refuses duplicate names, so the first one wins.
+            first = next(c for c in converted if c.get("name") == gv["name"])
+            first["description"] = ("another New Relic variable named %r "
+                                    "was dropped (duplicate name)"
+                                    % gv["name"])
+            continue
         if gv:
             converted.append(gv)
     tvars: List[Dict[str, Any]] = []
@@ -1122,6 +1147,23 @@ def _finish_dashboard(dash: Dict[str, Any], b: _Build,
     tvars.extend(converted)
     tvars.extend(copy.deepcopy(b.cfg.get("extra_variables") or []))
     _span_variable_values(tvars, b)
+    # {{var}} references without a variable definition (a page exported
+    # without its dashboard variables): a textbox keeps the dashboard
+    # importable and its label says what to set.
+    defined = {v.get("name") for v in tvars}
+    for name in sorted(set(_VAR_NAME_RE.findall(
+            json.dumps(dash.get("panels") or [], ensure_ascii=False)))):
+        if name in defined or name.startswith("__"):
+            continue
+        tvars.append({
+            "type": "textbox", "name": name,
+            "label": "%s (undefined in the New Relic dashboard)" % name,
+            "description": "referenced as {{%s}} by a widget but not "
+                           "defined among the dashboard's variables; set "
+                           "its value" % name,
+            "query": "", "hide": 0, "options": [],
+            "current": {"selected": False, "text": "", "value": ""}})
+        defined.add(name)
     dash["templating"]["list"] = tvars
     if b.refresh_ms:
         secs = max(5, min(b.refresh_ms) // 1000)
