@@ -448,6 +448,11 @@ def _leaf_matchers(cond: Any, negate: bool, cfg: Dict[str, Any],
                    % cond_text(cond), NEEDS_REVIEW)
         return []
     if isinstance(cond, Cmp):
+        if cond.op in ("<", "<=", ">", ">=") and isinstance(cond.right, Lit) \
+                and isinstance(cond.right.value, str) \
+                and re.fullmatch(r"-?\d+(\.\d+)?", cond.right.value.strip()):
+            # status >= '500': a numeric comparison spelled as a string
+            cond = Cmp(cond.left, cond.op, Lit(float(cond.right.value)))
         return _cmp_to_matcher(cond, cfg, t, negate, allow_numeric)
     if isinstance(cond, InList):
         neg = cond.negated != negate

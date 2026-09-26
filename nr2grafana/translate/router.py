@@ -77,7 +77,16 @@ def _translate_span_aggregation(q, cfg: Dict[str, Any]) -> Translation:
                    and first.args[0].name.lower() in ("trace.id", "traceid",
                                                       "trace_id"))
     if mode == "traceql" or trace_count:
-        return translate_span_metrics_traceql(q, cfg)
+        try:
+            return translate_span_metrics_traceql(q, cfg)
+        except Untranslatable as e:
+            if trace_count:
+                raise
+            t = translate_to_promql(q, cfg)  # fall back to span metrics
+            t.note("TraceQL metrics cannot express this query (%s); "
+                   "translated with span metrics in Mimir instead — the "
+                   "panel needs span metrics to exist" % e, NEEDS_REVIEW)
+            return t
     return translate_to_promql(q, cfg)  # span metrics in Mimir
 
 

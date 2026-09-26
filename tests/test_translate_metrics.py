@@ -1189,3 +1189,75 @@ class Iteration4MetricTests(unittest.TestCase):
                             "viz.pie")
         self.assertEqual(t.query_type, "instant")
         self.assertTrue(any("TIMESERIES dropped" in n for n in t.notes))
+
+
+class Iteration5MetricTests(unittest.TestCase):
+    def test_numeric_string_comparison(self):
+        t = tr("SELECT count(*) FROM Transaction WHERE appName = 'App' "
+               "AND response.status >= '500' TIMESERIES AUTO")
+        self.assertIn('http_response_status_code=~"5.."', t.expr)
+
+    def test_error_expected_is_explained(self):
+        t = tr("SELECT count(*) FROM TransactionError WHERE appName = 'App' "
+               "AND error.expected IS FALSE FACET error.class TIMESERIES")
+        self.assertNotIn("error_expected", t.expr)
+        self.assertTrue(any("error.expected has no label" in n
+                            for n in t.notes))
+
+    def test_call_counts_per_request(self):
+        t = tr("SELECT average(databaseCallCount) FROM Transaction "
+               "WHERE appName = 'App' TIMESERIES AUTO")
+        self.assertEqual(
+            t.expr,
+            'sum(rate(db_client_operation_duration_seconds_count{'
+            'service_name="App"}[$__rate_interval])) / sum(rate(%s_count{'
+            'service_name="App"}[$__rate_interval]))' % HTTP)
+        t = tr("SELECT sum(databaseCallCount) FROM Transaction "
+               "WHERE appName = 'App' TIMESERIES AUTO")
+        self.assertTrue(t.expr.startswith(
+            "sum(rate(db_client_operation_duration_seconds_count{"))
+
+    def test_gauge_count_counts_datapoints(self):
+        # A known gauge (an unknown name used with count() is assumed to be
+        # a counter, as before).
+        t = tr("FROM Metric SELECT count(system.cpu.utilization) "
+               "WHERE host.name = 'h' TIMESERIES")
+        self.assertEqual(
+            t.expr,
+            'sum(count_over_time(system_cpu_utilization_ratio{instance="h"}'
+            '[$__interval]))')
+
+    def test_string_metric_map_infers_counters(self):
+        cfg = load_config()
+        cfg["metric_map"]["checkout.orders.completed"] = "orders_completed_total"
+        t = tr("SELECT sum(checkout.orders.completed) FROM Metric TIMESERIES",
+               cfg)
+        self.assertEqual(t.expr, "sum(rate(orders_completed_total"
+                         "[$__rate_interval])) * $__interval_ms / 1000")
+
+    def test_nr_ingest_metadata_is_dropped(self):
+        t = tr("FROM Metric SELECT average(aws.ec2.CPUUtilization) WHERE "
+               "collector.name = 'cloudwatch-metric-streams' AND tags.Name "
+               "LIKE 'web%' FACET tags.Name TIMESERIES")
+        self.assertEqual(
+            t.expr,
+            'avg by (tag_Name)(avg_over_time(aws_ec2_cpuutilization_average{'
+            'tag_Name=~"(?i)web.*"}[$__rate_interval]))')
+        self.assertTrue(any("ingest metadata" in n for n in t.notes))
+
+    def test_aws_dimension_unique_count(self):
+        t = tr("FROM Metric SELECT uniqueCount(aws.ec2.InstanceId) "
+               "WHERE aws.accountId = '1'")
+        self.assertEqual(
+            t.expr,
+            'count(count by (dimension_InstanceId)(aws_ec2_info{'
+            'account_id="1"}))')
+
+    def test_traceql_mode_falls_back_to_span_metrics(self):
+        cfg = load_config()
+        cfg["span_aggregations"] = "traceql"
+        t = tr("SELECT percentage(count(*), WHERE error IS TRUE) FROM Span "
+               "WHERE service.name = 'c' TIMESERIES", cfg)
+        self.assertEqual(t.datasource, "prometheus")
+        self.assertTrue(any("TraceQL metrics cannot express" in n
+                            for n in t.notes))

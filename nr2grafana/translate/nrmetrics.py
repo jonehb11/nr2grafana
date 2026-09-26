@@ -865,6 +865,11 @@ _add("k8sjobsample", {
                       note=KSM_NOTE),
 })
 
+INFRA[("k8scontainersample", "reason")] = _e(
+    "<AGG> <BY>((kube_pod_container_status_waiting_reason{<SELBARE>} == 1) or "
+    "(kube_pod_container_status_terminated_reason{<SELBARE>} == 1))", "short",
+    KSM_NOTE + "; the reason is the `reason` label (one series per container "
+    "and reason, value 1)", NEEDS_REVIEW)
 INFRA[("k8snodesample", _norm_attr("runningPods"))] = _g(
     "kubelet_running_pods", "short", note="kubelet metric", conf=EXACT)
 INFRA[("k8snodesample", _norm_attr("runningContainers"))] = _g(

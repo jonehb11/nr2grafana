@@ -730,3 +730,51 @@ class Iteration4KnowledgeTests(unittest.TestCase):
             '[$__range]))')
         t = tr("SELECT average(duration) FROM AwsLambdaInvocation TIMESERIES")
         self.assertIn("aws_lambda_duration_average", t.expr)
+
+
+class Iteration5KnowledgeTests(unittest.TestCase):
+    def test_dimensional_k8s_identity_attributes(self):
+        t = tr("FROM Metric SELECT uniqueCount(k8s.podName) "
+               "WHERE k8s.pod.status = 'Pending'")
+        self.assertEqual(t.expr, 'sum(kube_pod_status_phase{phase="Pending"})')
+        t = tr("FROM Metric SELECT latest(k8s.pod.status) "
+               "WHERE k8s.clusterName = 'c' FACET k8s.podName")
+        self.assertEqual(
+            t.expr, 'max by (pod, phase)(kube_pod_status_phase{cluster="c"} == 1)')
+        t = tr("FROM Metric SELECT uniqueCount(k8s.nodeName) "
+               "WHERE k8s.clusterName = 'c'")
+        self.assertEqual(t.expr, 'count(kube_node_info{cluster="c"})')
+
+    def test_metric_valued_attribute_filters_are_dropped(self):
+        t = tr("SELECT uniqueCount(podName) FROM K8sPodSample WHERE isReady = 0 "
+               "AND status = 'Running' FACET namespaceName")
+        self.assertEqual(
+            t.expr, 'sum by (namespace)(kube_pod_status_phase{phase="Running"})')
+        self.assertTrue(any("metric-valued attribute" in n and
+                            "kube_pod_status_ready" in n for n in t.notes))
+
+    def test_container_state_reasons(self):
+        t = tr("SELECT count(*) FROM K8sContainerSample WHERE status = "
+               "'Waiting' AND reason = 'CrashLoopBackOff' FACET podName")
+        self.assertEqual(
+            t.expr,
+            'sum by (pod)(kube_pod_container_status_waiting_reason{'
+            'reason="CrashLoopBackOff"})')
+        t = tr("SELECT latest(reason) FROM K8sContainerSample "
+               "WHERE status != 'Running' FACET podName, containerName")
+        self.assertEqual(
+            t.expr,
+            "avg by (pod, container, reason)((kube_pod_container_status_"
+            "waiting_reason == 1) or (kube_pod_container_status_terminated_"
+            "reason == 1))")
+
+    def test_rate_over_derived_templates(self):
+        t = tr("SELECT rate(sum(net.errorsPerSecond), 1 minute) FROM K8sPodSample "
+               "WHERE clusterName = 'c' TIMESERIES")
+        self.assertTrue(t.expr.endswith(") * 60"), t.expr)
+        t = tr("SELECT rate(sum(restartCount), 1 hour) FROM K8sPodSample "
+               "FACET podName TIMESERIES")
+        self.assertEqual(
+            t.expr,
+            "(sum by (pod)(sum by (namespace, pod)(rate(kube_pod_container_"
+            "status_restarts_total[$__rate_interval])))) * 3600")

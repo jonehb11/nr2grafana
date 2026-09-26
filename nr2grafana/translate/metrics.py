@@ -133,7 +133,10 @@ def resolve_metric(name: str, agg: str, cfg: Dict[str, Any],
                 break
     if entry is not None:
         if isinstance(entry, str):
-            entry = {"name": entry}
+            # A bare name: infer the type from its suffix.
+            entry = {"name": entry,
+                     "type": "counter" if entry.endswith("_total")
+                     else "gauge"}
         mtype = entry.get("type", "gauge")
         matchers = None
         if isinstance(entry.get("matchers"), dict):
@@ -387,6 +390,11 @@ def _http_fixups(matchers: List[Matcher], t: Translation,
                     "HTTP-server metric equivalent; rebuild this panel on "
                     "the messaging.* / rpc.* OTel metrics your background "
                     "workers emit" % (m.op, m.value))
+        elif m.label.lower() in ("error_expected", "error.expected"):
+            t.note("error.expected has no label on OTel HTTP metrics; every "
+                   "5xx response counts (expected errors included)",
+                   NEEDS_REVIEW)
+            continue
         elif m.op == "!=" and m.value == "" and m.label.lower() in (
                 "error", "duration", "totaltime", "webduration",
                 "databaseduration", "externalduration", "name",
@@ -543,6 +551,30 @@ class _Ctx:
         self.branches = [self._fixups(b) for b in self.branches]
         self.branches = [list({(m.label, m.op, m.value): m for m in b}.values())
                          for b in self.branches]
+        if nrmetrics.is_infra_event(etl):
+            for b in self.branches:
+                for m in list(b):
+                    spec = nrmetrics.infra_lookup(etl, m.label)
+                    if spec is not None and spec.kind in (
+                            "gauge", "counter", "rate", "histogram", "expr") \
+                            and m.label.lower() not in ("status", "phase",
+                                                        "state", "reason"):
+                        b.remove(m)
+                        t.note("WHERE %s %s %r compares a metric-valued "
+                               "attribute; the exporter carries it as a "
+                               "metric (%s), not a label — express it as a "
+                               "PromQL join manually; filter dropped"
+                               % (m.label, m.op, m.value,
+                                  spec.name or "a derived expression"),
+                               NEEDS_REVIEW)
+        if self.is_metric_event:
+            for b in self.branches:
+                for m in list(b):
+                    if m.label in _NR_INTERNAL_ATTRS:
+                        b.remove(m)
+                        t.note("WHERE %s %s %r is New Relic ingest metadata "
+                               "with no Prometheus label; dropped"
+                               % (m.label, m.op, m.value), APPROXIMATE)
         if self.is_metric_event:
             for b in self.branches:
                 for i, m in enumerate(b):
@@ -859,6 +891,12 @@ def _agg_expr(ctx: _Ctx, fn: Func, src: MetricSource,
             t.note("count() of a per-second rate source counts series, not "
                    "events", NEEDS_REVIEW)
             return "count%s(%s)" % (by, hsel("", window=None))
+        if ctx.is_metric_event:
+            win = "$__interval" if ctx.is_range else "$__range"
+            t.note("count() of a gauge metric counts its datapoints per "
+                   "step (count_over_time)", APPROXIMATE)
+            return "sum%s(%s)" % (by, hsel("", window=win,
+                                          fnname="count_over_time"))
         t.note("count(*) of a gauge-backed source counts series, not events",
                NEEDS_REVIEW)
         return "count%s(%s)" % (by, hsel("", window=None))
@@ -1194,6 +1232,21 @@ def _derived_expr(ctx: _Ctx, fn: Func, src: DerivedSource,
             t.note("COMPARE WITH could not be applied to this derived "
                    "expression (no selector to offset); the comparison "
                    "target repeats the current values", NEEDS_REVIEW)
+    if fn.name == "rate":
+        per = 60.0
+        for a in fn.args[1:]:
+            if isinstance(a, Lit) and isinstance(a.value, (int, float)):
+                per = float(a.value)
+        if "rate(" not in src.expr and "_total{" in src.expr:
+            # A cumulative counter inside the template: rate() it in place.
+            expr = re.sub(r"([A-Za-z_:][A-Za-z0-9_:]*_total(?:\{[^}]*\})?)",
+                          r"rate(\1[%s])" % window, expr)
+            t.note("rate() of a cumulative counter applied inside the derived "
+                   "expression", APPROXIMATE)
+        if per != 1:
+            t.note("rate(..., %s seconds) of a per-second quantity scaled by "
+                   "%s" % (_fmt_num(per), _fmt_num(per)), APPROXIMATE)
+            expr = "(%s) * %s" % (expr, _fmt_num(per))
     if fn.name == "count" and not src.expr.startswith("count"):
         t.note("count(*) on %s counts the exporter's series, not New Relic "
                "samples" % ctx.event, APPROXIMATE)
@@ -1233,6 +1286,25 @@ _EVENT_EQUIVALENTS = {
 
 
 _NAME_LABELS = ("metricName", "metricname", "__name__")
+_NR_INTERNAL_ATTRS = {"collector_name", "instrumentation_provider",
+                      "instrumentation_name", "instrumentation_version",
+                      "newrelic_source", "integrationName",
+                      "integrationVersion", "integrationname",
+                      "integrationversion", "nr_entityType"}
+
+# NR dimensional K8s attributes that are entity identities / states of the
+# sample events (FROM Metric SELECT uniqueCount(k8s.podName) ...).
+_K8S_DIMENSIONS = {
+    "k8s.podname": ("K8sPodSample", "podName"),
+    "k8s.pod.status": ("K8sPodSample", "status"),
+    "k8s.nodename": ("K8sNodeSample", "nodeName"),
+    "k8s.namespacename": ("K8sNamespaceSample", "namespaceName"),
+    "k8s.containername": ("K8sContainerSample", "containerName"),
+    "k8s.container.status": ("K8sContainerSample", "status"),
+    "k8s.container.reason": ("K8sContainerSample", "reason"),
+    "k8s.deploymentname": ("K8sDeploymentSample", "deploymentName"),
+    "k8s.clustername": ("K8sClusterSample", "clusterName"),
+}
 
 
 def _metric_name_from_where(ctx: _Ctx) -> Optional[str]:
@@ -1297,6 +1369,32 @@ def _source_for(ctx: _Ctx, item: SelectItem) -> Any:
             arg = arg.args[0]
         inner_attr, _ = unwrap_attr(arg)
         name = None
+        low0 = inner_attr.name.lower() if inner_attr is not None else ""
+        k8s = _K8S_DIMENSIONS.get(low0)
+        if k8s is not None:
+            # k8s.podName / k8s.pod.status are the sample event's identity
+            # and state, not metrics: translate as the sample would.
+            event, plain = k8s
+            saved_event = ctx.event
+            ctx.event = event
+            try:
+                pf = Func(agg or "latest", args=[Attr(plain)])
+                return _infra_source(ctx, SelectItem(expr=pf), pf,
+                                     agg or "latest", Attr(plain))
+            finally:
+                ctx.event = saved_event
+        if agg in ("uniquecount", "cardinality") and low0.startswith("aws.") \
+                and len(low0.split(".")) >= 3:
+            # uniqueCount(aws.ec2.InstanceId): a dimension, counted on the
+            # YACE resource-info series.
+            ns = low0.split(".")[1]
+            label = nrmetrics.aws_attr_label(inner_attr.name) \
+                or sanitize_label(inner_attr.name)
+            return DerivedSource(
+                "count <BY>(count by (%s%s)(aws_%s_info{<SELBARE>}))"
+                % (label, "".join(", " + l for l in ctx.by), ns), "short",
+                NEEDS_REVIEW, "distinct %s across YACE's aws_%s_info resource "
+                "series" % (label, ns))
         if inner_attr is not None and inner_attr.name.lower() == "metricname":
             if agg in ("uniquecount", "cardinality"):
                 # uniqueCount(metricName) WHERE metricName LIKE 'x%'
@@ -1348,7 +1446,16 @@ def _source_for(ctx: _Ctx, item: SelectItem) -> Any:
                     "has no automatic equivalent; add it to metric_map, "
                     "e.g. \"%s\": {\"name\": \"<prometheus metric>\", "
                     "\"type\": \"counter|gauge|histogram\"}" % (ts, ts))
-        return resolve_metric(name, agg, cfg, t)
+        src = resolve_metric(name, agg, cfg, t)
+        if isinstance(src, MetricSource) and src.base.startswith("aws_"):
+            # YACE exposes resource tags as tag_<Key> labels.
+            for b in ctx.branches:
+                for i, m in enumerate(b):
+                    if m.label.startswith("tags_"):
+                        b[i] = Matcher("tag_" + m.label[5:], m.op, m.value)
+            ctx.by = ["tag_" + l[5:] if l.startswith("tags_") else l
+                      for l in ctx.by]
+        return src
 
     if etl in ("transaction", "transactionerror"):
         attr, _ = unwrap_attr(arg)
@@ -1396,6 +1503,14 @@ def _source_for(ctx: _Ctx, item: SelectItem) -> Any:
         if kind == "db-count":
             t.note(note, NEEDS_REVIEW)
             src = db_client_source(cfg)
+            if agg in ("average", "avg"):
+                t.note("average(databaseCallCount) is DB calls per request: "
+                       "DB client operations divided by HTTP server "
+                       "requests", APPROXIMATE)
+                return DerivedSource(
+                    "sum <BY>(rate(%s{<SELBARE>}[<W>])) / sum <BY>(rate("
+                    "<HTTP>_count{<SELBARE>}[<W>]))" % src.name("_count"),
+                    "short", NEEDS_REVIEW, src.note)
             return MetricSource(src.name("_count"), "counter", "short",
                                 NEEDS_REVIEW, src.note)
         if kind == "ext":
@@ -1404,6 +1519,14 @@ def _source_for(ctx: _Ctx, item: SelectItem) -> Any:
         if kind == "ext-count":
             t.note(note, NEEDS_REVIEW)
             src = http_client_source(cfg)
+            if agg in ("average", "avg"):
+                t.note("average(externalCallCount) is external calls per "
+                       "request: HTTP client requests divided by HTTP server "
+                       "requests", APPROXIMATE)
+                return DerivedSource(
+                    "sum <BY>(rate(%s{<SELBARE>}[<W>])) / sum <BY>(rate("
+                    "<HTTP>_count{<SELBARE>}[<W>]))" % src.name("_count"),
+                    "short", NEEDS_REVIEW, src.note)
             return MetricSource(src.name("_count"), "counter", "short",
                                 NEEDS_REVIEW, src.note)
         raise Untranslatable(
@@ -1568,6 +1691,8 @@ def _infra_source(ctx: _Ctx, item: SelectItem, fn: Optional[Func],
         return src
 
     spec = nrmetrics.infra_lookup(etl, attr_name) if attr is not None else None
+    if attr_name.lower() == "reason" and etl == "k8scontainersample":
+        ctx.by = list(dict.fromkeys(ctx.by + ["reason"]))
     if spec is None and attr is None:
         raise Untranslatable(
             "%s() FROM %s needs an attribute argument" % (agg or "?",
@@ -1632,15 +1757,31 @@ def _apply_phase(ctx: _Ctx, src: Any, metric: str, label: str,
         return DerivedSource(expr, "short", EXACT, nrmetrics.KSM_NOTE)
     if not found:
         return None
+    m = found[0]
     if src is None:
+        if "%s" in metric and m.op not in ("=", "=~"):
+            ctx.t.note("status %s %r on container samples has no single "
+                       "series (one boolean series per state); filter "
+                       "dropped" % (m.op, m.value), NEEDS_REVIEW)
+            return None
         ctx.t.note("the %s filter was dropped: cAdvisor/kube-state-metrics "
                    "resource series carry no phase label; add a "
                    "kube_pod_status_phase join manually if required"
                    % "/".join(n for n in names), NEEDS_REVIEW)
         return None
-    m = found[0]
     if "%s" in metric:
+        if m.op not in ("=", "=~"):
+            ctx.t.note("status %s %r on container samples has no single "
+                       "series (one boolean series per state); filter "
+                       "dropped" % (m.op, m.value), NEEDS_REVIEW)
+            return None
         state = m.value.lower()
+        has_reason = any(r.label == "reason" for b in ctx.branches for r in b)
+        if has_reason and state in ("waiting", "terminated"):
+            # kube_pod_container_status_waiting_reason{reason="..."}
+            return DerivedSource("sum <BY>(%s_reason{<SELBARE>})"
+                                 % (metric % state), "short", EXACT,
+                                 nrmetrics.KSM_NOTE)
         return DerivedSource("sum <BY>(%s{<SELBARE>})" % (metric % state),
                              "short", EXACT, nrmetrics.KSM_NOTE)
     phase_m = Matcher(label, m.op, m.value)

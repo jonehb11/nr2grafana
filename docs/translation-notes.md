@@ -364,3 +364,28 @@ beyond the translations above.
 | widget `colors.seriesOverrides`, `yAxisRight.series` | ignored | fixed-colour and right-axis field overrides by series name |
 | widget `linkedEntityGuids`, `refreshInterval` | ignored | a panel link to the New Relic entity; the smallest interval becomes the dashboard refresh |
 | widget `platformOptions.ignoreTimeRange` | the SINCE only voted for the dashboard range | the SINCE is always a panel time override (Grafana's picker does not affect it) |
+
+### Iteration 5 — New Relic's own quickstart shapes and alternative configurations
+
+A fourth corpus modelled on New Relic's APM / Kubernetes / Infra / Logs /
+AWS quickstart dashboards, plus the whole harness re-run under alternative
+configurations (`http_metrics_flavor: legacy`, `spanmetrics_flavor: tempo`,
+`loki_parser: logfmt`, `span_aggregations: traceql`, `event_map`,
+`metric_map` templates). All parse; the semantic findings:
+
+| Construct | Before | Now |
+| --- | --- | --- |
+| `response.status >= '500'` (a numeric comparison spelled as a string) | dropped | the 5xx class matcher, like `>= 500` |
+| `error.expected IS FALSE` on `TransactionError` | `error_expected="false"` label | dropped with a note (every 5xx counts) |
+| `average(databaseCallCount)` / `average(externalCallCount)` | DB calls per second | DB (or HTTP client) operations divided by HTTP server requests: calls per request |
+| `count(<gauge metric>)` on `FROM Metric` | `count(m)` (the number of series) | `sum(count_over_time(m[$__interval]))` — datapoints per step |
+| `metric_map` string entries ending in `_total` | treated as gauges | counters |
+| `collector.name`, `instrumentation.provider`, `newrelic.source`, ... in a metric WHERE | label matchers that match nothing | dropped with a note (New Relic ingest metadata) |
+| `tags.<Key>` on `aws.*` metrics | `tags_Key` | YACE's `tag_Key` |
+| `uniqueCount(aws.ec2.InstanceId)` | a metric named `aws_ec2_instance_id_average` | `count(count by (dimension_InstanceId)(aws_ec2_info{...}))` |
+| `FROM Metric SELECT uniqueCount(k8s.podName) WHERE k8s.pod.status = 'Pending'`, `latest(k8s.pod.status)`, `uniqueCount(k8s.nodeName)`, ... | garbage metric names | the same translations as the sample events (`kube_pod_status_phase`, `kube_node_info`, ...) |
+| `WHERE isReady = 0` / `isScheduled = 0` (metric-valued attributes) on infra events | `isReady="0"` label matchers | dropped with a note naming the metric to join on |
+| `status = 'Waiting' AND reason = 'CrashLoopBackOff'` on containers; `latest(reason)` | `kube_pod_container_status_waiting{reason=...}` (no such label) / untranslatable | `kube_pod_container_status_waiting_reason{reason=...}`; `latest(reason)` lists the active waiting/terminated reason per container |
+| `rate(sum(<derived per-second attribute>), 1 minute)`, `rate(sum(restartCount), 1 hour)` on pods | unscaled / untranslatable | scaled by the unit; counters inside templates get `rate()` applied in place |
+| `span_aggregations: "traceql"` with an aggregation TraceQL metrics cannot express (`percentage()`) | untranslatable | span metrics in Mimir with a note |
+| `entityGuid`, `containerId` / `container.id` | unmapped | default label map entries |

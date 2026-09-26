@@ -143,6 +143,7 @@ def explain_nrql(nrql: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
         "timeseries": (None if q.timeseries is None else {
             "auto": q.timeseries.auto, "max": q.timeseries.max,
             "interval_seconds": q.timeseries.interval_seconds,
+            "interval_var": q.timeseries.interval_var,
             "slide_by": q.timeseries.slide_by}),
         "since": q.since, "until": q.until, "compare_with": q.compare_with,
         "limit": q.limit,
