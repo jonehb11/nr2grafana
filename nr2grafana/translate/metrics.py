@@ -1492,6 +1492,12 @@ def _derived_expr(ctx: _Ctx, fn: Func, src: DerivedSource,
     if fn.name == "latest" and not ctx.is_range:
         window = "$__rate_interval"
     by = ctx.by_clause().lstrip() if ctx.by else ""
+    if "({<SELBARE>})" in src.expr:
+        # A bare selector (no metric name): needs one positive matcher.
+        src = DerivedSource(src.expr.replace(
+            "({<SELBARE>})", "(%s)" % render_selector(
+                "", ctx.matchers + list(extra_m))), src.unit, src.confidence,
+            src.note)
     expr = (src.expr
             .replace("<W>", window)
             .replace("<STEP>", "$__interval" if ctx.is_range else "$__range")

@@ -792,9 +792,9 @@ def render_selector(metric: str, matchers: List[Matcher]) -> str:
         # naming the metric twice, but allows several __name__ matchers.
         matchers = [Matcher("__name__", "=", metric)] + list(matchers)
         metric = ""
-    if not metric and matchers and all(matches_empty(m) for m in matchers):
-        # {__name__!="a"}: PromQL needs one matcher that does not match the
-        # empty value; every metric name is non-empty.
+    if not metric and all(matches_empty(m) for m in matchers):
+        # {__name__!="a"} or a bare {}: PromQL needs one matcher that does
+        # not match the empty value; every metric name is non-empty.
         matchers = [Matcher("__name__", "=~", ".+")] + list(matchers)
     inner = ",".join(m.render() for m in matchers)
     if metric:
