@@ -398,8 +398,8 @@ class SelectArithmeticTests(unittest.TestCase):
         t = tr("SELECT apdex(duration, t:0.3) FROM Transaction")
         # 0.3 and 1.2 are not OTel default buckets: the next defaults
         # (0.5, 2.5) are accepted as fallbacks
-        self.assertIn('le=~"0\\.3|0\\.5"', t.expr)
-        self.assertIn('le=~"1\\.2|2\\.5"', t.expr)
+        self.assertIn('le=~"0\\\\.3|0\\\\.5"', t.expr)
+        self.assertIn('le=~"1\\\\.2|2\\\\.5"', t.expr)
 
 
 class FacetFunctionTests(unittest.TestCase):
