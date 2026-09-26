@@ -23,6 +23,7 @@ from dataclasses import replace as _dc_replace
 
 from ..nrql.parser import Attr, BoolOp, Func, Lit, NrqlQuery, SelectItem, Star
 from .common import (
+    sanitize_label,
     fn_name,
     APPROXIMATE, EXACT, NEEDS_REVIEW, Matcher, NumericPred, Translation,
     Untranslatable, cond_text, cond_to_branches, event_map_entry, expr_text,
@@ -371,7 +372,29 @@ def variable_scope(nq: NrqlQuery, cfg: Dict[str, Any]) -> str:
     return sp.sel if sp.stream else ""
 
 
+def _logs_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """The label_map as it applies to logs: a stream or structured-metadata
+    label keeps its configured name (the pipeline named it); a parsed field
+    keeps the New Relic attribute name, because that is the field's name in
+    the log line — a Prometheus-oriented default such as host -> instance
+    must not rename it. Entries the user added or changed always apply."""
+    from ..config import DEFAULT_CONFIG
+    stream = set(cfg.get("loki_stream_labels") or [])
+    meta = set(cfg.get("loki_metadata_labels") or [])
+    defaults = DEFAULT_CONFIG.get("label_map") or {}
+    label_map: Dict[str, str] = {}
+    for attr, label in (cfg.get("label_map") or {}).items():
+        if label in stream or label in meta or defaults.get(attr) != label:
+            label_map[attr] = label
+        else:
+            label_map[attr] = sanitize_label(attr)
+    out = dict(cfg)
+    out["label_map"] = label_map
+    return out
+
+
 def translate_to_logql(nq: NrqlQuery, cfg: Dict[str, Any]) -> Translation:
+    cfg = _logs_cfg(cfg)
     t0 = Translation(datasource="loki")
     extra_stream = _event_stream_labels(nq, cfg, t0)
     items = list(nq.select)

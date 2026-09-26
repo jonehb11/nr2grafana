@@ -119,9 +119,11 @@ create folders). Never print or commit them.
   histogram select its `_count` / `_sum` series; anything else is
   name-normalised and type-guessed → needs-review.
 - `FROM Log` → LogQL: stream labels from `loki_stream_labels`, `message`
-  predicates become line filters, everything else a parsed-field filter. A
-  WHERE with only negative/empty stream matchers (`NOT level = 'x'`) gets
-  `service_name=~".+"` added — Loki needs one positive matcher.
+  predicates become line filters, everything else a parsed-field filter
+  that keeps the New Relic attribute name (`error.class` → `error_class`;
+  the label_map renames stream labels only, unless you mapped the attribute
+  yourself). A WHERE with only negative/empty stream matchers (`NOT level =
+  'x'`) gets `service_name=~".+"` added — Loki needs one positive matcher.
 - `FROM Span` raw → TraceQL search; aggregated → span metrics (or TraceQL
   metrics); `uniqueCount(trace.id)` → root-span count. `attr IS NULL` emits
   `= nil`, which Tempo 2.7 rejects (needs-review; drop the predicate there).

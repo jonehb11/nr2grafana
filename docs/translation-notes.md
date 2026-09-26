@@ -506,6 +506,19 @@ counts):
 | `average(loadAverageOneMinute) / latest(coreCount)` and other ratios of plain numbers | `percentunit` | no unit; only counts over counts (and sums of counters) are proportions |
 | `allocatableCpuCoresUtilization`, `allocatableMemoryUtilization` on `K8sNodeSample` | unknown | used / allocatable per node (cAdvisor root cgroup over kube-state-metrics allocatable) |
 
+### Iteration 17 — value-level checks for LogQL, `TIMESERIES` buckets and legends
+
+Twenty-eight translated log queries ran on a Loki holding JSON log lines
+with known counts per service and level (stream labels `service_name`,
+`level`, `job`, `env`; fields `message`, `status`, `duration_ms`, `host`,
+`userId`); per-bucket `TIMESERIES` values and the labels behind every
+`{{label}}` in a legend were checked on the Prometheus data. Bucket math
+and legends were right; the log checks found one rule:
+
+| Construct | Before | Now |
+| --- | --- | --- |
+| `WHERE host = 'x'`, `FACET host`, `uniqueCount(host)`, `host IS NULL` on `FROM Log` when `instance` is not a configured stream label | the Prometheus-oriented default `host → instance` renamed the *parsed field* too: `\| json \| instance="x"`, `by (instance)` — no such field in the line, so no data | a parsed field keeps its New Relic attribute name (`\| json \| host="x"`, `by (host)`), because that is the field's name in the log line; the label_map applies to stream and structured-metadata labels (the pipeline named those) and to entries you added yourself. With the default `loki_stream_labels` (which lists `instance`) `host` still selects the `instance` stream label — drop `instance` from `loki_stream_labels` when your streams carry no such label |
+
 ### Iteration 16 — value-level checks on a live stack
 
 Forty translated queries were evaluated on a Prometheus scraping an

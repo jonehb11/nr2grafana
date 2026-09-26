@@ -589,3 +589,61 @@ class Iteration12LogTests(unittest.TestCase):
                "level = 'error'")
         self.assertEqual(t.expr, 'sum(count_over_time({service_name!="x", '
                                  'level=~"(?i)error"} [$__range]))')
+
+
+class Iteration17ParsedFieldTests(unittest.TestCase):
+    """Parsed fields keep their New Relic attribute names: the label_map's
+    Prometheus-oriented defaults rename stream labels only."""
+
+    def _cfg(self, **overrides):
+        cfg = load_config()
+        cfg["loki_stream_labels"] = ["service_name", "level"]
+        for k, v in overrides.items():
+            cfg[k] = v
+        return cfg
+
+    def test_host_is_a_parsed_field_when_instance_is_no_stream_label(self):
+        t = tr("SELECT count(*) FROM Log WHERE service_name = 'checkout' AND "
+               "host = 'host-1'", self._cfg())
+        self.assertEqual(t.expr, 'sum(count_over_time({service_name="checkout"}'
+                                 ' | json | host="host-1" | __error__="" '
+                                 '[$__range]))')
+        t = tr("SELECT count(*) FROM Log WHERE service_name = 'checkout' "
+               "FACET host", self._cfg())
+        self.assertEqual(t.expr, 'sum by (host)(count_over_time({service_name='
+                                 '"checkout"} | json | __error__="" '
+                                 '[$__range]))')
+        t = tr("SELECT uniqueCount(host) FROM Log WHERE service_name = "
+               "'checkout'", self._cfg())
+        self.assertEqual(t.expr, 'count(sum by (host)(count_over_time({'
+                                 'service_name="checkout"} | json | '
+                                 '__error__="" [$__range])))')
+        t = tr("SELECT count(*) FROM Log WHERE service_name = 'checkout' AND "
+               "host IS NULL", self._cfg())
+        self.assertIn('| json | host=""', t.expr)
+
+    def test_default_renames_do_not_touch_parsed_fields(self):
+        t = tr("SELECT count(*) FROM Log WHERE service_name = 'checkout' AND "
+               "error.class = 'Timeout' AND httpResponseCode = '500'",
+               self._cfg())
+        self.assertEqual(t.expr, 'sum(count_over_time({service_name="checkout"}'
+                                 ' | json | error_class="Timeout" | '
+                                 'httpResponseCode="500" | __error__="" '
+                                 '[$__range]))')
+
+    def test_user_mappings_and_stream_labels_still_apply(self):
+        cfg = self._cfg()
+        cfg["label_map"] = dict(cfg["label_map"], host="node")
+        t = tr("SELECT count(*) FROM Log WHERE service_name = 'checkout' AND "
+               "host = 'host-1'", cfg)
+        self.assertIn('| json | node="host-1"', t.expr)
+        t = tr("SELECT count(*) FROM Log WHERE appName = 'checkout' AND "
+               "level = 'error'", self._cfg())
+        self.assertEqual(t.expr, 'sum(count_over_time({service_name="checkout",'
+                                 ' level=~"(?i)error"} [$__range]))')
+
+    def test_default_stream_labels_keep_instance(self):
+        t = tr("SELECT count(*) FROM Log WHERE service_name = 'checkout' AND "
+               "host = 'host-1'")
+        self.assertEqual(t.expr, 'sum(count_over_time({service_name="checkout",'
+                                 ' instance="host-1"} [$__range]))')
