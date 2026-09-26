@@ -153,7 +153,8 @@ dashboard with the same uid/title already exists.
   guessed.
 - `Metric` → **PromQL** (Mimir). New Relic's own names are known:
   `apm.service.*`, `newrelic.goldenmetrics.*`, `host.*`, `k8s.*`, OTel
-  semantic-convention names, `aws.<namespace>.<Metric>` (YACE naming).
+  semantic-convention names, Micrometer / Spring Boot names,
+  `aws.<namespace>.<Metric>` (YACE naming).
   Anything else is normalised (dots → underscores) and type-guessed
   (counter → `rate`/`increase`, histogram → `histogram_quantile`, gauge →
   `avg_over_time`) and flagged `needs-review`; `metric_map` makes it exact.

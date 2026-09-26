@@ -778,3 +778,24 @@ class Iteration5KnowledgeTests(unittest.TestCase):
             t.expr,
             "(sum by (pod)(sum by (namespace, pod)(rate(kube_pod_container_"
             "status_restarts_total[$__rate_interval])))) * 3600")
+
+
+class Iteration9KnowledgeTests(unittest.TestCase):
+    def test_micrometer_specs_and_pod_reason(self):
+        from nr2grafana.translate import nrmetrics
+        spec = nrmetrics.metric_spec("jvm.gc.pause")
+        self.assertEqual((spec.kind, spec.name), ("histogram",
+                                                  "jvm_gc_pause_seconds"))
+        spec = nrmetrics.metric_spec("http.server.requests")
+        self.assertEqual(spec.name, "http_server_requests_seconds")
+        self.assertIn("percentiles-histogram", spec.note)
+        self.assertEqual(nrmetrics.metric_spec("jvm.memory.max").unit, "bytes")
+        self.assertEqual(nrmetrics.metric_spec("logback.events").kind,
+                         "counter")
+        self.assertTrue(nrmetrics.infra_lookup("K8sContainerSample",
+                                               "restartCount").cumulative)
+        self.assertFalse(nrmetrics.infra_lookup("K8sContainerSample",
+                                                "cpuUsedCores").cumulative)
+        reason = nrmetrics.infra_lookup("K8sPodSample", "reason")
+        self.assertEqual(reason.kind, "expr")
+        self.assertIn("kube_pod_status_reason", reason.expr)

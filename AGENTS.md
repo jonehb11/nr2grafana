@@ -108,9 +108,11 @@ create folders). Never print or commit them.
   `error IS TRUE` ≈ 5xx; `transactionType = 'Web'` is implicit; other
   attributes have no metric and are reported, never guessed.
 - `FROM Metric` names: New Relic's own (`apm.service.*`,
-  `newrelic.goldenmetrics.*`, `host.*`, `k8s.*`), OTel semconv, and `aws.*`
-  (YACE convention) are known; anything else is name-normalised and
-  type-guessed → needs-review.
+  `newrelic.goldenmetrics.*`, `host.*`, `k8s.*`), OTel semconv, Micrometer /
+  Spring Boot (`jvm.*`, `http.server.requests`, `hikaricp.*`, `tomcat.*`),
+  and `aws.*` (YACE convention) are known; `x.count` / `x.sum` of a known
+  histogram select its `_count` / `_sum` series; anything else is
+  name-normalised and type-guessed → needs-review.
 - `FROM Log` → LogQL: stream labels from `loki_stream_labels`, `message`
   predicates become line filters, everything else a parsed-field filter.
 - `FROM Span` raw → TraceQL search; aggregated → span metrics (or TraceQL

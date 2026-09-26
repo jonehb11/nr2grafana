@@ -56,6 +56,12 @@ class MetricSource:
     # buckets (Transaction.duration -> http_server_request_duration_*).
     value_attr: str = ""
     value_scale: float = 1.0   # bucket bound = NR threshold * value_scale
+    # 'count' / 'sum' when the NR name was the *.count / *.sum series of a
+    # histogram: sum(x.count) is the _count series, not the _sum.
+    component: str = ""
+    # A counter New Relic samples as a cumulative value (restartCount):
+    # max/min/sum/average read the value itself, not its increase.
+    cumulative: bool = False
 
     def name(self, suffix: str = "") -> str:
         return self.base + suffix
@@ -108,7 +114,8 @@ def _spec_to_source(spec: Spec, cfg: Dict[str, Any], t: Translation) -> Any:
     matchers = [Matcher(l, o, v) for l, o, v in spec.matchers] or None
     return MetricSource(spec.name, spec.kind, unit=spec.unit,
                         confidence=spec.conf, note=spec.note,
-                        extra_matchers=matchers)
+                        extra_matchers=matchers,
+                        cumulative=bool(getattr(spec, "cumulative", False)))
 
 
 def _with_fixed(name: str, matchers: List[Tuple[str, str, str]]) -> str:
@@ -154,6 +161,17 @@ def resolve_metric(name: str, agg: str, cfg: Dict[str, Any],
     spec = nrmetrics.metric_spec(name, agg)
     if spec is not None:
         return _spec_to_source(spec, cfg, t)
+    low = name.lower()
+    for suffix in (".count", ".sum"):
+        if low.endswith(suffix):
+            # http.server.requests.count: the _count series of a known
+            # histogram / timer.
+            spec = nrmetrics.metric_spec(name[:-len(suffix)], agg)
+            if spec is not None and spec.kind == "histogram":
+                src = _spec_to_source(spec, cfg, t)
+                if isinstance(src, MetricSource):
+                    src.component = suffix[1:]
+                return src
 
     base = normalize_metric_name(name)
     # Heuristics on name and aggregation shape.
@@ -169,7 +187,8 @@ def resolve_metric(name: str, agg: str, cfg: Dict[str, Any],
         if any(h in stem for h in _HISTO_HINTS):
             return MetricSource(stem, "histogram", confidence=NEEDS_REVIEW,
                                 note="assumed %r is the _sum/_count of "
-                                     "histogram %r" % (base, stem))
+                                     "histogram %r" % (base, stem),
+                                component=base.rsplit("_", 1)[1])
         # threads.count, custom.count: an OTel UpDownCounter/gauge keeps
         # its name; nothing says a histogram is behind it.
         return MetricSource(
@@ -842,6 +861,8 @@ def _agg_expr(ctx: _Ctx, fn: Func, src: MetricSource,
 
     if name in ("average", "avg"):
         leftover(numeric)
+        if src.mtype == "counter" and src.cumulative:
+            return "avg%s(%s)" % (by, hsel("", fnname="avg_over_time"))
         if src.mtype == "histogram":
             return ("sum%s(%s) / sum%s(%s)"
                     % (by, hsel("_sum", fnname="rate"),
@@ -856,10 +877,19 @@ def _agg_expr(ctx: _Ctx, fn: Func, src: MetricSource,
 
     if name == "sum":
         leftover(numeric)
+        if src.mtype == "counter" and src.cumulative:
+            t.note("sum() of a cumulative sampled counter: the sum of the "
+                   "current values across the group (New Relic summed every "
+                   "sample, a multiple of this); rate() gives increases",
+                   APPROXIMATE)
+            return "sum%s(%s)" % (by, hsel(
+                "", window="$__interval" if ctx.is_range else "$__range",
+                fnname="last_over_time"))
         if src.mtype == "counter":
             return per_step("sum%s(%s)" % (by, hsel("", fnname=inc)))
         if src.mtype == "histogram":
-            return per_step("sum%s(%s)" % (by, hsel("_sum", fnname=inc)))
+            part = "_count" if src.component == "count" else "_sum"
+            return per_step("sum%s(%s)" % (by, hsel(part, fnname=inc)))
         if src.mtype == "rate":
             return "sum%s(%s)" % (by, hsel("", fnname="rate"))
         if src.base.startswith("aws_") and (
@@ -893,7 +923,7 @@ def _agg_expr(ctx: _Ctx, fn: Func, src: MetricSource,
                    "across series of the windowed rate" % (name, name),
                    APPROXIMATE)
             return "%s%s(%s)" % (name, by, hsel("", fnname="rate"))
-        if src.mtype == "counter":
+        if src.mtype == "counter" and not src.cumulative:
             t.note("%s() of a counter: emitted %s of the windowed increase"
                    % (name, name), APPROXIMATE)
             return per_step("%s%s(%s)" % (name, by, hsel("", fnname=inc)))
@@ -1065,9 +1095,12 @@ def _agg_expr(ctx: _Ctx, fn: Func, src: MetricSource,
             else None
         target = ""
         if src.mtype == "histogram":
-            # rate(count(x)) -> _count; rate(sum(x)) -> _sum (time spent)
+            # rate(count(x)) -> _count; rate(sum(x)) -> _sum (time spent);
+            # rate(sum(x.count)) -> _count (the name says which series)
             target = "_sum" if inner is not None and inner.name == "sum" \
                 else "_count"
+            if src.component:
+                target = "_" + src.component
         if src.mtype == "gauge":
             t.note("rate() of a gauge-backed source; emitted rate() anyway",
                    NEEDS_REVIEW)
@@ -1705,6 +1738,22 @@ def _infra_source(ctx: _Ctx, item: SelectItem, fn: Optional[Func],
         fn.name == "count" and (attr is None or isinstance(arg, Star)))
     is_unique = fn is not None and fn.name in ("uniquecount", "cardinality") \
         and attr is not None
+    if etl == "k8spodsample" and (is_count or is_unique) and any(
+            r.label == "reason" for b in ctx.branches for r in b):
+        # WHERE reason = 'Evicted': kube_pod_info has no reason label; the
+        # kube_pod_status_reason series is 1 for the pods in that state.
+        for b in ctx.branches:
+            for m in list(b):
+                if m.label.lower() in ("status", "phase"):
+                    b.remove(m)
+                    t.notes.append("the %s filter is implied by the reason "
+                                   "filter (kube_pod_status_reason)" % m.label)
+        _drop_implicit(ctx)
+        return DerivedSource(
+            "count <BY>(kube_pod_status_reason{<SELBARE>} == 1)", "short",
+            NEEDS_REVIEW, nrmetrics.KSM_NOTE + "; pods whose status reason "
+            "is set (kube_pod_status_reason: Evicted, NodeAffinity, "
+            "NodeLost, Shutdown, UnexpectedAdmissionError)")
     if count_spec is not None and (is_count or (
             is_unique and attr_name.lower() in
             [a.lower() for a in count_spec.entity_attrs])):
@@ -1737,7 +1786,8 @@ def _infra_source(ctx: _Ctx, item: SelectItem, fn: Optional[Func],
         return src
 
     spec = nrmetrics.infra_lookup(etl, attr_name) if attr is not None else None
-    if attr_name.lower() == "reason" and etl == "k8scontainersample":
+    if attr_name.lower() == "reason" and etl in ("k8scontainersample",
+                                                 "k8spodsample"):
         ctx.by = list(dict.fromkeys(ctx.by + ["reason"]))
     if spec is None and attr is None:
         raise Untranslatable(
@@ -2090,9 +2140,9 @@ def translate_to_promql(q: NrqlQuery, cfg: Dict[str, Any]) -> Translation:
                 t.notes.append("unit:%s" % scaled)
                 if scaled != unit:
                     t.notes.append("SELECT arithmetic '%s' preserved; panel "
-                                   "unit set to %s (was %s)"
+                                   "unit set to %s%s"
                                    % (_scale_text(item.multiplier), scaled,
-                                      unit))
+                                      (" (was %s)" % unit) if unit else ""))
             else:
                 t.note("SELECT arithmetic '%s' preserved; the derived "
                        "panel unit no longer applies — set it manually"
@@ -2184,9 +2234,16 @@ def _unit_note(t: Translation, agg: str, src: Any,
         elif agg in ("count", "uniquecount", "cardinality"):
             t.notes.append("unit:short")
         return
+    if getattr(src, "component", "") == "count" and agg in ("sum", "rate",
+                                                             "derivative"):
+        src_unit = "short"
+    else:
+        src_unit = src.unit
     if agg in ("rate", "derivative") and fn is not None:
-        t.notes.append("unit:%s" % _rate_unit(fn, src.unit, src.base))
+        t.notes.append("unit:%s" % _rate_unit(fn, src_unit, src.base))
     elif agg in _COUNT_AGGS:
+        t.notes.append("unit:short")
+    elif agg == "sum" and src_unit != src.unit:
         t.notes.append("unit:short")
     elif agg == "sum" and src.mtype == "counter":
         # the increase of a counter is a count (or the counter's own unit)

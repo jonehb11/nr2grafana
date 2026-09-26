@@ -479,3 +479,17 @@ query, `FACET cases(...)` stacked bars, billboard thresholds and
 percent-change comparisons, logs / pie / gauge / bargauge / heatmap /
 markdown panels, and the query-variable `label_values(...)` definitions
 all render without panel errors.
+
+### Iteration 9 — histogram components, cumulative counters, Micrometer names
+
+A ninth batch of realistic dashboard queries (APM tables, infra ratios,
+Kubernetes reasons, Kafka/AWS/JVM metrics, Loki fields, span metrics):
+
+| Construct | Before | Now |
+| --- | --- | --- |
+| `sum(x.count)`, `rate(sum(x.count), 1 minute)`, `sum(x.sum) / sum(x.count)` on a histogram known by its stem (`http.server.request.duration.count`, `http.server.requests.count`) | the `_sum` series for every `sum()` (the ratio was always 1) | the series the name says: `_count` (a count, unit `reqpm`/`short`) or `_sum` |
+| Micrometer / Spring Boot names (`jvm.memory.max`, `jvm.gc.pause`, `jvm.threads.live`, `process.cpu.usage`, `http.server.requests`, `hikaricp.connections.*`, `tomcat.*`, `logback.events`, `cache.*`, ...) | name-normalised guesses (`jvm_gc_pause` as a gauge) | the Prometheus-registry names (`jvm_gc_pause_seconds` timer, `jvm_memory_max_bytes`, `http_server_requests_seconds` with `uri`/`method`/`status` labels); timers note that `_bucket` needs percentiles-histogram |
+| `max(restartCount)`, `average(restartCount)`, `sum(restartCount)` on container samples | the per-step increase (`max` of a rate) | the sampled cumulative value (`max_over_time`, `avg_over_time`, `sum by (pod)(last_over_time(...))`); `rate()` and `COMPARE WITH` still work on increases |
+| `latest(reason)` / `WHERE reason = 'Evicted'` on `K8sPodSample` | untranslatable / `kube_pod_info{reason=...}` (no such label) | `kube_pod_status_reason{reason=...} == 1` (grouped by `reason`); a `status` filter next to it is implied |
+| `average(numeric(duration_ms))` legend | `average(numeric(duration_ms))` | `average(duration_ms)` |
+| the "panel unit set to percent (was )" note | an empty "(was )" | "(was s)" only when there was a unit |

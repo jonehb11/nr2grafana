@@ -250,11 +250,12 @@ class InfraMapTests(unittest.TestCase):
         t = tr("SELECT sum(restartCount) FROM K8sContainerSample "
                "WHERE clusterName = 'prod' FACET podName LIMIT 15 "
                "SINCE 1 day ago")
-        # restartCount is a cumulative counter: sum() over the range is the
-        # number of restarts in it (latest() would be the running total).
+        # restartCount is sampled as a cumulative value: sum() across the
+        # pod's containers is the sum of the current counts (rate() gives
+        # restarts per unit of time).
         self.assertEqual(
             t.expr,
-            'topk(15, sum by (pod)(increase(kube_pod_container_status_'
+            'topk(15, sum by (pod)(last_over_time(kube_pod_container_status_'
             'restarts_total{cluster="prod"}[$__range])))')
         self.assertEqual(t.query_type, "instant")
         self.assertIn("unit:short", t.notes)
@@ -1575,3 +1576,97 @@ class Iteration8NestedQueryTests(unittest.TestCase):
             t = tr(nrql)
             self.assertEqual(t.confidence, UNTRANSLATABLE, nrql)
             self.assertTrue(any(reason in n for n in t.notes), (nrql, t.notes))
+
+
+class Iteration9MetricTests(unittest.TestCase):
+    def test_count_and_sum_suffixed_names_pick_their_histogram_series(self):
+        t = tr("SELECT sum(http.server.request.duration.count) FROM Metric "
+               "WHERE service.name = 'checkout' TIMESERIES")
+        self.assertEqual(
+            t.expr,
+            'sum(rate(%s_count{service_name="checkout"}[$__rate_interval]))'
+            ' * $__interval_ms / 1000' % HTTP)
+        self.assertIn("unit:short", t.notes)
+        self.assertNotIn("unit:s", t.notes)
+        t = tr("SELECT sum(http.server.request.duration.sum) / "
+               "sum(http.server.request.duration.count) FROM Metric WHERE "
+               "service.name = 'checkout' TIMESERIES")
+        self.assertEqual(
+            t.expr,
+            '(sum(rate(%s_sum{service_name="checkout"}[$__rate_interval]))) '
+            '/ (sum(rate(%s_count{service_name="checkout"}'
+            '[$__rate_interval])))' % (HTTP, HTTP))
+        t = tr("SELECT rate(sum(http.server.requests.count), 1 minute) FROM "
+               "Metric WHERE service.name = 'checkout' FACET uri TIMESERIES")
+        self.assertEqual(
+            t.expr,
+            'sum by (uri)(rate(http_server_requests_seconds_count'
+            '{service_name="checkout"}[$__rate_interval])) * 60')
+        self.assertIn("unit:reqpm", t.notes)
+
+    def test_micrometer_names(self):
+        t = tr("SELECT average(jvm.memory.used) / average(jvm.memory.max) "
+               "* 100 FROM Metric WHERE service.name = 'checkout' TIMESERIES")
+        self.assertIn("jvm_memory_max_bytes", t.expr)
+        self.assertFalse(any("assumed gauge" in n for n in t.notes))
+        t = tr("SELECT average(jvm.gc.pause) FROM Metric WHERE service.name "
+               "= 'checkout' TIMESERIES")
+        self.assertEqual(
+            t.expr,
+            'sum(rate(jvm_gc_pause_seconds_sum{service_name="checkout"}'
+            '[$__rate_interval])) / sum(rate(jvm_gc_pause_seconds_count'
+            '{service_name="checkout"}[$__rate_interval]))')
+        self.assertIn("unit:s", t.notes)
+        t = tr("SELECT percentile(http.server.requests, 95) FROM Metric "
+               "WHERE service.name = 'checkout' FACET uri TIMESERIES")
+        self.assertIn("http_server_requests_seconds_bucket", t.expr)
+        self.assertTrue(any("percentiles-histogram" in n for n in t.notes))
+        t = tr("SELECT sum(logback.events) FROM Metric WHERE service.name = "
+               "'checkout' FACET level TIMESERIES")
+        self.assertIn("logback_events_total", t.expr)
+
+    def test_cumulative_sampled_counters(self):
+        t = tr("SELECT max(restartCount), latest(restartCount), "
+               "sum(restartCount), average(restartCount) FROM "
+               "K8sContainerSample FACET podName TIMESERIES")
+        exprs = [t.expr] + [x.expr for x in t.extra]
+        self.assertEqual(exprs, [
+            "max by (pod)(max_over_time(kube_pod_container_status_restarts_"
+            "total[$__rate_interval]))",
+            "max by (pod)(last_over_time(kube_pod_container_status_restarts_"
+            "total[$__interval]))",
+            "sum by (pod)(last_over_time(kube_pod_container_status_restarts_"
+            "total[$__interval]))",
+            "avg by (pod)(avg_over_time(kube_pod_container_status_restarts_"
+            "total[$__rate_interval]))"])
+        self.assertTrue(any("sum() of a cumulative sampled counter" in n
+                            for n in t.notes))
+        t = tr("SELECT rate(sum(restartCount), 1 hour) FROM "
+               "K8sContainerSample TIMESERIES")
+        self.assertEqual(
+            t.expr,
+            "sum(rate(kube_pod_container_status_restarts_total"
+            "[$__rate_interval])) * 3600")
+
+    def test_pod_status_reason(self):
+        t = tr("SELECT latest(reason) FROM K8sPodSample FACET podName")
+        self.assertEqual(t.expr,
+                         "avg by (pod, reason)(kube_pod_status_reason == 1)")
+        self.assertEqual(t.group_by, ["pod", "reason"])
+        t = tr("SELECT uniqueCount(podName) FROM K8sPodSample WHERE "
+               "reason = 'Evicted' AND status = 'Failed'")
+        self.assertEqual(
+            t.expr,
+            'count(kube_pod_status_reason{reason="Evicted"} == 1)')
+        self.assertTrue(any("implied by the reason filter" in n
+                            for n in t.notes))
+
+    def test_cast_wrappers_and_unit_note_wording(self):
+        t = tr("SELECT average(numeric(duration_ms)) FROM Log WHERE "
+               "service_name = 'checkout' TIMESERIES")
+        self.assertEqual(t.legend, "average(duration_ms)")
+        t = tr("SELECT max(memoryUsedBytes) / max(memoryTotalBytes) * 100 "
+               "FROM SystemSample FACET hostname TIMESERIES")
+        self.assertIn("SELECT arithmetic '* 100' preserved; panel unit set "
+                      "to percent", t.notes)
+        self.assertFalse(any("(was )" in n for n in t.notes))

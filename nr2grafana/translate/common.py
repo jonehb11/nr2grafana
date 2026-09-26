@@ -932,6 +932,8 @@ def select_label(node: Any) -> str:
         return "%s(%s)" % (node.name, ", ".join(parts))
     if isinstance(node, Func) and node.name in ("_ratio", "_arith"):
         return expr_text(node)
+    if isinstance(node, Func) and node.name in _UNWRAP_FUNCS and node.args:
+        return select_label(node.args[0])  # numeric(x): the cast is noise
     if isinstance(node, Func):
         inner = ", ".join(select_label(a) for a in node.args)
         if node.where is not None:

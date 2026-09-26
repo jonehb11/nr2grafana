@@ -61,6 +61,8 @@ class Spec:
     reason: str = ""
     # Attribute names whose uniqueCount() maps to the entity count.
     entity_attrs: List[str] = field(default_factory=list)
+    # A counter New Relic samples as a cumulative value (restartCount).
+    cumulative: bool = False
 
 
 def _g(name: str, unit: str = "short", matchers=None, note: str = "",
@@ -81,9 +83,10 @@ def _h(name: str, unit: str = "s", note: str = "",
 
 
 def _c(name: str, unit: str = "short", matchers=None, note: str = "",
-       conf: str = NEEDS_REVIEW) -> Spec:
+       conf: str = NEEDS_REVIEW, cumulative: bool = False) -> Spec:
     return Spec("counter", name=name, unit=unit,
-                matchers=list(matchers or []), note=note, conf=conf)
+                matchers=list(matchers or []), note=note, conf=conf,
+                cumulative=cumulative)
 
 
 def _e(expr: str, unit: str = "short", note: str = "",
@@ -389,7 +392,7 @@ _add("containersample", {
     "restartCount": _c("kube_pod_container_status_restarts_total", "short",
                        note=KSM_NOTE + " (Kubernetes only; a cumulative "
                        "counter: latest() is the count, rate() restarts per "
-                       "unit of time)", conf=APPROXIMATE),
+                       "unit of time)", conf=APPROXIMATE, cumulative=True),
     "__count__": Spec("count", name="container_last_seen",
                       matchers=list(_CONT),
                       entity_attrs=["containerId", "containerName", "name",
@@ -403,7 +406,8 @@ _add("k8scontainersample", {
     "restartCount": _c("kube_pod_container_status_restarts_total", "short",
                        note="kube-state-metrics cumulative restart count "
                        "(latest() is the count New Relic reports; rate() "
-                       "gives restarts per unit of time)", conf=EXACT),
+                       "gives restarts per unit of time)", conf=EXACT,
+                       cumulative=True),
     "cpuUsedCores": _e(
         "<AGG> <BY>(rate(container_cpu_usage_seconds_total{container!=\"\""
         "<SEL>}[<W>]))", "short", CADV_NOTE, EXACT),
@@ -870,6 +874,11 @@ INFRA[("k8scontainersample", "reason")] = _e(
     "(kube_pod_container_status_terminated_reason{<SELBARE>} == 1))", "short",
     KSM_NOTE + "; the reason is the `reason` label (one series per container "
     "and reason, value 1)", NEEDS_REVIEW)
+INFRA[("k8spodsample", "reason")] = _e(
+    "<AGG> <BY>(kube_pod_status_reason{<SELBARE>} == 1)", "short",
+    KSM_NOTE + "; the reason is the `reason` label (one series per pod and "
+    "reason, value 1: Evicted, NodeAffinity, NodeLost, Shutdown, "
+    "UnexpectedAdmissionError)", NEEDS_REVIEW)
 INFRA[("k8snodesample", _norm_attr("runningPods"))] = _g(
     "kubelet_running_pods", "short", note="kubelet metric", conf=EXACT)
 INFRA[("k8snodesample", _norm_attr("runningContainers"))] = _g(
@@ -1043,6 +1052,10 @@ def has_attr_specs(event: str) -> bool:
 # OTel semantic-convention metrics as New Relic ingests them (dotted).
 # Prometheus names follow the OTel collector's prometheus exporters with
 # default suffixing (unit + _total / _ratio).
+_MICRO_NOTE = ("Micrometer (Spring Boot) metric as its Prometheus registry "
+               "names it")
+_MICRO_TIMER_NOTE = (_MICRO_NOTE + "; a timer: _count/_sum always exist, "
+                     "_bucket only with percentiles-histogram enabled")
 _OTEL_NOTE = ("OTel semantic-convention metric; the Prometheus name assumes "
               "the collector's default unit/_total suffixing")
 METRICS: Dict[str, Spec] = {
@@ -1147,6 +1160,76 @@ METRICS: Dict[str, Spec] = {
     "jvm.memory.committed": _g("jvm_memory_committed_bytes", "bytes",
                                note=_OTEL_NOTE),
     "jvm.memory.limit": _g("jvm_memory_limit_bytes", "bytes", note=_OTEL_NOTE),
+    # Micrometer (Spring Boot) names as its Prometheus registry exposes them.
+    "jvm.memory.max": _g("jvm_memory_max_bytes", "bytes", note=_MICRO_NOTE),
+    "jvm.gc.pause": _h("jvm_gc_pause_seconds", "s", _MICRO_TIMER_NOTE),
+    "jvm.gc.memory.allocated": _c("jvm_gc_memory_allocated_bytes_total",
+                                  "bytes", note=_MICRO_NOTE),
+    "jvm.gc.memory.promoted": _c("jvm_gc_memory_promoted_bytes_total",
+                                 "bytes", note=_MICRO_NOTE),
+    "jvm.gc.live.data.size": _g("jvm_gc_live_data_size_bytes", "bytes",
+                                note=_MICRO_NOTE),
+    "jvm.gc.max.data.size": _g("jvm_gc_max_data_size_bytes", "bytes",
+                               note=_MICRO_NOTE),
+    "jvm.threads.live": _g("jvm_threads_live_threads", note=_MICRO_NOTE),
+    "jvm.threads.daemon": _g("jvm_threads_daemon_threads", note=_MICRO_NOTE),
+    "jvm.threads.peak": _g("jvm_threads_peak_threads", note=_MICRO_NOTE),
+    "jvm.threads.states": _g("jvm_threads_states_threads", note=_MICRO_NOTE),
+    "jvm.classes.loaded": _g("jvm_classes_loaded_classes", note=_MICRO_NOTE),
+    "jvm.classes.unloaded": _c("jvm_classes_unloaded_classes_total",
+                               note=_MICRO_NOTE),
+    "jvm.buffer.memory.used": _g("jvm_buffer_memory_used_bytes", "bytes",
+                                 note=_MICRO_NOTE),
+    "jvm.buffer.count": _g("jvm_buffer_count_buffers", note=_MICRO_NOTE),
+    "process.cpu.usage": _g("process_cpu_usage", "percentunit",
+                            note=_MICRO_NOTE),
+    "system.cpu.usage": _g("system_cpu_usage", "percentunit",
+                           note=_MICRO_NOTE),
+    "system.cpu.count": _g("system_cpu_count", note=_MICRO_NOTE),
+    "system.load.average.1m": _g("system_load_average_1m", note=_MICRO_NOTE),
+    "process.uptime": _g("process_uptime_seconds", "s", note=_MICRO_NOTE),
+    "process.start.time": _g("process_start_time_seconds", "s",
+                             note=_MICRO_NOTE),
+    "process.files.open": _g("process_files_open_files", note=_MICRO_NOTE),
+    "process.files.max": _g("process_files_max_files", note=_MICRO_NOTE),
+    "http.server.requests": _h(
+        "http_server_requests_seconds", "s",
+        _MICRO_TIMER_NOTE + "; labels uri, method, status, outcome"),
+    "http.client.requests": _h(
+        "http_client_requests_seconds", "s",
+        _MICRO_TIMER_NOTE + "; labels uri, method, status, clientName"),
+    "hikaricp.connections.active": _g("hikaricp_connections_active",
+                                      note=_MICRO_NOTE),
+    "hikaricp.connections.idle": _g("hikaricp_connections_idle",
+                                    note=_MICRO_NOTE),
+    "hikaricp.connections.pending": _g("hikaricp_connections_pending",
+                                       note=_MICRO_NOTE),
+    "hikaricp.connections.max": _g("hikaricp_connections_max",
+                                   note=_MICRO_NOTE),
+    "hikaricp.connections.timeout": _c("hikaricp_connections_timeout_total",
+                                       note=_MICRO_NOTE),
+    "jdbc.connections.active": _g("jdbc_connections_active",
+                                  note=_MICRO_NOTE),
+    "jdbc.connections.max": _g("jdbc_connections_max", note=_MICRO_NOTE),
+    "tomcat.sessions.active.current": _g(
+        "tomcat_sessions_active_current_sessions", note=_MICRO_NOTE),
+    "tomcat.sessions.created": _c("tomcat_sessions_created_sessions_total",
+                                  note=_MICRO_NOTE),
+    "tomcat.threads.busy": _g("tomcat_threads_busy_threads",
+                              note=_MICRO_NOTE),
+    "tomcat.threads.current": _g("tomcat_threads_current_threads",
+                                 note=_MICRO_NOTE),
+    "logback.events": _c("logback_events_total",
+                         note=_MICRO_NOTE + "; label level"),
+    "executor.active": _g("executor_active_threads", note=_MICRO_NOTE),
+    "executor.queued": _g("executor_queued_tasks", note=_MICRO_NOTE),
+    "executor.pool.size": _g("executor_pool_size_threads", note=_MICRO_NOTE),
+    "spring.data.repository.invocations": _h(
+        "spring_data_repository_invocations_seconds", "s", _MICRO_TIMER_NOTE),
+    "cache.gets": _c("cache_gets_total", note=_MICRO_NOTE + "; label result"),
+    "cache.puts": _c("cache_puts_total", note=_MICRO_NOTE),
+    "cache.evictions": _c("cache_evictions_total", note=_MICRO_NOTE),
+    "cache.size": _g("cache_size", note=_MICRO_NOTE),
     "jvm.gc.duration": _h("jvm_gc_duration_seconds", "s", _OTEL_NOTE),
     "jvm.thread.count": _g("jvm_thread_count", "short", note=_OTEL_NOTE),
     "jvm.cpu.recent_utilization": _g("jvm_cpu_recent_utilization_ratio",
