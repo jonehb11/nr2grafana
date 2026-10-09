@@ -3,7 +3,12 @@
 Commands:
   fetch     Bulk-export dashboards from New Relic (NerdGraph) to JSON files
   convert   Convert NR dashboard JSON file(s) to Grafana dashboard JSON
-            (--package adds per-dashboard requirement packages + INDEX.md)
+            (--package adds per-dashboard requirement packages + INDEX.md;
+            --live collects read-only NR/Mimir hints; --env picks the
+            target environment)
+  export    Write dashboard.bound.json: datasource variables bound to a
+            Grafana instance's concrete uids (+ target env, optionally
+            pinned) next to each portable dashboard.json
   analyze   (Re)generate requirements/packages for converted output
   validate  Statically validate Grafana dashboard JSON file(s)
   list      List dashboards visible to the API key
@@ -23,6 +28,7 @@ import sys
 from typing import Any, Dict, List, Optional, Tuple
 
 from .artifacts import package_dashboard, write_index
+from .bind import bind_datasources, set_target_env, unbound_refs
 from .changelog import ChangeLog
 from .config import DEFAULT_CONFIG, load_config
 from .diagnose import diagnose
@@ -44,7 +50,13 @@ from .store import Store, StoreError
 _ARTIFACT_NAMES = frozenset([
     "migration-report.json", "requirements.json", "widget-report.json",
     "datatest.json", "datatest-results.json", "samples.json",
+    "dashboard.bound.json", "live-hints.json",
 ])
+
+# Suffix of the BOUND flavour of a dashboard (datasource refs pinned to
+# one Grafana instance); directory scans skip these so the portable and
+# the bound copy are never imported twice under the same uid.
+_BOUND_SUFFIX = ".bound.json"
 
 
 def _err(msg: str) -> None:
@@ -204,6 +216,30 @@ def cmd_convert(args: argparse.Namespace) -> int:
     if args.passthrough:
         cfg["passthrough_fallback"] = True
     package = bool(getattr(args, "package", False))
+    env_name = (getattr(args, "env", "") or "").strip()
+    if env_name:
+        cfg["target_env"] = env_name
+    live = bool(getattr(args, "live", False))
+    hints_mod = None
+    nr_client: Optional[NerdGraphClient] = None
+    grafana: Optional[GrafanaLive] = None
+    if live:
+        hints_mod = _import_soft("translate.hints")
+        if hints_mod is None or not hasattr(hints_mod, "collect_hints"):
+            _err("live hints are unavailable (nr2grafana.translate.hints "
+                 "not importable) -- run convert without --live")
+            return 2
+        nr_client = _optional_nerdgraph(args)
+        if getattr(args, "grafana_url", "") \
+                or os.environ.get("GRAFANA_URL", ""):
+            grafana = _grafana_live(args)
+        if nr_client is None and grafana is None:
+            _err("--live needs something to ask: a New Relic USER API "
+                 "key (--api-key or NEW_RELIC_API_KEY) for entity/"
+                 "attribute hints and/or a Grafana URL (--grafana-url or "
+                 "GRAFANA_URL, with --grafana-token) for Mimir metric "
+                 "metadata; both are read-only")
+            return 2
 
     files = _collect_inputs(args.inputs)
     if not files:
@@ -235,7 +271,19 @@ def cmd_convert(args: argparse.Namespace) -> int:
         try:
             data = _load_json(path)
             nr = parse_nr_dashboard(data)
-            outputs = build_dashboards(nr, cfg)
+            dash_cfg = cfg
+            hints: Dict[str, Any] = {}
+            if live:
+                hints = _collect_live_hints(hints_mod, nr_client, grafana,
+                                            nr, cfg, path)
+                dash_cfg = dict(cfg)
+                dash_cfg["live_hints"] = hints
+            outputs = build_dashboards(nr, dash_cfg)
+            if env_name:
+                outputs = [(fn, set_target_env(
+                    d, env_name, env_map=cfg.get("env_map"),
+                    var_name=cfg.get("env_var") or "env"), rep)
+                    for fn, d, rep in outputs]
         except (json.JSONDecodeError, ValueError) as e:
             _err("%s: %s" % (path, e))
             failed_inputs.append({"source": path, "error": str(e)})
@@ -291,6 +339,10 @@ def cmd_convert(args: argparse.Namespace) -> int:
                 else:
                     out_path = os.path.join(pkg, "dashboard.json")
                     extra = "; " + summarize(req)
+                    if live and hints:
+                        # keep the evidence the translation was based on
+                        _write_json(os.path.join(pkg, "live-hints.json"),
+                                    hints)
                     index_entries.append({
                         "slug": slug, "title": dash.get("title"),
                         "dir": pkg, "widget_report": report,
@@ -353,6 +405,8 @@ def cmd_convert(args: argparse.Namespace) -> int:
         print(json.dumps({
             "out_dir": args.out,
             "report": report_path,
+            "live": live,
+            "env": env_name,
             "dashboards": [
                 {"slug": r["slug"], "output": r["output"],
                  "title": r["dashboard"], "source": r["source"],
@@ -364,6 +418,217 @@ def cmd_convert(args: argparse.Namespace) -> int:
                        "failed": len(failed_inputs)},
         }, ensure_ascii=False))
     return 1 if had_error else 0
+
+
+def _collect_live_hints(hints_mod, nr_client, grafana, nr,
+                        cfg: Dict[str, Any], path: str) -> Dict[str, Any]:
+    """SEAM-HINTS: ask translate.hints.collect_hints for READ-ONLY
+    evidence (Mimir metric metadata via Grafana, NR entity names and
+    attribute values via NerdGraph) for one NR dashboard. Never raises:
+    a failure degrades to a note and an empty hint set so the
+    conversion still runs deterministically."""
+    log = lambda m: print(m, file=sys.stderr)
+    try:
+        hints = _call_filtered(hints_mod.collect_hints, nr=nr_client,
+                               grafana=grafana, dash=nr, cfg=cfg, log=log)
+    except Exception as e:
+        print("note: %s: live hints unavailable (%s: %s) -- converting "
+              "with static rules" % (os.path.basename(path),
+                                     type(e).__name__, e),
+              file=sys.stderr)
+        return {}
+    if not isinstance(hints, dict):
+        return {}
+    parts = []
+    for key, label in (("metric_types", "metric type"),
+                       ("entities", "entity"),
+                       ("attr_values", "attribute value set"),
+                       ("label_values", "label value set")):
+        n = len(hints.get(key) or {})
+        if n:
+            parts.append("%d %s%s" % (n, label, "" if n == 1 else "s"))
+    print("live hints for %s: %s" % (os.path.basename(path),
+                                     ", ".join(parts) or "none found"),
+          file=sys.stderr)
+    return hints
+
+
+def _bound_path(dash_path: str, out_dir: str = "") -> str:
+    """Where the bound flavour of a dashboard goes: <pkg>/dashboard.bound
+    .json for packages, <stem>.bound.json next to flat files, or
+    <out_dir>/<slug>.bound.json when an output dir is given."""
+    if out_dir:
+        return os.path.join(out_dir,
+                            _dashboard_slug(dash_path) + _BOUND_SUFFIX)
+    return _sidecar_path(dash_path, "dashboard" + _BOUND_SUFFIX,
+                         _BOUND_SUFFIX[1:])
+
+
+def _parse_ds_overrides(specs: List[str]) -> Tuple[Dict[str, str], str]:
+    """``--ds NAME=UID`` flags -> {name: uid}; returns (map, error)."""
+    out: Dict[str, str] = {}
+    for spec in specs or []:
+        if "=" not in spec:
+            return {}, ("--ds expects VARIABLE=UID (e.g. "
+                        "--ds loki_datasource=loki-prod), got %r" % spec)
+        name, uid = spec.split("=", 1)
+        name = name.strip()
+        if name.startswith("${") and name.endswith("}"):
+            name = name[2:-1]
+        if not name or not uid.strip():
+            return {}, "--ds expects VARIABLE=UID, got %r" % spec
+        out[name] = uid.strip()
+    return out, ""
+
+
+def _unbound_hint(dash: Dict[str, Any], names: List[str]) -> str:
+    """Actionable one-liner for datasource variables that could not be
+    bound: which plugin type each needs and how to add it."""
+    types: Dict[str, str] = {}
+    for var in (dash.get("templating") or {}).get("list") or []:
+        if isinstance(var, dict) and var.get("type") == "datasource":
+            types[var.get("name") or ""] = var.get("query") or ""
+    parts = []
+    for name in names:
+        t = types.get(name) or name.replace("_datasource", "") \
+            or "matching"
+        if name == "datasource" and not types.get(name):
+            t = "prometheus"
+        parts.append("%s (add a %s datasource: nr2grafana grafana "
+                     "add-datasource --type %s, or pass --ds %s=<uid>)"
+                     % (name, t, t, name))
+    return "; ".join(parts)
+
+
+def _bind_one(dash: Dict[str, Any], client: Optional[GrafanaLive],
+              explicit: Dict[str, str], keep_vars: bool) \
+        -> Tuple[Dict[str, Any], Dict[str, str], List[str]]:
+    """Bind one dashboard: the instance's resolve_ds_map (when a client
+    is given) overlaid by explicit --ds overrides. Returns (bound dash,
+    ds_map used, still-unbound variable names). Raises GrafanaError."""
+    ds_map: Dict[str, str] = {}
+    if client is not None:
+        ds_map.update(client.resolve_ds_map(dash, preferred=explicit)
+                      or {})
+    for name, uid in explicit.items():
+        ds_map[name] = uid
+        ds_map["${%s}" % name] = uid
+    if not ds_map:
+        return dash, {}, unbound_refs(dash)
+    bound = bind_datasources(dash, ds_map, keep_vars=keep_vars)
+    return bound, ds_map, unbound_refs(bound)
+
+
+def cmd_export(args: argparse.Namespace) -> int:
+    """Write the BOUND flavour of converted dashboards: datasource
+    template variables resolved to one Grafana instance's concrete uids
+    (resolve_ds_map and/or explicit --ds overrides) and the env variable
+    set to --env (optionally pinned into every query with --pin-env).
+    dashboard.json stays portable; dashboard.bound.json is what you
+    import into THAT instance. Exit 1 when a requested binding leaves a
+    datasource variable unresolved (no silent empty panels)."""
+    files = _collect_dashboard_files(args.inputs)
+    if not files:
+        _err("no dashboard JSON files found")
+        return 2
+    do_bind = bool(getattr(args, "bind_datasources", False))
+    explicit, perr = _parse_ds_overrides(getattr(args, "ds_overrides", []))
+    if perr:
+        _err(perr)
+        return 2
+    env_name = (getattr(args, "env", "") or "").strip()
+    pin = bool(getattr(args, "pin_env", False))
+    keep_vars = bool(getattr(args, "keep_vars", False))
+    if not (do_bind or explicit or env_name):
+        _err("nothing to export: pass --bind-datasources (with a Grafana "
+             "URL/token) and/or --ds VARIABLE=UID to bind datasources, "
+             "and/or --env NAME to set the target environment")
+        return 2
+    if pin and not env_name:
+        _err("--pin-env needs --env NAME (the value to pin $env to)")
+        return 2
+    try:
+        cfg = load_config(getattr(args, "config", "") or "")
+    except (FileNotFoundError, json.JSONDecodeError) as e:
+        _err(str(e))
+        return 2
+    client: Optional[GrafanaLive] = None
+    if do_bind:
+        client = _grafana_live(args)
+        try:
+            info = client.health()
+            print("connected -- Grafana %s" % info.get("version", "?"),
+                  file=sys.stderr)
+        except GrafanaError as e:
+            _err("cannot connect to Grafana to resolve datasources: %s "
+                 "(check --url/--token; or bind offline with --ds "
+                 "VARIABLE=UID)" % e)
+            return 1
+    out_dir = getattr(args, "out", "") or ""
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+    rows: List[Dict[str, Any]] = []
+    rc = 0
+    for path in files:
+        try:
+            dash = _load_json(path)
+        except (json.JSONDecodeError, OSError) as e:
+            _err("%s: %s" % (path, e))
+            rc = 1
+            continue
+        if not isinstance(dash, dict) or "panels" not in dash:
+            print("  skip %s (not a dashboard)" % path, file=sys.stderr)
+            continue
+        name = dash.get("title") or os.path.basename(path)
+        bound, ds_map, missing = dash, {}, []
+        if do_bind or explicit:
+            try:
+                bound, ds_map, missing = _bind_one(dash, client, explicit,
+                                                   keep_vars)
+            except GrafanaError as e:
+                _err("%s: could not resolve datasources: %s" % (name, e))
+                rc = 1
+                continue
+        if env_name:
+            try:
+                bound = set_target_env(
+                    bound, env_name, env_map=cfg.get("env_map"),
+                    var_name=cfg.get("env_var") or "env", pin=pin)
+            except ValueError as e:
+                _err("%s: %s" % (name, e))
+                rc = 1
+                continue
+        out_path = _bound_path(path, out_dir)
+        _write_json(out_path, bound)
+        used = sorted(k for k in ds_map if not k.startswith("${"))
+        detail = []
+        if used:
+            detail.append("bound %s" % ", ".join(
+                "%s=%s" % (k, ds_map[k]) for k in used))
+        if env_name:
+            detail.append("env %s%s" % (env_name,
+                                        " (pinned)" if pin else ""))
+        print("  %s -> %s  (%s)" % (name, out_path,
+                                    "; ".join(detail) or "no change"),
+              file=sys.stderr)
+        if missing:
+            rc = 1
+            _err("%s: unbound datasource variable(s): %s"
+                 % (name, _unbound_hint(dash, missing)))
+        rows.append({"source": path, "output": out_path,
+                     "slug": _dashboard_slug(path), "title": name,
+                     "ds_map": {k: ds_map[k] for k in used},
+                     "unbound": missing, "env": env_name, "pinned": pin})
+    print("\n%d bound dashboard(s) written%s"
+          % (len(rows), "; some datasource variables are still unbound "
+             "(see above)" if rc else ""), file=sys.stderr)
+    if getattr(args, "json_out", False):
+        print(json.dumps({"exports": rows,
+                          "totals": {"dashboards": len(rows),
+                                     "unbound": sum(1 for r in rows
+                                                    if r["unbound"])}},
+                         ensure_ascii=False))
+    return rc
 
 
 def cmd_analyze(args: argparse.Namespace) -> int:
@@ -569,7 +834,8 @@ def _collect_dashboard_files(paths: List[str]) -> List[str]:
             if found:
                 continue
             for name in sorted(os.listdir(p)):
-                if name.endswith(".json") and name not in _ARTIFACT_NAMES:
+                if name.endswith(".json") and name not in _ARTIFACT_NAMES \
+                        and not name.endswith(_BOUND_SUFFIX):
                     files.append(os.path.join(p, name))
         elif os.path.isfile(p):
             files.append(p)
@@ -698,6 +964,19 @@ def cmd_grafana_import(args: argparse.Namespace) -> int:
         except GrafanaError as e:
             _err("folder error: %s" % e)
             return 1
+    do_bind = bool(getattr(args, "bind_datasources", False))
+    env_name = (getattr(args, "env", "") or "").strip()
+    pin = bool(getattr(args, "pin_env", False))
+    if pin and not env_name:
+        _err("--pin-env needs --env NAME (the value to pin $env to)")
+        return 2
+    cfg: Dict[str, Any] = {}
+    if do_bind or env_name:
+        try:
+            cfg = load_config(getattr(args, "config", "") or "")
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            _err(str(e))
+            return 2
     ok = 0
     problems: List[str] = []
     for path in files:
@@ -711,6 +990,31 @@ def cmd_grafana_import(args: argparse.Namespace) -> int:
             print("  skip %s (not a dashboard)" % path, file=sys.stderr)
             continue
         name = dash.get("title") or os.path.basename(path)
+        if do_bind or env_name:
+            # Import the BOUND flavour (SEAM-BIND): refs resolved to this
+            # instance's datasources so no panel renders empty; the
+            # bound copy is kept next to the portable dashboard.json.
+            missing: List[str] = []
+            try:
+                if do_bind:
+                    dash, _m, missing = _bind_one(dash, client, {}, False)
+                if env_name:
+                    dash = set_target_env(
+                        dash, env_name, env_map=cfg.get("env_map"),
+                        var_name=cfg.get("env_var") or "env", pin=pin)
+            except (GrafanaError, ValueError) as e:
+                problems.append(name)
+                print("  FAIL %s: binding failed: %s" % (name, e))
+                continue
+            if missing:
+                problems.append(name)
+                print("  FAIL %s: unbound datasource variable(s): %s"
+                      % (name, _unbound_hint(dash, missing)))
+                continue
+            bound_path = _bound_path(path)
+            _write_json(bound_path, dash)
+            print("  bound %s -> %s" % (name, bound_path),
+                  file=sys.stderr)
         try:
             res = client.import_dashboard(dash, folder_uid=folder_uid,
                                           overwrite=args.overwrite)
@@ -2934,7 +3238,61 @@ def main(argv: List[str] = None) -> int:
                              "(dashboard.json, requirements.json, "
                              "README.md, test.sh, datatest.json) plus "
                              "INDEX.md, instead of flat files")
+    p_conv.add_argument("--live", action="store_true",
+                        help="collect READ-ONLY hints before translating: "
+                             "Mimir metric types (counter vs gauge, "
+                             "_total) via the Grafana URL, New Relic "
+                             "entity names for entity.guid filters and "
+                             "attribute values via the NR API key; "
+                             "needs --api-key and/or --grafana-url "
+                             "(packages keep them in live-hints.json)")
+    p_conv.add_argument("--env", default="",
+                        help="target environment: set the dashboard's env "
+                             "variable (config env_var) to this value "
+                             "(mapped through config env_map)")
+    add_nr_args(p_conv)
+    add_grafana_args(p_conv)
     p_conv.set_defaults(func=cmd_convert)
+
+    p_exp = sub.add_parser(
+        "export",
+        help="write dashboard.bound.json next to each converted "
+             "dashboard: datasource variables bound to one Grafana "
+             "instance's concrete uids and/or the env variable set "
+             "(optionally pinned into every query)")
+    p_exp.add_argument("inputs", nargs="+",
+                       help="package dir(s), converted output dir(s) or "
+                            "dashboard JSON file(s)")
+    p_exp.add_argument("--bind-datasources", action="store_true",
+                       dest="bind_datasources",
+                       help="resolve ${datasource}/${loki_datasource}/"
+                            "${tempo_datasource}/${cloudwatch_datasource} "
+                            "to the instance's datasources (default of "
+                            "each type, else the first) via the Grafana "
+                            "URL/token")
+    p_exp.add_argument("--ds", action="append", default=[],
+                       dest="ds_overrides", metavar="VARIABLE=UID",
+                       help="bind one datasource variable to an explicit "
+                            "uid (repeatable; works offline and overrides "
+                            "--bind-datasources picks)")
+    p_exp.add_argument("--keep-vars", action="store_true",
+                       dest="keep_vars",
+                       help="keep the datasource picker variables "
+                            "(preselected) instead of dropping them")
+    p_exp.add_argument("--env", default="",
+                       help="target environment value for the env "
+                            "variable (config env_var / env_map)")
+    p_exp.add_argument("--pin-env", action="store_true", dest="pin_env",
+                       help="rewrite every $env interpolation to the "
+                            "--env value and drop the variable (single-"
+                            "environment export)")
+    p_exp.add_argument("--config", "-c", default="",
+                       help="mapping config JSON (env_var / env_map)")
+    p_exp.add_argument("--out", "-o", default="",
+                       help="write <slug>.bound.json files here instead "
+                            "of next to each dashboard")
+    add_grafana_args(p_exp)
+    p_exp.set_defaults(func=cmd_export)
 
     p_ana = sub.add_parser(
         "analyze",
@@ -3104,6 +3462,21 @@ def main(argv: List[str] = None) -> int:
     g_imp.add_argument("--overwrite", action="store_true",
                        help="replace existing dashboards instead of "
                             "failing on collisions")
+    g_imp.add_argument("--bind-datasources", action="store_true",
+                       dest="bind_datasources",
+                       help="bind datasource variables to this "
+                            "instance's datasources before importing "
+                            "(writes dashboard.bound.json next to the "
+                            "source; fails loudly on unresolved refs)")
+    g_imp.add_argument("--env", default="",
+                       help="set the env variable to this target "
+                            "environment before importing")
+    g_imp.add_argument("--pin-env", action="store_true", dest="pin_env",
+                       help="with --env: rewrite every $env "
+                            "interpolation to the value and drop the "
+                            "variable")
+    g_imp.add_argument("--config", "-c", default="",
+                       help="mapping config JSON (env_var / env_map)")
     add_grafana_args(g_imp)
     g_imp.set_defaults(func=cmd_grafana_import)
 

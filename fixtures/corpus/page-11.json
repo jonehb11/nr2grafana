@@ -1,0 +1,579 @@
+{
+ "schema": 1,
+ "page": "Scaling Metrics",
+ "widgets": [
+  {
+   "id": "p11-w001",
+   "title": "Staging Order Summary Duration",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "select average(event_tags.duration_seconds) from Log where cluster_name = 'acme-cluster-staging' and event_name = 'recurring_task.success' and event_tags.task_name = 'update_order_summary' TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "loki",
+      "type": "range",
+      "expr": "avg_over_time({cluster=\"acme-cluster-staging\"} | json | event_name=\"recurring_task.success\" | event_tags_task_name=\"update_order_summary\" | unwrap event_tags_duration_seconds | __error__=\"\" [$__auto]) by ()"
+     }
+    ],
+    "notes": [
+     "attribute 'event_name' not in label_map; used 'event_name' \u2014 verify the label exists in your stack",
+     "attribute 'event_tags.task_name' not in label_map; used 'event_tags_task_name' \u2014 verify the label exists in your stack",
+     "unwrap of 'event_tags_duration_seconds' assumes it is a numeric field after parsing",
+     "filter on 'event_name' assumes it is a parsed json field in Loki",
+     "filter on 'event_tags_task_name' assumes it is a parsed json field in Loki"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "loki",
+     "refId": "A",
+     "expr": "avg_over_time({cluster=\"acme-cluster-staging\"} | json | event_name=\"recurring_task.success\" | event_tags_task_name=\"update_order_summary\" | unwrap event_tags_duration_seconds | __error__=\"\" [$__auto]) by ()"
+    }
+   ]
+  },
+  {
+   "id": "p11-w002",
+   "title": "Staging Order Summary Duration (Average)",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "select average(event_tags.duration_seconds) from Log where cluster_name = 'acme-cluster-staging' and event_name = 'recurring_task.success' and event_tags.task_name = 'update_order_summary'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "loki",
+      "type": "instant",
+      "expr": "avg_over_time({cluster=\"acme-cluster-staging\"} | json | event_name=\"recurring_task.success\" | event_tags_task_name=\"update_order_summary\" | unwrap event_tags_duration_seconds | __error__=\"\" [$__range]) by ()"
+     }
+    ],
+    "notes": [
+     "attribute 'event_name' not in label_map; used 'event_name' \u2014 verify the label exists in your stack",
+     "attribute 'event_tags.task_name' not in label_map; used 'event_tags_task_name' \u2014 verify the label exists in your stack",
+     "unwrap of 'event_tags_duration_seconds' assumes it is a numeric field after parsing",
+     "filter on 'event_name' assumes it is a parsed json field in Loki",
+     "filter on 'event_tags_task_name' assumes it is a parsed json field in Loki"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "loki",
+     "refId": "A",
+     "expr": "avg_over_time({cluster=\"acme-cluster-staging\"} | json | event_name=\"recurring_task.success\" | event_tags_task_name=\"update_order_summary\" | unwrap event_tags_duration_seconds | __error__=\"\" [$__range]) by ()"
+    }
+   ]
+  },
+  {
+   "id": "p11-w003",
+   "title": "Staging Order Summary Updated Records",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "select sum(event_tags.processed_count) from Log where cluster_name = 'acme-cluster-staging' and event_name = 'recurring_task.success' and event_tags.task_name = 'update_order_summary' TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "loki",
+      "type": "range",
+      "expr": "sum_over_time({cluster=\"acme-cluster-staging\"} | json | event_name=\"recurring_task.success\" | event_tags_task_name=\"update_order_summary\" | unwrap event_tags_processed_count | __error__=\"\" [$__auto]) by ()"
+     }
+    ],
+    "notes": [
+     "attribute 'event_name' not in label_map; used 'event_name' \u2014 verify the label exists in your stack",
+     "attribute 'event_tags.task_name' not in label_map; used 'event_tags_task_name' \u2014 verify the label exists in your stack",
+     "unwrap of 'event_tags_processed_count' assumes it is a numeric field after parsing",
+     "filter on 'event_name' assumes it is a parsed json field in Loki",
+     "filter on 'event_tags_task_name' assumes it is a parsed json field in Loki"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "loki",
+     "refId": "A",
+     "expr": "sum(sum_over_time({cluster=\"acme-cluster-staging\"} | json | event_name=\"recurring_task.success\" | event_tags_task_name=\"update_order_summary\" | unwrap event_tags_processed_count | __error__=\"\" [$__auto]))"
+    }
+   ]
+  },
+  {
+   "id": "p11-w004",
+   "title": "Production Order Summary Duration",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "select average(event_tags.duration_seconds) from Log where cluster_name = 'acme-cluster-prod' and event_name = 'recurring_task.success' and event_tags.task_name = 'update_order_summary' TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "loki",
+      "type": "range",
+      "expr": "avg_over_time({cluster=\"acme-cluster-prod\"} | json | event_name=\"recurring_task.success\" | event_tags_task_name=\"update_order_summary\" | unwrap event_tags_duration_seconds | __error__=\"\" [$__auto]) by ()"
+     }
+    ],
+    "notes": [
+     "attribute 'event_name' not in label_map; used 'event_name' \u2014 verify the label exists in your stack",
+     "attribute 'event_tags.task_name' not in label_map; used 'event_tags_task_name' \u2014 verify the label exists in your stack",
+     "unwrap of 'event_tags_duration_seconds' assumes it is a numeric field after parsing",
+     "filter on 'event_name' assumes it is a parsed json field in Loki",
+     "filter on 'event_tags_task_name' assumes it is a parsed json field in Loki"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "loki",
+     "refId": "A",
+     "expr": "avg_over_time({cluster=\"acme-cluster-test\"} | json | event_name=\"recurring_task.success\" | event_tags_task_name=\"update_order_summary\" | unwrap event_tags_duration_seconds | __error__=\"\" [$__auto]) by ()"
+    }
+   ]
+  },
+  {
+   "id": "p11-w005",
+   "title": "Production Order Summary Duration (Average)",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "select average(event_tags.duration_seconds) from Log where cluster_name = 'acme-cluster-prod' and event_name = 'recurring_task.success' and event_tags.task_name = 'update_order_summary'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "loki",
+      "type": "instant",
+      "expr": "avg_over_time({cluster=\"acme-cluster-prod\"} | json | event_name=\"recurring_task.success\" | event_tags_task_name=\"update_order_summary\" | unwrap event_tags_duration_seconds | __error__=\"\" [$__range]) by ()"
+     }
+    ],
+    "notes": [
+     "attribute 'event_name' not in label_map; used 'event_name' \u2014 verify the label exists in your stack",
+     "attribute 'event_tags.task_name' not in label_map; used 'event_tags_task_name' \u2014 verify the label exists in your stack",
+     "unwrap of 'event_tags_duration_seconds' assumes it is a numeric field after parsing",
+     "filter on 'event_name' assumes it is a parsed json field in Loki",
+     "filter on 'event_tags_task_name' assumes it is a parsed json field in Loki"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "loki",
+     "refId": "A",
+     "expr": "avg_over_time({cluster=\"acme-cluster-test\"} | json | event_name=\"recurring_task.success\" | event_tags_task_name=\"update_order_summary\" | unwrap event_tags_duration_seconds | __error__=\"\" [$__range]) by ()"
+    }
+   ]
+  },
+  {
+   "id": "p11-w006",
+   "title": "Production Order Summary Updated Records",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "select sum(event_tags.processed_count) from Log where cluster_name = 'acme-cluster-prod' and event_name = 'recurring_task.success' and event_tags.task_name = 'update_order_summary' TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "loki",
+      "type": "range",
+      "expr": "sum_over_time({cluster=\"acme-cluster-prod\"} | json | event_name=\"recurring_task.success\" | event_tags_task_name=\"update_order_summary\" | unwrap event_tags_processed_count | __error__=\"\" [$__auto]) by ()"
+     }
+    ],
+    "notes": [
+     "attribute 'event_name' not in label_map; used 'event_name' \u2014 verify the label exists in your stack",
+     "attribute 'event_tags.task_name' not in label_map; used 'event_tags_task_name' \u2014 verify the label exists in your stack",
+     "unwrap of 'event_tags_processed_count' assumes it is a numeric field after parsing",
+     "filter on 'event_name' assumes it is a parsed json field in Loki",
+     "filter on 'event_tags_task_name' assumes it is a parsed json field in Loki"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "loki",
+     "refId": "A",
+     "expr": "sum(sum_over_time({cluster=\"acme-cluster-test\"} | json | event_name=\"recurring_task.success\" | event_tags_task_name=\"update_order_summary\" | unwrap event_tags_processed_count | __error__=\"\" [$__auto]))"
+    }
+   ]
+  },
+  {
+   "id": "p11-w007",
+   "title": "Staging Order Summary Full Refresh Duration",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "select average(event_tags.duration_seconds) from Log where cluster_name = 'acme-cluster-staging' and event_name = 'recurring_task.success' and event_tags.task_name = 'update_order_summary_full_refresh' TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "loki",
+      "type": "range",
+      "expr": "avg_over_time({cluster=\"acme-cluster-staging\"} | json | event_name=\"recurring_task.success\" | event_tags_task_name=\"update_order_summary_full_refresh\" | unwrap event_tags_duration_seconds | __error__=\"\" [$__auto]) by ()"
+     }
+    ],
+    "notes": [
+     "attribute 'event_name' not in label_map; used 'event_name' \u2014 verify the label exists in your stack",
+     "attribute 'event_tags.task_name' not in label_map; used 'event_tags_task_name' \u2014 verify the label exists in your stack",
+     "unwrap of 'event_tags_duration_seconds' assumes it is a numeric field after parsing",
+     "filter on 'event_name' assumes it is a parsed json field in Loki",
+     "filter on 'event_tags_task_name' assumes it is a parsed json field in Loki"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "loki",
+     "refId": "A",
+     "expr": "avg_over_time({cluster=\"acme-cluster-staging\"} | json | event_name=\"recurring_task.success\" | event_tags_task_name=\"update_order_summary_full_refresh\" | unwrap event_tags_duration_seconds | __error__=\"\" [$__auto]) by ()"
+    }
+   ]
+  },
+  {
+   "id": "p11-w008",
+   "title": "Staging Order Summary Full Refresh Duration (Average)",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "select average(event_tags.duration_seconds) from Log where cluster_name = 'acme-cluster-staging' and event_name = 'recurring_task.success' and event_tags.task_name = 'update_order_summary_full_refresh'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "loki",
+      "type": "instant",
+      "expr": "avg_over_time({cluster=\"acme-cluster-staging\"} | json | event_name=\"recurring_task.success\" | event_tags_task_name=\"update_order_summary_full_refresh\" | unwrap event_tags_duration_seconds | __error__=\"\" [$__range]) by ()"
+     }
+    ],
+    "notes": [
+     "attribute 'event_name' not in label_map; used 'event_name' \u2014 verify the label exists in your stack",
+     "attribute 'event_tags.task_name' not in label_map; used 'event_tags_task_name' \u2014 verify the label exists in your stack",
+     "unwrap of 'event_tags_duration_seconds' assumes it is a numeric field after parsing",
+     "filter on 'event_name' assumes it is a parsed json field in Loki",
+     "filter on 'event_tags_task_name' assumes it is a parsed json field in Loki"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "loki",
+     "refId": "A",
+     "expr": "avg_over_time({cluster=\"acme-cluster-staging\"} | json | event_name=\"recurring_task.success\" | event_tags_task_name=\"update_order_summary_full_refresh\" | unwrap event_tags_duration_seconds | __error__=\"\" [$__range]) by ()"
+    }
+   ]
+  },
+  {
+   "id": "p11-w009",
+   "title": "Staging Order Summary Full Refresh Updated Records",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "select sum(event_tags.processed_count) from Log where cluster_name = 'acme-cluster-staging' and event_name = 'recurring_task.success' and event_tags.task_name = 'update_order_summary_full_refresh' TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "loki",
+      "type": "range",
+      "expr": "sum_over_time({cluster=\"acme-cluster-staging\"} | json | event_name=\"recurring_task.success\" | event_tags_task_name=\"update_order_summary_full_refresh\" | unwrap event_tags_processed_count | __error__=\"\" [$__auto]) by ()"
+     }
+    ],
+    "notes": [
+     "attribute 'event_name' not in label_map; used 'event_name' \u2014 verify the label exists in your stack",
+     "attribute 'event_tags.task_name' not in label_map; used 'event_tags_task_name' \u2014 verify the label exists in your stack",
+     "unwrap of 'event_tags_processed_count' assumes it is a numeric field after parsing",
+     "filter on 'event_name' assumes it is a parsed json field in Loki",
+     "filter on 'event_tags_task_name' assumes it is a parsed json field in Loki"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "loki",
+     "refId": "A",
+     "expr": "sum(sum_over_time({cluster=\"acme-cluster-staging\"} | json | event_name=\"recurring_task.success\" | event_tags_task_name=\"update_order_summary_full_refresh\" | unwrap event_tags_processed_count | __error__=\"\" [$__auto]))"
+    }
+   ]
+  },
+  {
+   "id": "p11-w010",
+   "title": "Production Order Summary Full Refresh Duration",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "select average(event_tags.duration_seconds) from Log where cluster_name = 'acme-cluster-prod' and event_name = 'recurring_task.success' and event_tags.task_name = 'update_order_summary_full_refresh' TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "loki",
+      "type": "range",
+      "expr": "avg_over_time({cluster=\"acme-cluster-prod\"} | json | event_name=\"recurring_task.success\" | event_tags_task_name=\"update_order_summary_full_refresh\" | unwrap event_tags_duration_seconds | __error__=\"\" [$__auto]) by ()"
+     }
+    ],
+    "notes": [
+     "attribute 'event_name' not in label_map; used 'event_name' \u2014 verify the label exists in your stack",
+     "attribute 'event_tags.task_name' not in label_map; used 'event_tags_task_name' \u2014 verify the label exists in your stack",
+     "unwrap of 'event_tags_duration_seconds' assumes it is a numeric field after parsing",
+     "filter on 'event_name' assumes it is a parsed json field in Loki",
+     "filter on 'event_tags_task_name' assumes it is a parsed json field in Loki"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "loki",
+     "refId": "A",
+     "expr": "avg_over_time({cluster=\"acme-cluster-test\"} | json | event_name=\"recurring_task.success\" | event_tags_task_name=\"update_order_summary_full_refresh\" | unwrap event_tags_duration_seconds | __error__=\"\" [$__auto]) by ()"
+    }
+   ]
+  },
+  {
+   "id": "p11-w011",
+   "title": "Production Order Summary Full Refresh Duration (Average)",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "select average(event_tags.duration_seconds) from Log where cluster_name = 'acme-cluster-prod' and event_name = 'recurring_task.success' and event_tags.task_name = 'update_order_summary_full_refresh'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "loki",
+      "type": "instant",
+      "expr": "avg_over_time({cluster=\"acme-cluster-prod\"} | json | event_name=\"recurring_task.success\" | event_tags_task_name=\"update_order_summary_full_refresh\" | unwrap event_tags_duration_seconds | __error__=\"\" [$__range]) by ()"
+     }
+    ],
+    "notes": [
+     "attribute 'event_name' not in label_map; used 'event_name' \u2014 verify the label exists in your stack",
+     "attribute 'event_tags.task_name' not in label_map; used 'event_tags_task_name' \u2014 verify the label exists in your stack",
+     "unwrap of 'event_tags_duration_seconds' assumes it is a numeric field after parsing",
+     "filter on 'event_name' assumes it is a parsed json field in Loki",
+     "filter on 'event_tags_task_name' assumes it is a parsed json field in Loki"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "loki",
+     "refId": "A",
+     "expr": "avg_over_time({cluster=\"acme-cluster-test\"} | json | event_name=\"recurring_task.success\" | event_tags_task_name=\"update_order_summary_full_refresh\" | unwrap event_tags_duration_seconds | __error__=\"\" [$__range]) by ()"
+    }
+   ]
+  },
+  {
+   "id": "p11-w012",
+   "title": "Production Order Summary Full Refresh Updated Records",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "select sum(event_tags.processed_count) from Log where cluster_name = 'acme-cluster-prod' and event_name = 'recurring_task.success' and event_tags.task_name = 'update_order_summary_full_refresh' TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "loki",
+      "type": "range",
+      "expr": "sum_over_time({cluster=\"acme-cluster-prod\"} | json | event_name=\"recurring_task.success\" | event_tags_task_name=\"update_order_summary_full_refresh\" | unwrap event_tags_processed_count | __error__=\"\" [$__auto]) by ()"
+     }
+    ],
+    "notes": [
+     "attribute 'event_name' not in label_map; used 'event_name' \u2014 verify the label exists in your stack",
+     "attribute 'event_tags.task_name' not in label_map; used 'event_tags_task_name' \u2014 verify the label exists in your stack",
+     "unwrap of 'event_tags_processed_count' assumes it is a numeric field after parsing",
+     "filter on 'event_name' assumes it is a parsed json field in Loki",
+     "filter on 'event_tags_task_name' assumes it is a parsed json field in Loki"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "loki",
+     "refId": "A",
+     "expr": "sum(sum_over_time({cluster=\"acme-cluster-test\"} | json | event_name=\"recurring_task.success\" | event_tags_task_name=\"update_order_summary_full_refresh\" | unwrap event_tags_processed_count | __error__=\"\" [$__auto]))"
+    }
+   ]
+  },
+  {
+   "id": "p11-w013",
+   "title": "Feature Flag Checks",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.is_feature_flag_on) FROM Metric FACET name TIMESERIES WHERE clusterName = 'acme-cluster-prod'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (span_name)(avg_over_time(acme_backend_is_feature_flag_on{cluster=\"acme-cluster-prod\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_is_feature_flag_on'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (span_name)(rate(acme_backend_is_feature_flag_on_total{cluster=\"acme-cluster-test\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p11-w014",
+   "title": "Feature Flag Checks",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.is_feature_flag_on) FROM Metric TIMESERIES WHERE clusterName = 'acme-cluster-prod'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(avg_over_time(acme_backend_is_feature_flag_on{cluster=\"acme-cluster-prod\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_is_feature_flag_on'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(rate(acme_backend_is_feature_flag_on_total{cluster=\"acme-cluster-test\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p11-w015",
+   "title": "Feature Flag Checks",
+   "visualization": "viz.bar",
+   "grafana_type": "bargauge",
+   "nrql": [
+    "SELECT sum(acme_backend.is_feature_flag_on) FROM Metric FACET name LIMIT 20 WHERE clusterName = 'acme-cluster-prod'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "topk(20, sum by (span_name)(avg_over_time(acme_backend_is_feature_flag_on{cluster=\"acme-cluster-prod\"}[$__range])))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_is_feature_flag_on'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "topk(20, sum by (span_name)(increase(acme_backend_is_feature_flag_on_total{cluster=\"acme-cluster-test\"}[$__range])))"
+    }
+   ]
+  },
+  {
+   "id": "p11-w016",
+   "title": "Feature Flag Checks",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT sum(acme_backend.is_feature_flag_on) FROM Metric WHERE clusterName = 'acme-cluster-prod'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum(avg_over_time(acme_backend_is_feature_flag_on{cluster=\"acme-cluster-prod\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_is_feature_flag_on'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(increase(acme_backend_is_feature_flag_on_total{cluster=\"acme-cluster-test\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p11-w017",
+   "title": "Acme TPS",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "select rate(count(duration), 1 second) as '' FROM Transaction where appName = 'acme-backend (prod)' and name not in ('<REDACTED_BLOB>.middleware:CorsMiddleware', 'WebTransaction/Function/acme_backend.common.middleware.request_healthcheck_middleware:RequestHealthcheckMiddleware') facet podName limit 25 timeseries"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "topk(25, sum by (pod)(rate(http_server_request_duration_seconds_count{service_name=\"acme-backend (prod)\",http_route!~\"<REDACTED_BLOB>\\\\.middleware:CorsMiddleware|WebTransaction/Function/acme_backend\\\\.common\\\\.middleware\\\\.request_healthcheck_middleware:RequestHealthcheckMiddleware\"}[$__rate_interval])))"
+     }
+    ],
+    "notes": [
+     "NR transaction `name` mapped to the http_route label; NR names (WebTransaction/...) differ from route patterns \u2014 verify the matcher value",
+     "FROM Transaction mapped to OTel HTTP server metrics (http_server_request_duration_seconds); requires the service to be OTel-instrumented",
+     "OTel semconv HTTP server duration histogram",
+     "unit:short",
+     "FACET LIMIT 25 became topk(25, ...); on range queries topk is evaluated per step so series may flicker"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "topk(25, sum by (pod)(rate(acme_backend_http_request_duration_mean_count{job=\"acme-backend\",http_route!~\"corsheaders\\\\.middleware:CorsMiddleware|acme_backend\\\\.common\\\\.middleware\\\\.request_healthcheck_middleware:RequestHealthcheckMiddleware\"}[$__rate_interval])))"
+    }
+   ]
+  },
+  {
+   "id": "p11-w018",
+   "title": "Acme TPS",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "text",
+   "nrql": [
+    "select rate(count(duration), 1 second) as '' FROM Transaction where appName = 'acme-backend (prod)' and name not in ('<REDACTED_BLOB>.middleware:CorsMiddleware', 'WebTransaction/Function/acme_backend.common.middleware.request_healthcheck_middleware:RequestHealthcheckMiddleware') facet substring(podName, position(podName, '-', 2), position(podName, '-', 3) - position(podName, '-', 2)) limit 25 timeseries"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "NRQL could not be parsed: unexpected character '-' near: ..., 3) - position(podName, '-', "
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "topk(25, sum(rate(acme_backend_http_request_duration_mean_count{job=\"acme-backend\",http_route!~\"corsheaders\\\\.middleware:CorsMiddleware|acme_backend\\\\.common\\\\.middleware\\\\.request_healthcheck_middleware:RequestHealthcheckMiddleware\"}[$__rate_interval])))"
+    }
+   ]
+  }
+ ]
+}

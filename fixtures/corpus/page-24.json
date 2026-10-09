@@ -1,0 +1,162 @@
+{
+ "schema": 1,
+ "page": "Outreach",
+ "widgets": [
+  {
+   "id": "p24-w001",
+   "title": "Total Faxes",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT sum(acme_backend.outreach.fax) FROM Metric WHERE clusterName = 'acme-cluster-prod'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum(avg_over_time(acme_backend_outreach_fax{cluster=\"acme-cluster-prod\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_outreach_fax'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(increase(acme_backend_outreach_fax_total{cluster=\"acme-cluster-test\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p24-w002",
+   "title": "Fax status",
+   "visualization": "viz.bar",
+   "grafana_type": "bargauge",
+   "nrql": [
+    " SELECT sum(acme_backend.outreach.fax) FROM Metric WHERE clusterName = 'acme-cluster-prod' FACET status"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum by (status)(avg_over_time(acme_backend_outreach_fax{cluster=\"acme-cluster-prod\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'status' not in label_map; used 'status'",
+     "assumed gauge 'acme_backend_outreach_fax'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (status)(increase(acme_backend_outreach_fax_total{cluster=\"acme-cluster-test\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p24-w003",
+   "title": "Fax by Type",
+   "visualization": "viz.bar",
+   "grafana_type": "bargauge",
+   "nrql": [
+    " SELECT sum(acme_backend.outreach.fax) FROM Metric WHERE clusterName = 'acme-cluster-prod' FACET fax_type"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum by (fax_type)(avg_over_time(acme_backend_outreach_fax{cluster=\"acme-cluster-prod\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'fax_type' not in label_map; used 'fax_type'",
+     "assumed gauge 'acme_backend_outreach_fax'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (fax_type)(increase(acme_backend_outreach_fax_total{cluster=\"acme-cluster-test\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p24-w004",
+   "title": "Total SMS",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT sum(acme_backend.outreach.sms) FROM Metric WHERE clusterName = 'acme-cluster-prod'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum(avg_over_time(acme_backend_outreach_sms{cluster=\"acme-cluster-prod\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_outreach_sms'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(increase(acme_backend_outreach_sms_total{cluster=\"acme-cluster-test\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p24-w005",
+   "title": "SMS by Type",
+   "visualization": "viz.bar",
+   "grafana_type": "bargauge",
+   "nrql": [
+    "SELECT sum(acme_backend.outreach.sms) FROM Metric WHERE clusterName = 'acme-cluster-prod' FACET classification"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum by (classification)(avg_over_time(acme_backend_outreach_sms{cluster=\"acme-cluster-prod\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'classification' not in label_map; used 'classification'",
+     "assumed gauge 'acme_backend_outreach_sms'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (classification)(increase(acme_backend_outreach_sms_total{cluster=\"acme-cluster-test\"}[$__range]))"
+    }
+   ]
+  }
+ ]
+}

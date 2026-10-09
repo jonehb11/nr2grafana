@@ -1,0 +1,814 @@
+{
+ "schema": 1,
+ "page": "Rx Transfers",
+ "widgets": [
+  {
+   "id": "p09-w001",
+   "title": "(untitled)",
+   "visualization": "viz.markdown",
+   "grafana_type": "text",
+   "nrql": [],
+   "before": {
+    "confidence": "exact",
+    "queries": [],
+    "notes": []
+   },
+   "expected": []
+  },
+  {
+   "id": "p09-w002",
+   "title": "Rx Transfers (Overall)",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.backend.prescription_service.prescription_transfer_out) as 'count' from Metric  WHERE clusterName = 'acme-cluster-prod'  FACET status, fill_transfer_type, to_pharmacy  TIMESERIES "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (status, fill_transfer_type, to_pharmacy)(avg_over_time(acme_backend_backend_prescription_service_prescription_transfer_out{cluster=\"acme-cluster-prod\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'status' not in label_map; used 'status'",
+     "FACET attribute 'fill_transfer_type' not in label_map; used 'fill_transfer_type'",
+     "FACET attribute 'to_pharmacy' not in label_map; used 'to_pharmacy'",
+     "assumed gauge 'acme_backend_backend_prescription_service_prescription_transfer_out'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (status, fill_transfer_type, to_pharmacy)(rate(acme_backend_backend_prescription_service_prescription_transfer_out_total{cluster=\"acme-cluster-test\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p09-w003",
+   "title": "Rx Transfers (Full / Success)",
+   "visualization": "viz.table",
+   "grafana_type": "table",
+   "nrql": [
+    "SELECT sum(acme_backend.backend.prescription_service.prescription_transfer_out) as 'count' from Metric  WHERE clusterName = 'acme-cluster-prod' and status='success' and fill_transfer_type='full' FACET status, from_pharmacy as 'From', to_pharmacy as 'To'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum by (status, from_pharmacy, to_pharmacy)(avg_over_time(acme_backend_backend_prescription_service_prescription_transfer_out{cluster=\"acme-cluster-prod\",status=\"success\",fill_transfer_type=\"full\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "attribute 'status' not in label_map; used 'status' \u2014 verify the label exists in your stack",
+     "attribute 'fill_transfer_type' not in label_map; used 'fill_transfer_type' \u2014 verify the label exists in your stack",
+     "FACET attribute 'status' not in label_map; used 'status'",
+     "FACET attribute 'from_pharmacy' not in label_map; used 'from_pharmacy'",
+     "FACET attribute 'to_pharmacy' not in label_map; used 'to_pharmacy'",
+     "assumed gauge 'acme_backend_backend_prescription_service_prescription_transfer_out'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (status, from_pharmacy, to_pharmacy)(increase(acme_backend_backend_prescription_service_prescription_transfer_out_total{cluster=\"acme-cluster-test\",status=\"success\",fill_transfer_type=\"full\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p09-w004",
+   "title": "Rx Transfers (Full / Failed)",
+   "visualization": "viz.table",
+   "grafana_type": "table",
+   "nrql": [
+    "SELECT sum(acme_backend.backend.prescription_service.prescription_transfer_out) as 'count' from Metric  WHERE clusterName = 'acme-cluster-prod' and status='failed' and fill_transfer_type='full' FACET step, from_pharmacy as 'From', to_pharmacy as 'To'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum by (step, from_pharmacy, to_pharmacy)(avg_over_time(acme_backend_backend_prescription_service_prescription_transfer_out{cluster=\"acme-cluster-prod\",status=\"failed\",fill_transfer_type=\"full\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "attribute 'status' not in label_map; used 'status' \u2014 verify the label exists in your stack",
+     "attribute 'fill_transfer_type' not in label_map; used 'fill_transfer_type' \u2014 verify the label exists in your stack",
+     "FACET attribute 'step' not in label_map; used 'step'",
+     "FACET attribute 'from_pharmacy' not in label_map; used 'from_pharmacy'",
+     "FACET attribute 'to_pharmacy' not in label_map; used 'to_pharmacy'",
+     "assumed gauge 'acme_backend_backend_prescription_service_prescription_transfer_out'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (step, from_pharmacy, to_pharmacy)(increase(acme_backend_backend_prescription_service_prescription_transfer_out_total{cluster=\"acme-cluster-test\",status=\"failed\",fill_transfer_type=\"full\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p09-w005",
+   "title": "Rx Transfers (Single Fill Transfers)",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.backend.prescription_service.prescription_transfer_out) as 'count' from Metric  WHERE clusterName = 'acme-cluster-prod' and fill_transfer_type='single_fill' FACET status, to_pharmacy  TIMESERIES "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (status, to_pharmacy)(avg_over_time(acme_backend_backend_prescription_service_prescription_transfer_out{cluster=\"acme-cluster-prod\",fill_transfer_type=\"single_fill\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'fill_transfer_type' not in label_map; used 'fill_transfer_type' \u2014 verify the label exists in your stack",
+     "FACET attribute 'status' not in label_map; used 'status'",
+     "FACET attribute 'to_pharmacy' not in label_map; used 'to_pharmacy'",
+     "assumed gauge 'acme_backend_backend_prescription_service_prescription_transfer_out'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (status, to_pharmacy)(rate(acme_backend_backend_prescription_service_prescription_transfer_out_total{cluster=\"acme-cluster-test\",fill_transfer_type=\"single_fill\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p09-w006",
+   "title": "Rx Transfers (Single Fill Transfesrs / Success)",
+   "visualization": "viz.table",
+   "grafana_type": "table",
+   "nrql": [
+    "SELECT sum(acme_backend.backend.prescription_service.prescription_transfer_out) as 'count' from Metric  WHERE clusterName = 'acme-cluster-prod' and status='success' and fill_transfer_type='single_fill' FACET status, from_pharmacy as 'From', to_pharmacy as 'To'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum by (status, from_pharmacy, to_pharmacy)(avg_over_time(acme_backend_backend_prescription_service_prescription_transfer_out{cluster=\"acme-cluster-prod\",status=\"success\",fill_transfer_type=\"single_fill\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "attribute 'status' not in label_map; used 'status' \u2014 verify the label exists in your stack",
+     "attribute 'fill_transfer_type' not in label_map; used 'fill_transfer_type' \u2014 verify the label exists in your stack",
+     "FACET attribute 'status' not in label_map; used 'status'",
+     "FACET attribute 'from_pharmacy' not in label_map; used 'from_pharmacy'",
+     "FACET attribute 'to_pharmacy' not in label_map; used 'to_pharmacy'",
+     "assumed gauge 'acme_backend_backend_prescription_service_prescription_transfer_out'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (status, from_pharmacy, to_pharmacy)(increase(acme_backend_backend_prescription_service_prescription_transfer_out_total{cluster=\"acme-cluster-test\",status=\"success\",fill_transfer_type=\"single_fill\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p09-w007",
+   "title": "Rx Transfers (Single Fill Transfers / Failed)",
+   "visualization": "viz.table",
+   "grafana_type": "table",
+   "nrql": [
+    "SELECT sum(acme_backend.backend.prescription_service.prescription_transfer_out) as 'count' from Metric  WHERE clusterName = 'acme-cluster-prod' and status='failed' and fill_transfer_type='single_fill' FACET step, from_pharmacy as 'From', to_pharmacy as 'To'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum by (step, from_pharmacy, to_pharmacy)(avg_over_time(acme_backend_backend_prescription_service_prescription_transfer_out{cluster=\"acme-cluster-prod\",status=\"failed\",fill_transfer_type=\"single_fill\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "attribute 'status' not in label_map; used 'status' \u2014 verify the label exists in your stack",
+     "attribute 'fill_transfer_type' not in label_map; used 'fill_transfer_type' \u2014 verify the label exists in your stack",
+     "FACET attribute 'step' not in label_map; used 'step'",
+     "FACET attribute 'from_pharmacy' not in label_map; used 'from_pharmacy'",
+     "FACET attribute 'to_pharmacy' not in label_map; used 'to_pharmacy'",
+     "assumed gauge 'acme_backend_backend_prescription_service_prescription_transfer_out'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (step, from_pharmacy, to_pharmacy)(increase(acme_backend_backend_prescription_service_prescription_transfer_out_total{cluster=\"acme-cluster-test\",status=\"failed\",fill_transfer_type=\"single_fill\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p09-w008",
+   "title": "Order - Transfer Out",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.backend.order_service.order_rx_transfer) as 'count' FROM Metric WHERE clusterName = 'acme-cluster-prod' FACET status, to_pharmacy TIMESERIES "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (status, to_pharmacy)(avg_over_time(acme_backend_backend_order_service_order_rx_transfer{cluster=\"acme-cluster-prod\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'status' not in label_map; used 'status'",
+     "FACET attribute 'to_pharmacy' not in label_map; used 'to_pharmacy'",
+     "assumed gauge 'acme_backend_backend_order_service_order_rx_transfer'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (status, to_pharmacy)(rate(acme_backend_backend_order_service_order_rx_transfer_total{cluster=\"acme-cluster-test\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p09-w009",
+   "title": "Order - Transfer Out (Success)",
+   "visualization": "viz.table",
+   "grafana_type": "table",
+   "nrql": [
+    "SELECT sum(acme_backend.backend.order_service.order_rx_transfer) as 'count' FROM Metric WHERE clusterName = 'acme-cluster-prod' and status='success'  FACET result, from_pharmacy as 'From', to_pharmacy as 'To' LIMIT MAX"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum by (result, from_pharmacy, to_pharmacy)(avg_over_time(acme_backend_backend_order_service_order_rx_transfer{cluster=\"acme-cluster-prod\",status=\"success\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "attribute 'status' not in label_map; used 'status' \u2014 verify the label exists in your stack",
+     "FACET attribute 'result' not in label_map; used 'result'",
+     "FACET attribute 'from_pharmacy' not in label_map; used 'from_pharmacy'",
+     "FACET attribute 'to_pharmacy' not in label_map; used 'to_pharmacy'",
+     "assumed gauge 'acme_backend_backend_order_service_order_rx_transfer'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (result, from_pharmacy, to_pharmacy)(increase(acme_backend_backend_order_service_order_rx_transfer_total{cluster=\"acme-cluster-test\",status=\"success\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p09-w010",
+   "title": "Order - Transfer Out (Failed)",
+   "visualization": "viz.table",
+   "grafana_type": "table",
+   "nrql": [
+    "SELECT sum(acme_backend.backend.order_service.order_rx_transfer) as 'count' FROM Metric WHERE clusterName = 'acme-cluster-prod' and status='failed'  FACET reason, from_pharmacy as 'From', to_pharmacy as 'To'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum by (reason, from_pharmacy, to_pharmacy)(avg_over_time(acme_backend_backend_order_service_order_rx_transfer{cluster=\"acme-cluster-prod\",status=\"failed\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "attribute 'status' not in label_map; used 'status' \u2014 verify the label exists in your stack",
+     "FACET attribute 'reason' not in label_map; used 'reason'",
+     "FACET attribute 'from_pharmacy' not in label_map; used 'from_pharmacy'",
+     "FACET attribute 'to_pharmacy' not in label_map; used 'to_pharmacy'",
+     "assumed gauge 'acme_backend_backend_order_service_order_rx_transfer'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (reason, from_pharmacy, to_pharmacy)(increase(acme_backend_backend_order_service_order_rx_transfer_total{cluster=\"acme-cluster-test\",status=\"failed\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p09-w011",
+   "title": "Rx Transfers (Single Fill Transfesrs / Success)",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT sum(acme_backend.backend.prescription_service.prescription_transfer_out) as 'count' from Metric  WHERE clusterName = 'acme-cluster-prod' and status='success' and fill_transfer_type='single_fill' "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum(avg_over_time(acme_backend_backend_prescription_service_prescription_transfer_out{cluster=\"acme-cluster-prod\",status=\"success\",fill_transfer_type=\"single_fill\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "attribute 'status' not in label_map; used 'status' \u2014 verify the label exists in your stack",
+     "attribute 'fill_transfer_type' not in label_map; used 'fill_transfer_type' \u2014 verify the label exists in your stack",
+     "assumed gauge 'acme_backend_backend_prescription_service_prescription_transfer_out'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(increase(acme_backend_backend_prescription_service_prescription_transfer_out_total{cluster=\"acme-cluster-test\",status=\"success\",fill_transfer_type=\"single_fill\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p09-w012",
+   "title": "(untitled)",
+   "visualization": "viz.markdown",
+   "grafana_type": "text",
+   "nrql": [],
+   "before": {
+    "confidence": "exact",
+    "queries": [],
+    "notes": []
+   },
+   "expected": []
+  },
+  {
+   "id": "p09-w013",
+   "title": "Transfer Back Initiation/Void Requests",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.backend.prescription_service.prescription_transfer_back_initiation) as 'count' from Metric WHERE clusterName = 'acme-cluster-prod' AND (state is Null or state = 'accepted') FACET request_type, status, state TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (request_type, status, state)(avg_over_time(acme_backend_backend_prescription_service_prescription_transfer_back_initiation{cluster=\"acme-cluster-prod\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "an OR clause in WHERE could not be merged into a single label matcher (different attributes, variables, or mixed predicate shapes); that clause was DROPPED \u2014 verify filter logic",
+     "FACET attribute 'request_type' not in label_map; used 'request_type'",
+     "FACET attribute 'status' not in label_map; used 'status'",
+     "FACET attribute 'state' not in label_map; used 'state'",
+     "assumed gauge 'acme_backend_backend_prescription_service_prescription_transfer_back_initiation'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (request_type, status, state)((rate(acme_backend_backend_prescription_service_prescription_transfer_back_initiation_total{cluster=\"acme-cluster-test\",state=\"\"}[$__rate_interval]) or rate(acme_backend_backend_prescription_service_prescription_transfer_back_initiation_total{cluster=\"acme-cluster-test\",state=\"accepted\"}[$__rate_interval]))) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p09-w014",
+   "title": "Transfer Back Initiation/Void Requests: Success",
+   "visualization": "viz.table",
+   "grafana_type": "table",
+   "nrql": [
+    "SELECT sum(acme_backend.backend.prescription_service.prescription_transfer_back_initiation) as 'count' from Metric WHERE clusterName = 'acme-cluster-prod' and status != 'failed' FACET request_type, reason, state"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum by (request_type, reason, state)(avg_over_time(acme_backend_backend_prescription_service_prescription_transfer_back_initiation{cluster=\"acme-cluster-prod\",status!=\"failed\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "attribute 'status' not in label_map; used 'status' \u2014 verify the label exists in your stack",
+     "FACET attribute 'request_type' not in label_map; used 'request_type'",
+     "FACET attribute 'reason' not in label_map; used 'reason'",
+     "FACET attribute 'state' not in label_map; used 'state'",
+     "assumed gauge 'acme_backend_backend_prescription_service_prescription_transfer_back_initiation'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (request_type, reason, state)(increase(acme_backend_backend_prescription_service_prescription_transfer_back_initiation_total{cluster=\"acme-cluster-test\",status!=\"failed\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p09-w015",
+   "title": "Transfer Back Initiation/Void Requests: Failures",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.backend.prescription_service.prescription_transfer_back_initiation) as 'count' from Metric WHERE clusterName = 'acme-cluster-prod' and status = 'failed' FACET request_type, reason, error_reason TIMESERIES "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (request_type, reason, error_reason)(avg_over_time(acme_backend_backend_prescription_service_prescription_transfer_back_initiation{cluster=\"acme-cluster-prod\",status=\"failed\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'status' not in label_map; used 'status' \u2014 verify the label exists in your stack",
+     "FACET attribute 'request_type' not in label_map; used 'request_type'",
+     "FACET attribute 'reason' not in label_map; used 'reason'",
+     "FACET attribute 'error_reason' not in label_map; used 'error_reason'",
+     "assumed gauge 'acme_backend_backend_prescription_service_prescription_transfer_back_initiation'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (request_type, reason, error_reason)(rate(acme_backend_backend_prescription_service_prescription_transfer_back_initiation_total{cluster=\"acme-cluster-test\",status=\"failed\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p09-w016",
+   "title": "Transfer Back Initiation/Void Requests: Failures",
+   "visualization": "viz.table",
+   "grafana_type": "table",
+   "nrql": [
+    "SELECT sum(acme_backend.backend.prescription_service.prescription_transfer_back_initiation) as 'count' from Metric WHERE clusterName = 'acme-cluster-prod' and status = 'failed' FACET request_type, reason, error_reason"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum by (request_type, reason, error_reason)(avg_over_time(acme_backend_backend_prescription_service_prescription_transfer_back_initiation{cluster=\"acme-cluster-prod\",status=\"failed\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "attribute 'status' not in label_map; used 'status' \u2014 verify the label exists in your stack",
+     "FACET attribute 'request_type' not in label_map; used 'request_type'",
+     "FACET attribute 'reason' not in label_map; used 'reason'",
+     "FACET attribute 'error_reason' not in label_map; used 'error_reason'",
+     "assumed gauge 'acme_backend_backend_prescription_service_prescription_transfer_back_initiation'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (request_type, reason, error_reason)(increase(acme_backend_backend_prescription_service_prescription_transfer_back_initiation_total{cluster=\"acme-cluster-test\",status=\"failed\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p09-w017",
+   "title": "Incoming Transfer Back Requests",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.backend.prescription_service.prescription_transfer_back) as 'count' from Metric WHERE clusterName = 'acme-cluster-prod' and (state is null or state = 'completed') FACET from_pharmacy_name, status, state TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (from_pharmacy_name, status, state)(avg_over_time(acme_backend_backend_prescription_service_prescription_transfer_back{cluster=\"acme-cluster-prod\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "an OR clause in WHERE could not be merged into a single label matcher (different attributes, variables, or mixed predicate shapes); that clause was DROPPED \u2014 verify filter logic",
+     "FACET attribute 'from_pharmacy_name' not in label_map; used 'from_pharmacy_name'",
+     "FACET attribute 'status' not in label_map; used 'status'",
+     "FACET attribute 'state' not in label_map; used 'state'",
+     "assumed gauge 'acme_backend_backend_prescription_service_prescription_transfer_back'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (from_pharmacy_name, status, state)((rate(acme_backend_backend_prescription_service_prescription_transfer_back_total{cluster=\"acme-cluster-test\",state=\"\"}[$__rate_interval]) or rate(acme_backend_backend_prescription_service_prescription_transfer_back_total{cluster=\"acme-cluster-test\",state=\"completed\"}[$__rate_interval]))) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p09-w018",
+   "title": "Incoming Transfer Back Requests: Success",
+   "visualization": "viz.table",
+   "grafana_type": "table",
+   "nrql": [
+    "SELECT sum(acme_backend.backend.prescription_service.prescription_transfer_back) as 'count' from Metric WHERE clusterName = 'acme-cluster-prod' and status != 'failed' and state='completed' FACET from_pharmacy_name, is_internal, reason"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum by (from_pharmacy_name, is_internal, reason)(avg_over_time(acme_backend_backend_prescription_service_prescription_transfer_back{cluster=\"acme-cluster-prod\",status!=\"failed\",state=\"completed\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "attribute 'status' not in label_map; used 'status' \u2014 verify the label exists in your stack",
+     "attribute 'state' not in label_map; used 'state' \u2014 verify the label exists in your stack",
+     "FACET attribute 'from_pharmacy_name' not in label_map; used 'from_pharmacy_name'",
+     "FACET attribute 'is_internal' not in label_map; used 'is_internal'",
+     "FACET attribute 'reason' not in label_map; used 'reason'",
+     "assumed gauge 'acme_backend_backend_prescription_service_prescription_transfer_back'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (from_pharmacy_name, is_internal, reason)(increase(acme_backend_backend_prescription_service_prescription_transfer_back_total{cluster=\"acme-cluster-test\",status!=\"failed\",state=\"completed\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p09-w019",
+   "title": "Incoming Transfer Back Requests: Failures",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.backend.prescription_service.prescription_transfer_back) as 'count' from Metric WHERE clusterName = 'acme-cluster-prod' and status = 'failed' FACET from_pharmacy_name, is_internal, error_reason TIMESERIES "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (from_pharmacy_name, is_internal, error_reason)(avg_over_time(acme_backend_backend_prescription_service_prescription_transfer_back{cluster=\"acme-cluster-prod\",status=\"failed\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'status' not in label_map; used 'status' \u2014 verify the label exists in your stack",
+     "FACET attribute 'from_pharmacy_name' not in label_map; used 'from_pharmacy_name'",
+     "FACET attribute 'is_internal' not in label_map; used 'is_internal'",
+     "FACET attribute 'error_reason' not in label_map; used 'error_reason'",
+     "assumed gauge 'acme_backend_backend_prescription_service_prescription_transfer_back'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (from_pharmacy_name, is_internal, error_reason)(rate(acme_backend_backend_prescription_service_prescription_transfer_back_total{cluster=\"acme-cluster-test\",status=\"failed\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p09-w020",
+   "title": "Incoming Transfer Back Requests: Failures",
+   "visualization": "viz.table",
+   "grafana_type": "table",
+   "nrql": [
+    "SELECT sum(acme_backend.backend.prescription_service.prescription_transfer_back) as 'count' from Metric WHERE clusterName = 'acme-cluster-prod' and status = 'failed' FACET from_pharmacy_name, is_internal, error_reason"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum by (from_pharmacy_name, is_internal, error_reason)(avg_over_time(acme_backend_backend_prescription_service_prescription_transfer_back{cluster=\"acme-cluster-prod\",status=\"failed\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "attribute 'status' not in label_map; used 'status' \u2014 verify the label exists in your stack",
+     "FACET attribute 'from_pharmacy_name' not in label_map; used 'from_pharmacy_name'",
+     "FACET attribute 'is_internal' not in label_map; used 'is_internal'",
+     "FACET attribute 'error_reason' not in label_map; used 'error_reason'",
+     "assumed gauge 'acme_backend_backend_prescription_service_prescription_transfer_back'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (from_pharmacy_name, is_internal, error_reason)(increase(acme_backend_backend_prescription_service_prescription_transfer_back_total{cluster=\"acme-cluster-test\",status=\"failed\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p09-w021",
+   "title": "Manual Transfer Back Detection: Match Original Rx",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.prescription.entry.manual_transfer_back.match) as 'count' from Metric  WHERE clusterName = 'acme-cluster-prod' TIMESERIES "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(avg_over_time(acme_backend_prescription_entry_manual_transfer_back_match{cluster=\"acme-cluster-prod\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_prescription_entry_manual_transfer_back_match'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(rate(acme_backend_prescription_entry_manual_transfer_back_match_total{cluster=\"acme-cluster-test\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p09-w022",
+   "title": "Manual Transfer Back Detection: Processed",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.prescription.manual.transfer.back.processed) as 'count' from Metric WHERE clusterName = 'acme-cluster-prod' TIMESERIES "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(avg_over_time(acme_backend_prescription_manual_transfer_back_processed{cluster=\"acme-cluster-prod\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_prescription_manual_transfer_back_processed'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(rate(acme_backend_prescription_manual_transfer_back_processed_total{cluster=\"acme-cluster-test\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p09-w023",
+   "title": "Manual Transfer Back Requests: Success",
+   "visualization": "viz.table",
+   "grafana_type": "table",
+   "nrql": [
+    "SELECT sum(acme_backend.prescription.manual.transfer.back.processed) as 'count' from Metric WHERE clusterName = 'acme-cluster-prod'  FACET pharmacy_npi"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum by (pharmacy_npi)(avg_over_time(acme_backend_prescription_manual_transfer_back_processed{cluster=\"acme-cluster-prod\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'pharmacy_npi' not in label_map; used 'pharmacy_npi'",
+     "assumed gauge 'acme_backend_prescription_manual_transfer_back_processed'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (pharmacy_npi)(increase(acme_backend_prescription_manual_transfer_back_processed_total{cluster=\"acme-cluster-test\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p09-w024",
+   "title": "Manual Transfer Back Detection: Mismatch original Rx (Acme vs Prescription Service)",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.prescription.entry.manual_transfer_back.original_rx_mismatch) as 'count' from Metric  WHERE clusterName = 'acme-cluster-prod' TIMESERIES "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(avg_over_time(acme_backend_prescription_entry_manual_transfer_back_original_rx_mismatch{cluster=\"acme-cluster-prod\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_prescription_entry_manual_transfer_back_original_rx_mismatch'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(rate(acme_backend_prescription_entry_manual_transfer_back_original_rx_mismatch_total{cluster=\"acme-cluster-test\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p09-w025",
+   "title": "Manual Transfer Back Detection: Get Original Orders",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.data_entry.manual_transfer_back_detection.v2.get_old_orders) as 'count' from Metric facet source WHERE clusterName = 'acme-cluster-prod' TIMESERIES "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (source)(avg_over_time(acme_backend_data_entry_manual_transfer_back_detection_v2_get_old_orders{cluster=\"acme-cluster-prod\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'source' not in label_map; used 'source'",
+     "assumed gauge 'acme_backend_data_entry_manual_transfer_back_detection_v2_get_old_orders'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (source)(rate(acme_backend_data_entry_manual_transfer_back_detection_v2_get_old_orders_total{cluster=\"acme-cluster-test\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  }
+ ]
+}

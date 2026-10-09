@@ -5,7 +5,7 @@ import unittest
 from nr2grafana.nrql.parser import (
     Attr, BoolOp, Cmp, FacetItem, Func, InList, Lit, NotOp, NrqlParseError,
     NullCheck, OrderBy, SelectItem, Star, TimeseriesSpec, parse_nrql,
-    tokenize, _unquote_string,
+    strip_comments, tokenize, _unquote_string,
 )
 
 
@@ -396,6 +396,388 @@ class ParseErrorTests(unittest.TestCase):
             self.assertIn("near:", str(e))
         else:
             self.fail("expected NrqlParseError")
+
+    def test_bare_literal_is_not_a_predicate(self):
+        self.assert_error("SELECT count(*) FROM T WHERE 'x'")
+
+    def test_dangling_operator_still_errors(self):
+        self.assert_error("SELECT count(*) FROM T WHERE flag =")
+
+
+# ---------------------------------------------------------------------------
+# 1.11 translation-fidelity fixes (contract F6/F7 shapes)
+# ---------------------------------------------------------------------------
+
+TRUE_FLAG = Cmp(Attr("should_publish"), "=", Lit(True))
+
+
+class CommentTests(unittest.TestCase):
+    """``--`` comments are stripped anywhere, including mid-query lines."""
+
+    def test_tokenizer_drops_line_comments(self):
+        toks = tokenize("SELECT a -- the a\nFROM T")
+        self.assertEqual([t.text for t in toks], ["SELECT", "a", "FROM", "T"])
+
+    def test_tokenizer_drops_slash_and_block_comments(self):
+        toks = tokenize("SELECT a // c\n/* multi\nline */ FROM T")
+        self.assertEqual([t.text for t in toks], ["SELECT", "a", "FROM", "T"])
+
+    def test_double_dash_inside_string_is_data(self):
+        q = parse_nrql("SELECT count(*) FROM T WHERE name = 'a--b' -- c")
+        self.assertEqual(q.where, Cmp(Attr("name"), "=", Lit("a--b")))
+
+    def test_comments_anywhere_in_multiline_query(self):
+        q = parse_nrql(
+            "-- leading comment\n"
+            "SELECT count(*) FROM Log -- trailing\n"
+            "WHERE level = 'ERROR' -- mid-query line\n"
+            "FACET host -- last\n")
+        self.assertEqual(q.from_, ["Log"])
+        self.assertEqual(q.where, Cmp(Attr("level"), "=", Lit("ERROR")))
+        self.assertEqual(q.facet, [FacetItem(Attr("host"), None)])
+        self.assertEqual(q.extras, [])
+
+    def test_comment_between_clauses_does_not_leak_into_since(self):
+        q = parse_nrql("SELECT count(*) FROM T SINCE 1 hour ago -- x\n"
+                       "LIMIT 5")
+        self.assertEqual(q.since, "1 hour ago")
+        self.assertEqual(q.limit, 5)
+
+    def test_raw_keeps_original_text(self):
+        text = "SELECT count(*) FROM T -- c"
+        self.assertEqual(parse_nrql(text).raw, text)
+
+    def test_strip_comments_helper(self):
+        self.assertEqual(
+            strip_comments("SELECT a /* b */ FROM T -- c\nWHERE x = '--'"),
+            "SELECT a FROM T WHERE x = '--'")
+
+
+class BareBooleanPredicateTests(unittest.TestCase):
+    """F6: ``... AND should_publish`` means ``should_publish = true``."""
+
+    def _where(self, cond_text):
+        return parse_nrql("SELECT count(*) FROM Log WHERE " + cond_text).where
+
+    def test_contract_shape_and_flag_at_end(self):
+        w = self._where("cluster = 'acme-cluster-prod' AND should_publish")
+        self.assertEqual(w, BoolOp("and", [
+            Cmp(Attr("cluster"), "=", Lit("acme-cluster-prod")),
+            TRUE_FLAG,
+        ]))
+
+    def test_flag_first_then_and(self):
+        w = self._where("should_publish AND level = 'ERROR'")
+        self.assertEqual(w, BoolOp("and", [
+            TRUE_FLAG, Cmp(Attr("level"), "=", Lit("ERROR"))]))
+
+    def test_flag_alone(self):
+        self.assertEqual(self._where("should_publish"), TRUE_FLAG)
+
+    def test_not_flag(self):
+        self.assertEqual(self._where("NOT should_publish"), NotOp(TRUE_FLAG))
+
+    def test_backticked_flag(self):
+        self.assertEqual(self._where("`should_publish`"), TRUE_FLAG)
+
+    def test_flag_inside_parens_and_or(self):
+        w = self._where("(a = 1 OR should_publish) AND other_flag")
+        self.assertEqual(w, BoolOp("and", [
+            BoolOp("or", [Cmp(Attr("a"), "=", Lit(1)), TRUE_FLAG]),
+            Cmp(Attr("other_flag"), "=", Lit(True)),
+        ]))
+
+    def test_flag_before_facet_and_limit(self):
+        q = parse_nrql("SELECT count(*) FROM Log WHERE should_publish "
+                       "FACET host LIMIT 5")
+        self.assertEqual(q.where, TRUE_FLAG)
+        self.assertEqual(q.facet, [FacetItem(Attr("host"), None)])
+        self.assertEqual(q.limit, 5)
+
+    def test_flag_equivalent_to_explicit_forms(self):
+        self.assertEqual(self._where("should_publish"),
+                         self._where("should_publish = true"))
+        self.assertEqual(self._where("should_publish"),
+                         self._where("should_publish IS TRUE"))
+
+    def test_flag_in_filter_where(self):
+        q = parse_nrql("SELECT filter(count(*), WHERE should_publish) "
+                       "FROM Log")
+        self.assertEqual(q.select[0].expr.where, TRUE_FLAG)
+
+    def test_flag_in_cases_with_alias(self):
+        q = parse_nrql("SELECT count(*) FROM Log FACET cases("
+                       "WHERE should_publish AS 'on', WHERE NOT "
+                       "should_publish AS 'off')")
+        self.assertEqual(q.facet[0].expr.cases, [
+            (TRUE_FLAG, "on"), (NotOp(TRUE_FLAG), "off")])
+
+    def test_if_with_bare_condition(self):
+        q = parse_nrql("SELECT sum(if(error, 1, 0)) FROM T")
+        branch = q.select[0].expr.args[0]
+        self.assertEqual(branch.where, Cmp(Attr("error"), "=", Lit(True)))
+        self.assertEqual(branch.args, [Lit(1), Lit(0)])
+
+    def test_flag_followed_by_comparison_still_comparison(self):
+        # Regression guard: a bare attr followed by an operator is NOT a
+        # truthy test.
+        self.assertEqual(self._where("should_publish != false"),
+                         Cmp(Attr("should_publish"), "!=", Lit(False)))
+
+    def test_bare_attr_before_not_in_is_in_list(self):
+        self.assertEqual(self._where("x NOT IN (1)"),
+                         InList(Attr("x"), [Lit(1)], True))
+
+
+class IsPredicateTests(unittest.TestCase):
+    def _where(self, cond_text):
+        return parse_nrql("SELECT count(*) FROM Log WHERE " + cond_text).where
+
+    def test_is_forms_with_backticks(self):
+        w = self._where("`a.b` IS NULL AND `c.d` IS NOT NULL AND "
+                        "`e` IS TRUE AND `f` IS FALSE AND `g` IS NOT FALSE")
+        self.assertEqual(w.items, [
+            NullCheck(Attr("a.b"), negated=False),
+            NullCheck(Attr("c.d"), negated=True),
+            Cmp(Attr("e"), "=", Lit(True)),
+            Cmp(Attr("f"), "=", Lit(False)),
+            Cmp(Attr("g"), "!=", Lit(False)),
+        ])
+
+    def test_is_case_insensitive(self):
+        self.assertEqual(self._where("a is not null"),
+                         NullCheck(Attr("a"), negated=True))
+
+    def test_is_null_inside_filter(self):
+        q = parse_nrql("SELECT filter(count(*), WHERE `k8s.pod.name` IS "
+                       "NOT NULL) FROM K8sContainerSample")
+        self.assertEqual(q.select[0].expr.where,
+                         NullCheck(Attr("k8s.pod.name"), negated=True))
+
+
+class BacktickEverywhereTests(unittest.TestCase):
+    def test_backticks_in_every_position(self):
+        q = parse_nrql(
+            "SELECT average(`response time`) AS `avg rt`, `plain` "
+            "FROM `My Event` WHERE `k8s.pod.name` IN ('a') AND `flag` "
+            "FACET `k8s.namespace.name` AS `ns` ORDER BY `avg rt` DESC")
+        self.assertEqual(q.select[0].expr.args, [Attr("response time")])
+        self.assertEqual(q.select[0].alias, "avg rt")
+        self.assertEqual(q.select[1].expr, Attr("plain"))
+        self.assertEqual(q.from_, ["My Event"])
+        self.assertEqual(q.where, BoolOp("and", [
+            InList(Attr("k8s.pod.name"), [Lit("a")], False),
+            Cmp(Attr("flag"), "=", Lit(True)),
+        ]))
+        self.assertEqual(q.facet, [FacetItem(Attr("k8s.namespace.name"),
+                                             "ns")])
+        self.assertEqual(q.order_by, OrderBy(Attr("avg rt"), "DESC"))
+
+    def test_backticked_function_arguments(self):
+        q = parse_nrql("SELECT percentile(`duration.ms`, 95) FROM T "
+                       "FACET tuple(`a.b`, `c`)")
+        self.assertEqual(q.select[0].expr.args, [Attr("duration.ms"),
+                                                 Lit(95)])
+        self.assertEqual(q.facet[0].expr.args, [Attr("a.b"), Attr("c")])
+
+
+class MultiEventFromTests(unittest.TestCase):
+    """``FROM Log, Log_dev``: all events kept in from_, first is primary."""
+
+    def test_contract_shape(self):
+        q = parse_nrql("SELECT count(*) FROM Log, Log_dev "
+                       "WHERE level = 'ERROR' FACET host")
+        self.assertEqual(q.from_, ["Log", "Log_dev"])
+        self.assertEqual(q.where, Cmp(Attr("level"), "=", Lit("ERROR")))
+        self.assertEqual(len(q.notes), 1)
+        self.assertIn("Log, Log_dev", q.notes[0])
+        self.assertIn("first (Log)", q.notes[0])
+        # Not an error class: nothing is dropped from the translation.
+        self.assertEqual(q.extras, [])
+
+    def test_from_first_form(self):
+        q = parse_nrql("FROM Log, Log_dev SELECT count(*)")
+        self.assertEqual(q.from_, ["Log", "Log_dev"])
+        self.assertEqual(len(q.notes), 1)
+
+    def test_single_event_has_no_note(self):
+        self.assertEqual(parse_nrql("SELECT count(*) FROM Log").notes, [])
+
+
+class LogFunctionTests(unittest.TestCase):
+    """F7 inputs: allColumnSearch / aparse / capture / tuple."""
+
+    def test_all_column_search_as_predicate(self):
+        q = parse_nrql("SELECT count(*) FROM Log WHERE "
+                       "allColumnSearch('t', insensitive: true)")
+        self.assertEqual(q.where, Cmp(
+            Func("allcolumnsearch", args=[Lit("t"),
+                                          Lit("insensitive:true")]),
+            "=", Lit(True)))
+
+    def test_all_column_search_combined_with_other_predicates(self):
+        q = parse_nrql("SELECT count(*) FROM Log WHERE "
+                       "allColumnSearch('timeout', insensitive: true) "
+                       "AND cluster = 'acme-cluster-prod' TIMESERIES")
+        self.assertIsInstance(q.where, BoolOp)
+        self.assertEqual(q.where.items[0].left.name, "allcolumnsearch")
+        self.assertEqual(q.where.items[1],
+                         Cmp(Attr("cluster"), "=", Lit("acme-cluster-prod")))
+        self.assertTrue(q.timeseries.auto)
+
+    def test_named_arg_false_lowercased(self):
+        q = parse_nrql("SELECT count(*) FROM Log WHERE "
+                       "allColumnSearch('t', insensitive: false)")
+        self.assertEqual(q.where.left.args[1], Lit("insensitive:false"))
+
+    def test_apdex_named_arg_unchanged(self):
+        q = parse_nrql("SELECT apdex(duration, t: 0.5) FROM T")
+        self.assertEqual(q.select[0].expr.args, [Attr("duration"),
+                                                 Lit("t:0.5")])
+
+    def test_aparse_facet(self):
+        q = parse_nrql("SELECT count(*) FROM Log "
+                       "FACET aparse(message, '%[TOPIC:*]%')")
+        fn = q.facet[0].expr
+        self.assertEqual(fn, Func("aparse", args=[Attr("message"),
+                                                  Lit("%[TOPIC:*]%")]))
+
+    def test_aparse_with_alias(self):
+        q = parse_nrql("SELECT count(*) FROM Log "
+                       "FACET aparse(message, '%[TOPIC:*]%') AS topic")
+        self.assertEqual(q.facet[0].alias, "topic")
+
+    def test_capture_raw_regex_keeps_backslashes(self):
+        q = parse_nrql(
+            "SELECT count(*) FROM Log "
+            "FACET capture(message, r'\\[TOPIC:(?P<topic>[^\\]]*)\\]')")
+        fn = q.facet[0].expr
+        self.assertEqual(fn.name, "capture")
+        self.assertEqual(fn.args, [
+            Attr("message"), Lit("\\[TOPIC:(?P<topic>[^\\]]*)\\]")])
+
+    def test_capture_plain_string_regex(self):
+        q = parse_nrql("SELECT count(*) FROM Log "
+                       "FACET capture(message, '(?P<code>[0-9]+)')")
+        self.assertEqual(q.facet[0].expr.args[1], Lit("(?P<code>[0-9]+)"))
+
+    def test_raw_string_tokenizes_as_string(self):
+        toks = tokenize("r'a\\d' R'b'")
+        self.assertEqual([(t.kind, t.text) for t in toks],
+                         [("string", "r'a\\d'"), ("string", "R'b'")])
+        self.assertEqual(_unquote_string("r'a\\d'"), "a\\d")
+        self.assertEqual(_unquote_string("r'it''s'"), "it's")
+
+    def test_identifier_named_r_is_still_an_identifier(self):
+        q = parse_nrql("SELECT r FROM T WHERE r = 'x'")
+        self.assertEqual(q.select[0].expr, Attr("r"))
+        self.assertEqual(q.where, Cmp(Attr("r"), "=", Lit("x")))
+
+    def test_tuple_facet(self):
+        q = parse_nrql("SELECT count(*) FROM Log FACET tuple(host, level)")
+        self.assertEqual(q.facet[0].expr,
+                         Func("tuple", args=[Attr("host"), Attr("level")]))
+
+    def test_select_tuple(self):
+        q = parse_nrql("SELECT uniqueCount(tuple(a, b)) FROM Log")
+        self.assertEqual(q.select[0].expr.args[0].name, "tuple")
+
+
+class MetricFormatTests(unittest.TestCase):
+    def test_with_metric_format_unquoted(self):
+        q = parse_nrql("SELECT sum(acme_backend.orders) FROM Metric "
+                       "WITH METRIC_FORMAT 'acme.{name}' TIMESERIES")
+        self.assertEqual(q.metric_format, "acme.{name}")
+        self.assertIsNotNone(q.timeseries)
+        self.assertEqual(q.extras, [])
+
+    def test_with_metric_format_bare(self):
+        q = parse_nrql("SELECT sum(x) FROM Metric WITH METRIC_FORMAT "
+                       "acme.{name}")
+        self.assertEqual(q.metric_format, "acme.{name}")
+
+
+class CalendarFunctionTests(unittest.TestCase):
+    def test_facet_dateof_keeps_node_and_adds_extras_note(self):
+        q = parse_nrql("SELECT count(*) FROM Log FACET dateOf(timestamp)")
+        self.assertEqual(q.facet[0].expr,
+                         Func("dateof", args=[Attr("timestamp")]))
+        self.assertEqual(len(q.extras), 1)
+        self.assertTrue(q.extras[0].startswith("dateof(timestamp)"))
+        self.assertIn("no Grafana equivalent", q.extras[0])
+
+    def test_hourof_and_weekof_each_noted(self):
+        q = parse_nrql("SELECT count(*) FROM Log "
+                       "FACET hourOf(timestamp), weekOf(timestamp)")
+        self.assertEqual([e.split(" ")[0] for e in q.extras],
+                         ["hourof(timestamp)", "weekof(timestamp)"])
+
+    def test_calendar_function_in_select(self):
+        q = parse_nrql("SELECT dateOf(timestamp), count(*) FROM Log")
+        self.assertEqual(len(q.extras), 1)
+
+    def test_same_function_noted_once(self):
+        q = parse_nrql("SELECT count(*) FROM Log "
+                       "FACET dateOf(timestamp), dateOf(created)")
+        self.assertEqual(len(q.extras), 1)
+
+    def test_ordinary_functions_do_not_add_extras(self):
+        q = parse_nrql("SELECT count(*) FROM Log FACET string(host), "
+                       "cases(WHERE a = 1)")
+        self.assertEqual(q.extras, [])
+
+    def test_no_python_repr_in_note(self):
+        q = parse_nrql("SELECT count(*) FROM Log "
+                       "FACET weekOf(timestamp, 'UTC')")
+        self.assertNotIn("Attr(", q.extras[0])
+        self.assertNotIn("Lit(", q.extras[0])
+        self.assertNotIn("Func(", q.extras[0])
+
+
+class MultiStatementTests(unittest.TestCase):
+    """Two SELECTs in one string: first parsed, second -> extras + note."""
+
+    def test_second_select_goes_to_extras(self):
+        q = parse_nrql("SELECT count(*) FROM Log WHERE a = 1 "
+                       "SELECT count(*) FROM Log WHERE b = 2")
+        # The first statement's WHERE must NOT be overwritten.
+        self.assertEqual(q.where, Cmp(Attr("a"), "=", Lit(1)))
+        self.assertEqual(q.extras,
+                         ["SELECT count(*) FROM Log WHERE b = 2"])
+        self.assertEqual(len(q.notes), 1)
+        self.assertIn("more than one statement", q.notes[0])
+
+    def test_semicolon_separated(self):
+        q = parse_nrql("SELECT count(*) FROM Log WHERE a = 1; "
+                       "SELECT count(*) FROM Log WHERE b = 2;")
+        self.assertEqual(q.where, Cmp(Attr("a"), "=", Lit(1)))
+        self.assertEqual(q.extras,
+                         ["SELECT count(*) FROM Log WHERE b = 2"])
+
+    def test_trailing_semicolon_alone_is_ignored(self):
+        q = parse_nrql("SELECT count(*) FROM Log SINCE 1 hour ago;")
+        self.assertEqual(q.since, "1 hour ago")
+        self.assertEqual(q.extras, [])
+        self.assertEqual(q.notes, [])
+
+    def test_from_first_restart(self):
+        q = parse_nrql("SELECT count(*) FROM Log WHERE a = 1 "
+                       "FROM Log SELECT count(*) WHERE b = 2")
+        self.assertEqual(q.where, Cmp(Attr("a"), "=", Lit(1)))
+        self.assertEqual(q.extras, ["FROM Log SELECT count(*) WHERE b = 2"])
+
+    def test_second_statement_text_is_comment_free(self):
+        q = parse_nrql("SELECT count(*) FROM Log\n"
+                       "-- second query\n"
+                       "SELECT count(*) FROM Log -- tail\n"
+                       "WHERE b = 2")
+        self.assertEqual(q.extras, ["SELECT count(*) FROM Log WHERE b = 2"])
+
+    def test_late_from_still_honored(self):
+        # Regression guard for the pre-existing late-FROM path.
+        q = parse_nrql("SELECT count(*) WHERE a = 1 FROM Log")
+        self.assertEqual(q.from_, ["Log"])
+        self.assertEqual(q.extras, [])
 
 
 if __name__ == "__main__":

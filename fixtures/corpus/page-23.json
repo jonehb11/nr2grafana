@@ -1,0 +1,223 @@
+{
+ "schema": 1,
+ "page": "TPS and Capacity",
+ "widgets": [
+  {
+   "id": "p23-w001",
+   "title": "Acme TPS",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "select rate(count(duration), 1 second) as '' FROM Transaction where appName = 'acme-backend (prod)' and name not in ('<REDACTED_BLOB>.middleware:CorsMiddleware', 'WebTransaction/Function/acme_backend.common.middleware.request_healthcheck_middleware:RequestHealthcheckMiddleware') facet name order by duration desc limit max timeseries"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (http_route)(rate(http_server_request_duration_seconds_count{service_name=\"acme-backend (prod)\",http_route!~\"<REDACTED_BLOB>\\\\.middleware:CorsMiddleware|WebTransaction/Function/acme_backend\\\\.common\\\\.middleware\\\\.request_healthcheck_middleware:RequestHealthcheckMiddleware\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "NR transaction `name` mapped to the http_route label; NR names (WebTransaction/...) differ from route patterns \u2014 verify the matcher value",
+     "FACET on transaction name grouped by http_route on semconv HTTP metrics",
+     "FROM Transaction mapped to OTel HTTP server metrics (http_server_request_duration_seconds); requires the service to be OTel-instrumented",
+     "OTel semconv HTTP server duration histogram",
+     "unit:short",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high",
+     "ORDER BY is not preserved in the query; topk() sorts by value \u2014 use panel sorting for other orderings"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (http_route)(rate(acme_backend_http_request_duration_mean_count{job=\"acme-backend\",http_route!~\"corsheaders\\\\.middleware:CorsMiddleware|acme_backend\\\\.common\\\\.middleware\\\\.request_healthcheck_middleware:RequestHealthcheckMiddleware\"}[$__rate_interval]))"
+    }
+   ]
+  },
+  {
+   "id": "p23-w002",
+   "title": "Capacity Needed",
+   "visualization": "viz.table",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT (select percentile(duration, 99.5) FROM Transaction where appName = 'acme-backend (prod)' AND transactionType = 'Web' and name not in ('WebTransaction/Function/acme_backend.common.middleware.request_healthcheck_middleware:RequestHealthcheckMiddleware', '<REDACTED_BLOB>.middleware:CorsMiddleware')) * (select rate(count(duration), 1 second) FROM Transaction where appName = 'acme-backend (prod)' AND transactionType = 'Web' and name not in ('WebTransaction/Function/acme_backend.common.middleware.request_healthcheck_middleware:RequestHealthcheckMiddleware', '<REDACTED_BLOB>.middleware:CorsMiddleware')) as 'Capacity Needed', (SELECT max(k8s.deployment.podsAvailable) * 8 from Metric where k8s.deploymentName = 'acme-backend-public-prd') as 'Max Capacity'"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "NRQL could not be parsed: unexpected token '(' near: ...LECT (select percentile(durati"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p23-w003",
+   "title": "Backend Query Latency (s)",
+   "visualization": "viz.bar",
+   "grafana_type": "bargauge",
+   "nrql": [
+    "select average(databaseDuration) FROM Transaction where (appName = 'acme-backend (prod)') AND (transactionType = 'Web') facet name order by databaseDuration desc"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum by (http_route)(rate(http_server_request_duration_seconds_sum{service_name=\"acme-backend (prod)\",transactionType=\"Web\"}[$__range])) / sum by (http_route)(rate(http_server_request_duration_seconds_count{service_name=\"acme-backend (prod)\",transactionType=\"Web\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "attribute 'transactionType' not in label_map; used 'transactionType' \u2014 verify the label exists in your stack",
+     "FACET on transaction name grouped by http_route on semconv HTTP metrics",
+     "FROM Transaction mapped to OTel HTTP server metrics (http_server_request_duration_seconds); requires the service to be OTel-instrumented",
+     "OTel semconv HTTP server duration histogram",
+     "unit:s",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high",
+     "ORDER BY is not preserved in the query; topk() sorts by value \u2014 use panel sorting for other orderings"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (http_route)(rate(db_client_operation_duration_seconds_sum{job=\"acme-backend\"}[$__range])) / sum by (http_route)(rate(db_client_operation_duration_seconds_count{job=\"acme-backend\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p23-w004",
+   "title": "Acme 500 Errors",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT count(response.status) as ' ' FROM TransactionError WHERE (appName = 'acme-backend (prod)') and response.status = '500'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum(increase(http_server_request_duration_seconds_count{service_name=\"acme-backend (prod)\",http_response_status_code=\"500\",http_response_status_code=~\"5..\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "FROM TransactionError approximated as 5xx responses; adjust if your NR error config counted 4xx too",
+     "OTel semconv HTTP server duration histogram",
+     "unit:short"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(increase(acme_backend_http_request_duration_mean_count{job=\"acme-backend\",http_response_status_code=\"500\",http_response_status_code=~\"5..\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p23-w005",
+   "title": "Guardian Queries",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT average(`acme_backend.guardian.query.duration.median`) FROM Metric where clusterName = 'acme-cluster-prod' FACET query_name SINCE 30 MINUTES AGO TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (query_name)(rate(acme_backend_guardian_query_duration_median_sum{cluster=\"acme-cluster-prod\"}[$__rate_interval])) / sum by (query_name)(rate(acme_backend_guardian_query_duration_median_count{cluster=\"acme-cluster-prod\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'query_name' not in label_map; used 'query_name'",
+     "name suggests a duration histogram; verify 'acme_backend_guardian_query_duration_median' type in Mimir",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high",
+     "timefrom:now-30m"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (query_name)(rate(acme_backend_guardian_query_duration_median_sum{cluster=\"acme-cluster-test\"}[$__rate_interval])) / sum by (query_name)(rate(acme_backend_guardian_query_duration_median_count{cluster=\"acme-cluster-test\"}[$__rate_interval]))"
+    }
+   ]
+  },
+  {
+   "id": "p23-w006",
+   "title": "Acme TPS",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "select rate(count(apm.service.transaction.duration), 1 second) as '' FROM Metric where (appName = 'acme-backend (prod)') AND (transactionType = 'Web')"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum(rate(apm_service_transaction_duration_total{service_name=\"acme-backend (prod)\",transactionType=\"Web\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "attribute 'transactionType' not in label_map; used 'transactionType' \u2014 verify the label exists in your stack",
+     "assumed counter 'apm_service_transaction_duration_total'; verify name/type in Mimir (/api/v1/metadata)",
+     "unit:short"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(rate(acme_backend_http_request_duration_mean_count{job=\"acme-backend\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p23-w007",
+   "title": "Slow API TPS",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "select rate(count(duration), 1 second) as '' FROM Transaction where appName = 'acme-backend (prod)' and duration > 1 facet name order by duration desc limit max timeseries"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (http_route)(rate(http_server_request_duration_seconds_count{service_name=\"acme-backend (prod)\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'duration' not in label_map; used 'duration' \u2014 verify the label exists in your stack",
+     "numeric comparison duration > 1 cannot become a label matcher; dropped \u2014 apply it manually",
+     "FACET on transaction name grouped by http_route on semconv HTTP metrics",
+     "FROM Transaction mapped to OTel HTTP server metrics (http_server_request_duration_seconds); requires the service to be OTel-instrumented",
+     "OTel semconv HTTP server duration histogram",
+     "unit:short",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high",
+     "ORDER BY is not preserved in the query; topk() sorts by value \u2014 use panel sorting for other orderings"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (http_route)(rate(acme_backend_http_request_duration_mean_count{job=\"acme-backend\"}[$__rate_interval]))"
+    }
+   ]
+  }
+ ]
+}

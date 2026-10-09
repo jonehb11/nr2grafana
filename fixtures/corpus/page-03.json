@@ -1,0 +1,1273 @@
+{
+ "schema": 1,
+ "page": "Camunda",
+ "widgets": [
+  {
+   "id": "p03-w001",
+   "title": "(untitled)",
+   "visualization": "viz.markdown",
+   "grafana_type": "text",
+   "nrql": [],
+   "before": {
+    "confidence": "exact",
+    "queries": [],
+    "notes": []
+   },
+   "expected": []
+  },
+  {
+   "id": "p03-w002",
+   "title": "External Task Queue Size",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT average(acme_backend.camunda.external_task.in_queue) FROM Metric WHERE clusterName = concat('acme-cluster-', {{env}}) and camunda_instance in ({{camundaInstance}}) FACET camunda_instance TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg by (camunda_instance)(avg_over_time(acme_backend_camunda_external_task_in_queue{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",camunda_instance=~\"${camundaInstance:regex}\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'camunda_instance' not in label_map; used 'camunda_instance' \u2014 verify the label exists in your stack",
+     "FACET attribute 'camunda_instance' not in label_map; used 'camunda_instance'",
+     "assumed gauge 'acme_backend_camunda_external_task_in_queue'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "avg by (camunda_instance)(avg_over_time(acme_backend_camunda_external_task_in_queue{camunda_instance=~\"${camundaInstance:regex}\"}[$__rate_interval]))"
+    }
+   ]
+  },
+  {
+   "id": "p03-w003",
+   "title": "Successful External Tasks",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "FROM Metric select sum(acme_backend.handle_task_with_worker) where success='true' and clusterName= concat('acme-cluster-', {{env}}) AND camunda_instance in ({{camundaInstance}}) facet task TIMESERIES auto"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (task)(avg_over_time(acme_backend_handle_task_with_worker{success=\"true\",cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",camunda_instance=~\"${camundaInstance:regex}\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'success' not in label_map; used 'success' \u2014 verify the label exists in your stack",
+     "attribute 'camunda_instance' not in label_map; used 'camunda_instance' \u2014 verify the label exists in your stack",
+     "FACET attribute 'task' not in label_map; used 'task'",
+     "assumed gauge 'acme_backend_handle_task_with_worker'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (task)(rate(acme_backend_handle_task_with_worker_total{success=\"true\",camunda_instance=~\"${camundaInstance:regex}\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p03-w004",
+   "title": "Failed External Tasks",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "FROM Metric select sum(acme_backend.handle_task_with_worker) where success='false' and clusterName=concat('acme-cluster-', {{env}}) AND camunda_instance in ({{camundaInstance}}) facet task limit MAX TIMESERIES auto"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (task)(avg_over_time(acme_backend_handle_task_with_worker{success=\"false\",cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",camunda_instance=~\"${camundaInstance:regex}\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'success' not in label_map; used 'success' \u2014 verify the label exists in your stack",
+     "attribute 'camunda_instance' not in label_map; used 'camunda_instance' \u2014 verify the label exists in your stack",
+     "FACET attribute 'task' not in label_map; used 'task'",
+     "assumed gauge 'acme_backend_handle_task_with_worker'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (task)(rate(acme_backend_handle_task_with_worker_total{success=\"false\",camunda_instance=~\"${camundaInstance:regex}\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p03-w005",
+   "title": "Processes Started",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.hub_workflow_service.call_count) FROM Metric where method = `start_process` AND camunda_instance in ({{camundaInstance}}) TIMESERIES SINCE 1800 seconds ago WHERE clusterName = concat('acme-cluster-', {{env}})"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(avg_over_time(acme_backend_hub_workflow_service_call_count{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_hub_workflow_service_call_count'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(avg_over_time(acme_backend_hub_workflow_service_call_count[$__rate_interval]))"
+    }
+   ]
+  },
+  {
+   "id": "p03-w006",
+   "title": "Workflow Creation",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT count(newrelic.timeslice.value) AS `Workflows Created` FROM Metric WHERE metricTimesliceName LIKE 'Custom/workflow_%/created' and metricTimesliceName not like 'Custom/workflow_%task%/created' and appName in ({{camundaAppName}}) and k8s.clusterName = concat('acme-cluster-', {{env}})  TIMESERIES FACET metricTimesliceName SINCE 1800 seconds ago"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (metricTimesliceName)(increase(newrelic_timeslice_value_total{metricTimesliceName=~\"(?i)Custom/workflow..*/created\",metricTimesliceName!~\"(?i)Custom/workflow..*task.*/created\",service_name=~\"${camundaAppName:regex}\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'metricTimesliceName' not in label_map; used 'metricTimesliceName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "FACET attribute 'metricTimesliceName' not in label_map; used 'metricTimesliceName'",
+     "assumed counter 'newrelic_timeslice_value_total'; verify name/type in Mimir (/api/v1/metadata)",
+     "unit:short",
+     "count() on a Metric counter emitted as the summed increase (event count); NRQL count() strictly counts datapoints \u2014 use sum() in NR to compare like for like",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p03-w007",
+   "title": "Top External Service Tasks",
+   "visualization": "viz.bar",
+   "grafana_type": "bargauge",
+   "nrql": [
+    "FROM Metric select sum(acme_backend.handle_task_with_worker) where clusterName= concat('acme-cluster-', {{env}}) AND camunda_instance in ({{camundaInstance}}) facet task limit 20"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "topk(20, sum by (task)(avg_over_time(acme_backend_handle_task_with_worker{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",camunda_instance=~\"${camundaInstance:regex}\"}[$__range])))"
+     }
+    ],
+    "notes": [
+     "attribute 'camunda_instance' not in label_map; used 'camunda_instance' \u2014 verify the label exists in your stack",
+     "FACET attribute 'task' not in label_map; used 'task'",
+     "assumed gauge 'acme_backend_handle_task_with_worker'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "topk(20, sum by (task)(increase(acme_backend_handle_task_with_worker_total{camunda_instance=~\"${camundaInstance:regex}\"}[$__range])))"
+    }
+   ]
+  },
+  {
+   "id": "p03-w008",
+   "title": "(untitled)",
+   "visualization": "viz.markdown",
+   "grafana_type": "text",
+   "nrql": [],
+   "before": {
+    "confidence": "exact",
+    "queries": [],
+    "notes": []
+   },
+   "expected": []
+  },
+  {
+   "id": "p03-w009",
+   "title": "External Task Queue Size",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT average(acme_backend.camunda.external_task.in_queue) FROM Metric WHERE clusterName = concat('acme-cluster-', {{env}}) and camunda_instance in ({{camundaInstance}}) FACET camunda_instance TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg by (camunda_instance)(avg_over_time(acme_backend_camunda_external_task_in_queue{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",camunda_instance=~\"${camundaInstance:regex}\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'camunda_instance' not in label_map; used 'camunda_instance' \u2014 verify the label exists in your stack",
+     "FACET attribute 'camunda_instance' not in label_map; used 'camunda_instance'",
+     "assumed gauge 'acme_backend_camunda_external_task_in_queue'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "avg by (camunda_instance)(avg_over_time(acme_backend_camunda_external_task_in_queue{camunda_instance=~\"${camundaInstance:regex}\"}[$__rate_interval]))"
+    }
+   ]
+  },
+  {
+   "id": "p03-w010",
+   "title": "External Task Threshold",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT average(acme_backend.camunda.external_task.threshold) as `Task Threshold` FROM Metric SINCE 1800 seconds ago WHERE clusterName = concat('acme-cluster-', {{env}})"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "avg(avg_over_time(acme_backend_camunda_external_task_threshold{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_camunda_external_task_threshold'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "avg(avg_over_time(acme_backend_camunda_external_task_threshold[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p03-w011",
+   "title": "Acme External Task Queue Top Topics",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT average(acme_backend.camunda.external_task.topic_count) FROM Metric WHERE clusterName = concat('acme-cluster-', {{env}}) and camunda_instance in ({{camundaInstance}}) FACET camunda_instance, topic TIMESERIES LIMIT 5"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "topk(5, avg by (camunda_instance, topic)(avg_over_time(acme_backend_camunda_external_task_topic_count{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",camunda_instance=~\"${camundaInstance:regex}\"}[$__rate_interval])))"
+     }
+    ],
+    "notes": [
+     "attribute 'camunda_instance' not in label_map; used 'camunda_instance' \u2014 verify the label exists in your stack",
+     "FACET attribute 'camunda_instance' not in label_map; used 'camunda_instance'",
+     "assumed gauge 'acme_backend_camunda_external_task_topic_count'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "FACET LIMIT 5 became topk(5, ...); on range queries topk is evaluated per step so series may flicker"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "topk(5, avg by (camunda_instance, topic)(avg_over_time(acme_backend_camunda_external_task_topic_count{camunda_instance=~\"${camundaInstance:regex}\"}[$__rate_interval])))"
+    }
+   ]
+  },
+  {
+   "id": "p03-w012",
+   "title": "Acme External Task Queue Size",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT average(acme_backend.camunda.external_task.in_acme_queue) FROM Metric WHERE clusterName = concat('acme-cluster-', {{env}}) and camunda_instance in ({{camundaInstance}}) FACET camunda_instance TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg by (camunda_instance)(avg_over_time(acme_backend_camunda_external_task_in_acme_queue{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",camunda_instance=~\"${camundaInstance:regex}\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'camunda_instance' not in label_map; used 'camunda_instance' \u2014 verify the label exists in your stack",
+     "FACET attribute 'camunda_instance' not in label_map; used 'camunda_instance'",
+     "assumed gauge 'acme_backend_camunda_external_task_in_acme_queue'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "avg by (camunda_instance)(avg_over_time(acme_backend_camunda_external_task_in_acme_queue{camunda_instance=~\"${camundaInstance:regex}\"}[$__rate_interval]))"
+    }
+   ]
+  },
+  {
+   "id": "p03-w013",
+   "title": "Tasks Duration (Average)",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT average(acme_backend.camunda_external_task_worker_tasks_processed_duration.mean) FROM Metric WHERE clusterName = concat('acme-cluster-', {{env}}) and camunda_instance in ({{camundaInstance}}) FACET camunda_instance, topic TIMESERIES SINCE 1800 seconds ago "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (camunda_instance, topic)(rate(acme_backend_camunda_external_task_worker_tasks_processed_duration_mean_sum{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",camunda_instance=~\"${camundaInstance:regex}\"}[$__rate_interval])) / sum by (camunda_instance, topic)(rate(acme_backend_camunda_external_task_worker_tasks_processed_duration_mean_count{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",camunda_instance=~\"${camundaInstance:regex}\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'camunda_instance' not in label_map; used 'camunda_instance' \u2014 verify the label exists in your stack",
+     "FACET attribute 'camunda_instance' not in label_map; used 'camunda_instance'",
+     "name suggests a duration histogram; verify 'acme_backend_camunda_external_task_worker_tasks_processed_duration_mean' type in Mimir",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (camunda_instance, topic)(rate(acme_backend_camunda_external_task_worker_tasks_processed_duration_mean_sum{camunda_instance=~\"${camundaInstance:regex}\"}[$__rate_interval])) / sum by (camunda_instance, topic)(rate(acme_backend_camunda_external_task_worker_tasks_processed_duration_mean_count{camunda_instance=~\"${camundaInstance:regex}\"}[$__rate_interval]))"
+    }
+   ]
+  },
+  {
+   "id": "p03-w014",
+   "title": "Fetch Count Per Request (Max 10)",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT average(acme_backend.camunda_external_task_worker_fetch_count) FROM Metric WHERE clusterName = concat('acme-cluster-', {{env}}) and camunda_instance in ({{camundaInstance}}) FACET camunda_instance TIMESERIES SINCE 1800 seconds ago "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg by (camunda_instance)(avg_over_time(acme_backend_camunda_external_task_worker_fetch_count{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",camunda_instance=~\"${camundaInstance:regex}\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'camunda_instance' not in label_map; used 'camunda_instance' \u2014 verify the label exists in your stack",
+     "FACET attribute 'camunda_instance' not in label_map; used 'camunda_instance'",
+     "assumed gauge 'acme_backend_camunda_external_task_worker_fetch_count'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "avg by (camunda_instance)(avg_over_time(acme_backend_camunda_external_task_worker_fetch_count{camunda_instance=~\"${camundaInstance:regex}\"}[$__rate_interval]))"
+    }
+   ]
+  },
+  {
+   "id": "p03-w015",
+   "title": "External Task Fetch Delay",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT average(acme_backend.camunda_external_task_worker_fetch_delay) FROM Metric WHERE clusterName = concat('acme-cluster-', {{env}}) and camunda_instance in ({{camundaInstance}}) FACET camunda_instance TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg by (camunda_instance)(avg_over_time(acme_backend_camunda_external_task_worker_fetch_delay{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",camunda_instance=~\"${camundaInstance:regex}\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'camunda_instance' not in label_map; used 'camunda_instance' \u2014 verify the label exists in your stack",
+     "FACET attribute 'camunda_instance' not in label_map; used 'camunda_instance'",
+     "assumed gauge 'acme_backend_camunda_external_task_worker_fetch_delay'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "avg by (camunda_instance)(avg_over_time(acme_backend_camunda_external_task_worker_fetch_delay{camunda_instance=~\"${camundaInstance:regex}\"}[$__rate_interval]))"
+    }
+   ]
+  },
+  {
+   "id": "p03-w016",
+   "title": "Tasks Count (New Instance)",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT count(acme_backend.camunda_external_task_worker_tasks_processed_duration.summary) FROM Metric WHERE clusterName = concat('acme-cluster-', {{env}}) and camunda_instance in ({{camundaInstance}})  and topic != 'all' FACET topic TIMESERIES limit 50"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "topk(50, sum by (topic)(increase(acme_backend_camunda_external_task_worker_tasks_processed_duration_summary_total{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",camunda_instance=~\"${camundaInstance:regex}\",topic!=\"all\"}[$__rate_interval])))"
+     }
+    ],
+    "notes": [
+     "attribute 'camunda_instance' not in label_map; used 'camunda_instance' \u2014 verify the label exists in your stack",
+     "assumed counter 'acme_backend_camunda_external_task_worker_tasks_processed_duration_summary_total'; verify name/type in Mimir (/api/v1/metadata)",
+     "unit:short",
+     "count() on a Metric counter emitted as the summed increase (event count); NRQL count() strictly counts datapoints \u2014 use sum() in NR to compare like for like",
+     "FACET LIMIT 50 became topk(50, ...); on range queries topk is evaluated per step so series may flicker"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "topk(50, sum by (topic)(rate(acme_backend_camunda_external_task_worker_tasks_processed_duration_summary_count{camunda_instance=~\"${camundaInstance:regex}\",topic!=\"all\"}[$__rate_interval])) * $__interval_ms / 1000)"
+    }
+   ]
+  },
+  {
+   "id": "p03-w017",
+   "title": "External Task Worker Empty Receives",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT average(acme_backend.camunda_external_task_worker_empty_receive) FROM Metric WHERE clusterName = concat('acme-cluster-', {{env}}) and camunda_instance in ({{camundaInstance}}) FACET camunda_instance TIMESERIES SINCE 1800 seconds ago "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg by (camunda_instance)(avg_over_time(acme_backend_camunda_external_task_worker_empty_receive{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",camunda_instance=~\"${camundaInstance:regex}\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'camunda_instance' not in label_map; used 'camunda_instance' \u2014 verify the label exists in your stack",
+     "FACET attribute 'camunda_instance' not in label_map; used 'camunda_instance'",
+     "assumed gauge 'acme_backend_camunda_external_task_worker_empty_receive'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "avg by (camunda_instance)(avg_over_time(acme_backend_camunda_external_task_worker_empty_receive{camunda_instance=~\"${camundaInstance:regex}\"}[$__rate_interval]))"
+    }
+   ]
+  },
+  {
+   "id": "p03-w018",
+   "title": "Tasks Processed",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.camunda_external_task_worker_tasks_processed) FROM Metric WHERE clusterName = concat('acme-cluster-', {{env}}) and camunda_instance in ({{camundaInstance}}) FACET camunda_instance TIMESERIES SINCE 1800 seconds ago "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (camunda_instance)(avg_over_time(acme_backend_camunda_external_task_worker_tasks_processed{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",camunda_instance=~\"${camundaInstance:regex}\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'camunda_instance' not in label_map; used 'camunda_instance' \u2014 verify the label exists in your stack",
+     "FACET attribute 'camunda_instance' not in label_map; used 'camunda_instance'",
+     "assumed gauge 'acme_backend_camunda_external_task_worker_tasks_processed'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (camunda_instance)(rate(acme_backend_camunda_external_task_worker_tasks_processed_total{camunda_instance=~\"${camundaInstance:regex}\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p03-w019",
+   "title": "Tasks Processed-count",
+   "visualization": "viz.bar",
+   "grafana_type": "bargauge",
+   "nrql": [
+    "SELECT sum(acme_backend.camunda_external_task_worker_tasks_processed) FROM Metric WHERE clusterName = concat('acme-cluster-', {{env}}) and camunda_instance in ({{camundaInstance}}) FACET camunda_instance "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum by (camunda_instance)(avg_over_time(acme_backend_camunda_external_task_worker_tasks_processed{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",camunda_instance=~\"${camundaInstance:regex}\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "attribute 'camunda_instance' not in label_map; used 'camunda_instance' \u2014 verify the label exists in your stack",
+     "FACET attribute 'camunda_instance' not in label_map; used 'camunda_instance'",
+     "assumed gauge 'acme_backend_camunda_external_task_worker_tasks_processed'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (camunda_instance)(increase(acme_backend_camunda_external_task_worker_tasks_processed_total{camunda_instance=~\"${camundaInstance:regex}\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p03-w020",
+   "title": "fetchAndLock Client Duration p90 (ms)",
+   "visualization": "viz.line",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT\n  average(acme_backend.camunda_external_task_worker_fetch_duration.upper.percentiles) as 'P90'\n  --average(acme_backend.camunda_external_task_worker_fetch_duration.mean) as 'Avg'\nFROM Metric WHERE clusterName = concat('acme-cluster-', {{env}}) and camunda_instance in ({{camundaInstance}}) \nFACET camunda_instance TIMESERIES"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "NRQL could not be parsed: unexpected character '-' near: ...0'\n  --average(acme_backend.c"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (camunda_instance)(rate(acme_backend_camunda_external_task_worker_fetch_duration_upper_percentiles_sum{camunda_instance=~\"${camundaInstance:regex}\"}[$__rate_interval])) / sum by (camunda_instance)(rate(acme_backend_camunda_external_task_worker_fetch_duration_upper_percentiles_count{camunda_instance=~\"${camundaInstance:regex}\"}[$__rate_interval]))"
+    }
+   ]
+  },
+  {
+   "id": "p03-w021",
+   "title": "*External Task DB Query time (aka Fetch and Lock)",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT average(apm.service.datastore.operation.duration * 1000) FROM Metric WHERE (entity.guid = '<REDACTED_BLOB>') AND ((`db.operation` = 'select' AND `db.sql.table` = 'act_ru_ext_task' AND `db.system` = 'Postgres')) FACET `db.system`, `db.sql.table`, `db.operation` LIMIT 5 SINCE 1800 seconds AGO TIMESERIES "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "topk(5, sum by (db_system, db_sql_table, db_operation)(rate(apm_service_datastore_operation_duration_sum{entity_guid=\"<REDACTED_BLOB>\",db_operation=\"select\",db_sql_table=\"act_ru_ext_task\",db_system=\"Postgres\"}[$__rate_interval])) / sum by (db_system, db_sql_table, db_operation)(rate(apm_service_datastore_operation_duration_count{entity_guid=\"<REDACTED_BLOB>\",db_operation=\"select\",db_sql_table=\"act_ru_ext_task\",db_system=\"Postgres\"}[$__rate_interval])))"
+     }
+    ],
+    "notes": [
+     "attribute 'entity.guid' not in label_map; used 'entity_guid' \u2014 verify the label exists in your stack",
+     "attribute 'db.operation' not in label_map; used 'db_operation' \u2014 verify the label exists in your stack",
+     "attribute 'db.sql.table' not in label_map; used 'db_sql_table' \u2014 verify the label exists in your stack",
+     "attribute 'db.system' not in label_map; used 'db_system' \u2014 verify the label exists in your stack",
+     "FACET attribute 'db.system' not in label_map; used 'db_system'",
+     "FACET attribute 'db.sql.table' not in label_map; used 'db_sql_table'",
+     "FACET attribute 'db.operation' not in label_map; used 'db_operation'",
+     "name suggests a duration histogram; verify 'apm_service_datastore_operation_duration' type in Mimir",
+     "FACET LIMIT 5 became topk(5, ...); on range queries topk is evaluated per step so series may flicker",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "(topk(5, sum by (db_system, db_sql_table, db_operation)(rate(db_client_operation_duration_seconds_sum{service_name_instance=\"<REDACTED_ENTITY>\",db_operation=\"select\",db_sql_table=\"act_ru_ext_task\",db_system=\"Postgres\"}[$__rate_interval])) / sum by (db_system, db_sql_table, db_operation)(rate(db_client_operation_duration_seconds_count{service_name_instance=\"<REDACTED_ENTITY>\",db_operation=\"select\",db_sql_table=\"act_ru_ext_task\",db_system=\"Postgres\"}[$__rate_interval])))) * 1000"
+    }
+   ]
+  },
+  {
+   "id": "p03-w022",
+   "title": "(untitled)",
+   "visualization": "viz.markdown",
+   "grafana_type": "text",
+   "nrql": [],
+   "before": {
+    "confidence": "exact",
+    "queries": [],
+    "notes": []
+   },
+   "expected": []
+  },
+  {
+   "id": "p03-w023",
+   "title": "Workflow Creation",
+   "visualization": "viz.bar",
+   "grafana_type": "bargauge",
+   "nrql": [
+    "SELECT count(newrelic.timeslice.value) AS `Workflows Created` FROM Metric WHERE metricTimesliceName LIKE 'Custom/workflow_%/created' and metricTimesliceName not like 'Custom/workflow_%task%/created' and appName in ({{camundaAppName}}) and k8s.clusterName = concat('acme-cluster-', {{env}}) FACET metricTimesliceName SINCE 1800 seconds ago"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum by (metricTimesliceName)(increase(newrelic_timeslice_value_total{metricTimesliceName=~\"(?i)Custom/workflow..*/created\",metricTimesliceName!~\"(?i)Custom/workflow..*task.*/created\",service_name=~\"${camundaAppName:regex}\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "attribute 'metricTimesliceName' not in label_map; used 'metricTimesliceName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "FACET attribute 'metricTimesliceName' not in label_map; used 'metricTimesliceName'",
+     "assumed counter 'newrelic_timeslice_value_total'; verify name/type in Mimir (/api/v1/metadata)",
+     "unit:short",
+     "count() on a Metric counter emitted as the summed increase (event count); NRQL count() strictly counts datapoints \u2014 use sum() in NR to compare like for like",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p03-w024",
+   "title": "Workflow Completion",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT count(newrelic.timeslice.value) AS `Workflows Completed` FROM Metric WHERE metricTimesliceName LIKE 'Custom/workflow_%/completed' and metricTimesliceName not like 'Custom/workflow_%task%/completed' and appName in ({{camundaAppName}}) and k8s.clusterName = concat('acme-cluster-', {{env}}) TIMESERIES FACET metricTimesliceName SINCE 1800 seconds ago"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (metricTimesliceName)(increase(newrelic_timeslice_value_total{metricTimesliceName=~\"(?i)Custom/workflow..*/completed\",metricTimesliceName!~\"(?i)Custom/workflow..*task.*/completed\",service_name=~\"${camundaAppName:regex}\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'metricTimesliceName' not in label_map; used 'metricTimesliceName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "FACET attribute 'metricTimesliceName' not in label_map; used 'metricTimesliceName'",
+     "assumed counter 'newrelic_timeslice_value_total'; verify name/type in Mimir (/api/v1/metadata)",
+     "unit:short",
+     "count() on a Metric counter emitted as the summed increase (event count); NRQL count() strictly counts datapoints \u2014 use sum() in NR to compare like for like",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p03-w025",
+   "title": "Hub Workflow Latency",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT average(acme_backend.hub_workflow_service.call_latency.summary) FROM Metric FACET camunda_instance TIMESERIES SINCE 1800 seconds ago WHERE clusterName = concat('acme-cluster-', {{env}}) and camunda_instance in ({{camundaInstance}}) "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (camunda_instance)(rate(acme_backend_hub_workflow_service_call_latency_summary_sum{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",camunda_instance=~\"${camundaInstance:regex}\"}[$__rate_interval])) / sum by (camunda_instance)(rate(acme_backend_hub_workflow_service_call_latency_summary_count{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",camunda_instance=~\"${camundaInstance:regex}\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'camunda_instance' not in label_map; used 'camunda_instance' \u2014 verify the label exists in your stack",
+     "FACET attribute 'camunda_instance' not in label_map; used 'camunda_instance'",
+     "name suggests a duration histogram; verify 'acme_backend_hub_workflow_service_call_latency_summary' type in Mimir",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (camunda_instance)(rate(acme_backend_hub_workflow_service_call_latency_summary_sum{camunda_instance=~\"${camundaInstance:regex}\"}[$__rate_interval])) / sum by (camunda_instance)(rate(acme_backend_hub_workflow_service_call_latency_summary_count{camunda_instance=~\"${camundaInstance:regex}\"}[$__rate_interval]))"
+    }
+   ]
+  },
+  {
+   "id": "p03-w026",
+   "title": "Succesful Send Message",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.hub_workflow_service.call_count) FROM Metric WHERE method = 'send_message' AND status = 'success' AND clusterName = concat('acme-cluster-', {{env}}) AND camunda_instance in ({{camundaInstance}}) and camunda_instance in ({{camundaInstance}}) FACET message_name TIMESERIES "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (message_name)(avg_over_time(acme_backend_hub_workflow_service_call_count{method=\"send_message\",status=\"success\",cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",camunda_instance=~\"${camundaInstance:regex}\",camunda_instance=~\"${camundaInstance:regex}\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'method' not in label_map; used 'method' \u2014 verify the label exists in your stack",
+     "attribute 'status' not in label_map; used 'status' \u2014 verify the label exists in your stack",
+     "attribute 'camunda_instance' not in label_map; used 'camunda_instance' \u2014 verify the label exists in your stack",
+     "FACET attribute 'message_name' not in label_map; used 'message_name'",
+     "assumed gauge 'acme_backend_hub_workflow_service_call_count'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (message_name)(avg_over_time(acme_backend_hub_workflow_service_call_count{method=\"send_message\",status=\"success\",camunda_instance=~\"${camundaInstance:regex}\"}[$__rate_interval]))"
+    }
+   ]
+  },
+  {
+   "id": "p03-w027",
+   "title": "Failed Send Message",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.hub_workflow_service.call_count) FROM Metric WHERE method = 'send_message' AND status = 'failure' AND clusterName = concat('acme-cluster-', {{env}}) AND camunda_instance in ({{camundaInstance}}) FACET message_name TIMESERIES "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (message_name)(avg_over_time(acme_backend_hub_workflow_service_call_count{method=\"send_message\",status=\"failure\",cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",camunda_instance=~\"${camundaInstance:regex}\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'method' not in label_map; used 'method' \u2014 verify the label exists in your stack",
+     "attribute 'status' not in label_map; used 'status' \u2014 verify the label exists in your stack",
+     "attribute 'camunda_instance' not in label_map; used 'camunda_instance' \u2014 verify the label exists in your stack",
+     "FACET attribute 'message_name' not in label_map; used 'message_name'",
+     "assumed gauge 'acme_backend_hub_workflow_service_call_count'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (message_name)(avg_over_time(acme_backend_hub_workflow_service_call_count{method=\"send_message\",status=\"failure\",camunda_instance=~\"${camundaInstance:regex}\"}[$__rate_interval]))"
+    }
+   ]
+  },
+  {
+   "id": "p03-w028",
+   "title": "Hub Workflow Call by Message",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.hub_workflow_service.call_count) FROM Metric facet `message_name` TIMESERIES SINCE 1800 seconds ago WHERE clusterName = concat('acme-cluster-', {{env}}) AND camunda_instance in ({{camundaInstance}})"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (message_name)(avg_over_time(acme_backend_hub_workflow_service_call_count{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",camunda_instance=~\"${camundaInstance:regex}\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'camunda_instance' not in label_map; used 'camunda_instance' \u2014 verify the label exists in your stack",
+     "FACET attribute 'message_name' not in label_map; used 'message_name'",
+     "assumed gauge 'acme_backend_hub_workflow_service_call_count'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (message_name)(avg_over_time(acme_backend_hub_workflow_service_call_count{camunda_instance=~\"${camundaInstance:regex}\"}[$__rate_interval]))"
+    }
+   ]
+  },
+  {
+   "id": "p03-w029",
+   "title": "Succesful Send Message - Discovery Restart",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.hub_workflow_service.call_count) FROM Metric WHERE method = 'send_message' AND status = 'success' AND clusterName = concat('acme-cluster-', {{env}}) AND camunda_instance in ({{camundaInstance}}) AND message_name = 'Message_Restart_Discovery' AND status = 'success' TIMESERIES "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(avg_over_time(acme_backend_hub_workflow_service_call_count{method=\"send_message\",status=\"success\",cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",camunda_instance=~\"${camundaInstance:regex}\",message_name=\"Message_Restart_Discovery\",status=\"success\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'method' not in label_map; used 'method' \u2014 verify the label exists in your stack",
+     "attribute 'status' not in label_map; used 'status' \u2014 verify the label exists in your stack",
+     "attribute 'camunda_instance' not in label_map; used 'camunda_instance' \u2014 verify the label exists in your stack",
+     "attribute 'message_name' not in label_map; used 'message_name' \u2014 verify the label exists in your stack",
+     "assumed gauge 'acme_backend_hub_workflow_service_call_count'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(avg_over_time(acme_backend_hub_workflow_service_call_count{method=\"send_message\",status=\"success\",camunda_instance=~\"${camundaInstance:regex}\",message_name=\"Message_Restart_Discovery\"}[$__rate_interval]))"
+    }
+   ]
+  },
+  {
+   "id": "p03-w030",
+   "title": "(untitled)",
+   "visualization": "viz.markdown",
+   "grafana_type": "text",
+   "nrql": [],
+   "before": {
+    "confidence": "exact",
+    "queries": [],
+    "notes": []
+   },
+   "expected": []
+  },
+  {
+   "id": "p03-w031",
+   "title": "Camunda Service Task Errors",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "select count(*) FROM Log where message like '[WORKER_ID:%]%' and log_level = 'ERROR' and cluster_name = concat('acme-cluster-', {{env}}) TIMESERIES facet aparse(message, '%[TOPIC:*]%')"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "loki",
+      "type": "range",
+      "expr": "sum(count_over_time({cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"} |~ \"(?i)\\\\[WORKER.ID:.*\\\\].*\" | json | log_level=\"ERROR\" | __error__=\"\" [$__auto]))"
+     }
+    ],
+    "notes": [
+     "attribute 'log_level' not in label_map; used 'log_level' \u2014 verify the label exists in your stack",
+     "FACET aparse(...) has no label equivalent; grouping dropped",
+     "filter on 'log_level' assumes it is a parsed json field in Loki"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "loki",
+     "refId": "A",
+     "expr": "sum by (aparse)(count_over_time({service_name=~\".+\"} |~ \"(?i)\\\\[WORKER.ID:.*\\\\].*\" | regexp \".*\\\\[TOPIC:(?P<aparse>.*)\\\\].*\" | json | log_level=~\"(?i)ERROR\" | __error__=\"\" [$__auto]))"
+    }
+   ]
+  },
+  {
+   "id": "p03-w032",
+   "title": "Camunda Service Task Errors",
+   "visualization": "viz.table",
+   "grafana_type": "table",
+   "nrql": [
+    "select count(*) FROM Log where message like '[WORKER_ID:%]%' and log_level = 'ERROR' and cluster_name = concat('acme-cluster-', {{env}}) facet aparse(message, '%[TOPIC:*]%') as Topic limit 100"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "loki",
+      "type": "instant",
+      "expr": "topk(100, sum(count_over_time({cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"} |~ \"(?i)\\\\[WORKER.ID:.*\\\\].*\" | json | log_level=\"ERROR\" | __error__=\"\" [$__range])))"
+     }
+    ],
+    "notes": [
+     "attribute 'log_level' not in label_map; used 'log_level' \u2014 verify the label exists in your stack",
+     "FACET aparse(...) has no label equivalent; grouping dropped",
+     "filter on 'log_level' assumes it is a parsed json field in Loki"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "loki",
+     "refId": "A",
+     "expr": "topk(100, sum by (aparse)(count_over_time({service_name=~\".+\"} |~ \"(?i)\\\\[WORKER.ID:.*\\\\].*\" | regexp \".*\\\\[TOPIC:(?P<aparse>.*)\\\\].*\" | json | log_level=~\"(?i)ERROR\" | __error__=\"\" [$__range])))"
+    }
+   ]
+  },
+  {
+   "id": "p03-w033",
+   "title": "*Camunda 400/500 Error Count",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT count(*) FROM TransactionError WHERE (entityGuid = '<REDACTED_BLOB>') AND (`error.expected` IS FALSE OR `error.expected` IS NULL) FACET `error.class`, `transactionUiName`, `error.message` LIMIT 5 TIMESERIES SINCE 1800 seconds ago "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "topk(5, sum by (error_type, transactionUiName, error_message)(increase(http_server_request_duration_seconds_count{entityGuid=\"<REDACTED_BLOB>\",http_response_status_code=~\"5..\"}[$__rate_interval])))"
+     }
+    ],
+    "notes": [
+     "attribute 'entityGuid' not in label_map; used 'entityGuid' \u2014 verify the label exists in your stack",
+     "an OR clause in WHERE could not be merged into a single label matcher (different attributes, variables, or mixed predicate shapes); that clause was DROPPED \u2014 verify filter logic",
+     "FACET attribute 'transactionUiName' not in label_map; used 'transactionUiName'",
+     "FACET attribute 'error.message' not in label_map; used 'error_message'",
+     "FROM TransactionError approximated as 5xx responses; adjust if your NR error config counted 4xx too",
+     "OTel semconv HTTP server duration histogram",
+     "unit:short",
+     "FACET LIMIT 5 became topk(5, ...); on range queries topk is evaluated per step so series may flicker",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "topk(5, sum by (error_type, transactionUiName, error_message)(rate(acme_backend_http_request_duration_mean_count{service_name_instance=\"<REDACTED_ENTITY>\",http_response_status_code=~\"5..\"}[$__rate_interval])) * $__interval_ms / 1000)"
+    }
+   ]
+  },
+  {
+   "id": "p03-w034",
+   "title": "Incidents",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT count(newrelic.timeslice.value) FROM Metric WHERE metricTimesliceName LIKE 'Custom/workflow_%/incident_%' AND appName= {{camundaAppName}} and k8s.clusterName = concat('acme-cluster-', {{env}}) FACET metricTimesliceName SINCE 24 HOURS AGO TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (metricTimesliceName)(increase(newrelic_timeslice_value_total{metricTimesliceName=~\"(?i)Custom/workflow..*/incident..*\",service_name=~\"${camundaAppName:regex}\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'metricTimesliceName' not in label_map; used 'metricTimesliceName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "FACET attribute 'metricTimesliceName' not in label_map; used 'metricTimesliceName'",
+     "assumed counter 'newrelic_timeslice_value_total'; verify name/type in Mimir (/api/v1/metadata)",
+     "unit:short",
+     "count() on a Metric counter emitted as the summed increase (event count); NRQL count() strictly counts datapoints \u2014 use sum() in NR to compare like for like",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high",
+     "timefrom:now-24h"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p03-w035",
+   "title": "Hub Workflow Exceptions",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.hub_workflow_service.exception) FROM Metric TIMESERIES SINCE 1800 seconds ago WHERE clusterName = concat('acme-cluster-', {{env}}) AND camunda_instance in ({{camundaInstance}}) FACET task "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (task)(avg_over_time(acme_backend_hub_workflow_service_exception{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",camunda_instance=~\"${camundaInstance:regex}\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'camunda_instance' not in label_map; used 'camunda_instance' \u2014 verify the label exists in your stack",
+     "FACET attribute 'task' not in label_map; used 'task'",
+     "assumed gauge 'acme_backend_hub_workflow_service_exception'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (task)(rate(acme_backend_hub_workflow_service_exception_total{camunda_instance=~\"${camundaInstance:regex}\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p03-w036",
+   "title": "(untitled)",
+   "visualization": "viz.markdown",
+   "grafana_type": "text",
+   "nrql": [],
+   "before": {
+    "confidence": "exact",
+    "queries": [],
+    "notes": []
+   },
+   "expected": []
+  },
+  {
+   "id": "p03-w037",
+   "title": "Started Processes ",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.hub_workflow_service.hub_workflow_started) FROM Metric where camunda_instance in ({{camundaInstance}})  facet camunda_instance,script_type TIMESERIES SINCE 1800 seconds ago WHERE clusterName = concat('acme-cluster-', {{env}})"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (camunda_instance, script_type)(avg_over_time(acme_backend_hub_workflow_service_hub_workflow_started{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'camunda_instance' not in label_map; used 'camunda_instance'",
+     "FACET attribute 'script_type' not in label_map; used 'script_type'",
+     "assumed gauge 'acme_backend_hub_workflow_service_hub_workflow_started'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (camunda_instance, script_type)(rate(acme_backend_hub_workflow_service_hub_workflow_started_total[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p03-w038",
+   "title": "Process Count",
+   "visualization": "viz.table",
+   "grafana_type": "table",
+   "nrql": [
+    "SELECT count(acme_backend.hub_workflow_service.hub_workflow_started) as Count FROM Metric facet script_type WHERE clusterName = concat('acme-cluster-', {{env}}) and camunda_instance in ({{camundaInstance}}) "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum by (script_type)(increase(acme_backend_hub_workflow_service_hub_workflow_started_total{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",camunda_instance=~\"${camundaInstance:regex}\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "attribute 'camunda_instance' not in label_map; used 'camunda_instance' \u2014 verify the label exists in your stack",
+     "FACET attribute 'script_type' not in label_map; used 'script_type'",
+     "assumed counter 'acme_backend_hub_workflow_service_hub_workflow_started_total'; verify name/type in Mimir (/api/v1/metadata)",
+     "unit:short",
+     "count() on a Metric counter emitted as the summed increase (event count); NRQL count() strictly counts datapoints \u2014 use sum() in NR to compare like for like",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (script_type)(increase(acme_backend_hub_workflow_service_hub_workflow_started_total{camunda_instance=~\"${camundaInstance:regex}\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p03-w039",
+   "title": "Process Count by Date",
+   "visualization": "viz.table",
+   "grafana_type": "table",
+   "nrql": [
+    "SELECT count(acme_backend.hub_workflow_service.hub_workflow_started) as Count FROM Metric facet  dateOf(timestamp) as `Day` WHERE clusterName = concat('acme-cluster-', {{env}}) and camunda_instance in ({{camundaInstance}}) "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum(increase(acme_backend_hub_workflow_service_hub_workflow_started_total{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",camunda_instance=~\"${camundaInstance:regex}\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "attribute 'camunda_instance' not in label_map; used 'camunda_instance' \u2014 verify the label exists in your stack",
+     "FACET dateof(...) has no label equivalent; grouping dropped",
+     "assumed counter 'acme_backend_hub_workflow_service_hub_workflow_started_total'; verify name/type in Mimir (/api/v1/metadata)",
+     "unit:short",
+     "count() on a Metric counter emitted as the summed increase (event count); NRQL count() strictly counts datapoints \u2014 use sum() in NR to compare like for like"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(increase(acme_backend_hub_workflow_service_hub_workflow_started_total{camunda_instance=~\"${camundaInstance:regex}\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p03-w040",
+   "title": "Processes per Hour",
+   "visualization": "viz.table",
+   "grafana_type": "table",
+   "nrql": [
+    "SELECT sum(acme_backend.hub_workflow_service.hub_workflow_started) as Count FROM Metric facet hourOf(timestamp)  WHERE clusterName = concat('acme-cluster-', {{env}}) and camunda_instance in ({{camundaInstance}}) "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum(avg_over_time(acme_backend_hub_workflow_service_hub_workflow_started{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",camunda_instance=~\"${camundaInstance:regex}\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "attribute 'camunda_instance' not in label_map; used 'camunda_instance' \u2014 verify the label exists in your stack",
+     "FACET hourof(...) has no label equivalent; grouping dropped",
+     "assumed gauge 'acme_backend_hub_workflow_service_hub_workflow_started'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(increase(acme_backend_hub_workflow_service_hub_workflow_started_total{camunda_instance=~\"${camundaInstance:regex}\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p03-w041",
+   "title": "Processes per Minute",
+   "visualization": "viz.table",
+   "grafana_type": "table",
+   "nrql": [
+    "SELECT sum(acme_backend.hub_workflow_service.hub_workflow_started) as Count FROM Metric facet minuteOf(timestamp)  WHERE clusterName = concat('acme-cluster-', {{env}}) and camunda_instance in ({{camundaInstance}}) "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum(avg_over_time(acme_backend_hub_workflow_service_hub_workflow_started{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",camunda_instance=~\"${camundaInstance:regex}\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "attribute 'camunda_instance' not in label_map; used 'camunda_instance' \u2014 verify the label exists in your stack",
+     "FACET minuteof(...) has no label equivalent; grouping dropped",
+     "assumed gauge 'acme_backend_hub_workflow_service_hub_workflow_started'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(increase(acme_backend_hub_workflow_service_hub_workflow_started_total{camunda_instance=~\"${camundaInstance:regex}\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p03-w042",
+   "title": "Processes per Week",
+   "visualization": "viz.table",
+   "grafana_type": "table",
+   "nrql": [
+    "SELECT sum(acme_backend.hub_workflow_service.hub_workflow_started) as Count FROM Metric facet weekOf(timestamp) as `Week`  WHERE clusterName = concat('acme-cluster-', {{env}}) and camunda_instance in ({{camundaInstance}}) "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum(avg_over_time(acme_backend_hub_workflow_service_hub_workflow_started{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",camunda_instance=~\"${camundaInstance:regex}\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "attribute 'camunda_instance' not in label_map; used 'camunda_instance' \u2014 verify the label exists in your stack",
+     "FACET weekof(...) has no label equivalent; grouping dropped",
+     "assumed gauge 'acme_backend_hub_workflow_service_hub_workflow_started'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(increase(acme_backend_hub_workflow_service_hub_workflow_started_total{camunda_instance=~\"${camundaInstance:regex}\"}[$__range]))"
+    }
+   ]
+  }
+ ]
+}

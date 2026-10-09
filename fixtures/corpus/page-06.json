@@ -1,0 +1,1022 @@
+{
+ "schema": 1,
+ "page": "Guardian",
+ "widgets": [
+  {
+   "id": "p06-w001",
+   "title": "CPU usage (%)",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT average(host.cpuPercent) AS 'CPU used %' FROM Metric WHERE `entityGuid` = '<REDACTED_BLOB>' TIMESERIES auto"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg(avg_over_time(host_cpuPercent{entityGuid=\"<REDACTED_BLOB>\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'entityGuid' not in label_map; used 'entityGuid' \u2014 verify the label exists in your stack",
+     "assumed gauge 'host_cpuPercent'; verify metric name/type in Mimir and add to metric_map if wrong"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "100 * (1 - avg(rate(node_cpu_seconds_total{mode=\"idle\",service_name_instance=\"<REDACTED_ENTITY>\"}[$__rate_interval])))"
+    }
+   ]
+  },
+  {
+   "id": "p06-w002",
+   "title": "Memory usage (%)",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT average(host.memoryUsedPercent) AS 'Memory used %' FROM Metric WHERE `entityGuid` = '<REDACTED_BLOB>' TIMESERIES auto"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg(avg_over_time(host_memoryUsedPercent{entityGuid=\"<REDACTED_BLOB>\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'entityGuid' not in label_map; used 'entityGuid' \u2014 verify the label exists in your stack",
+     "assumed gauge 'host_memoryUsedPercent'; verify metric name/type in Mimir and add to metric_map if wrong"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "100 * (1 - avg(node_memory_MemAvailable_bytes{service_name_instance=\"<REDACTED_ENTITY>\"} / node_memory_MemTotal_bytes{service_name_instance=\"<REDACTED_ENTITY>\"}))"
+    }
+   ]
+  },
+  {
+   "id": "p06-w003",
+   "title": "Guardian Query Duration (p90)",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT average(acme_backend.guardian.query.duration.upper.percentiles)\nFROM Metric\nWHERE metricName = 'acme_backend.guardian.query.duration.upper.percentiles'\nFACET query_name, percentile\nTIMESERIES\nSINCE 30 minutes ago\nLIMIT MAX"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (query_name, percentile)(rate(acme_backend_guardian_query_duration_upper_percentiles_sum{metricName=\"acme_backend.guardian.query.duration.upper.percentiles\"}[$__rate_interval])) / sum by (query_name, percentile)(rate(acme_backend_guardian_query_duration_upper_percentiles_count{metricName=\"acme_backend.guardian.query.duration.upper.percentiles\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'metricName' not in label_map; used 'metricName' \u2014 verify the label exists in your stack",
+     "FACET attribute 'query_name' not in label_map; used 'query_name'",
+     "FACET attribute 'percentile' not in label_map; used 'percentile'",
+     "name suggests a duration histogram; verify 'acme_backend_guardian_query_duration_upper_percentiles' type in Mimir",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high",
+     "timefrom:now-30m"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (query_name, percentile)(rate(acme_backend_guardian_query_duration_upper_percentiles_sum[$__rate_interval])) / sum by (query_name, percentile)(rate(acme_backend_guardian_query_duration_upper_percentiles_count[$__rate_interval]))"
+    }
+   ]
+  },
+  {
+   "id": "p06-w004",
+   "title": "Guardian Indexes Rebuilt",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT count(`acme_backend.guardian.query.duration.summary`) FROM Metric where query_name = 'reorganize_index' and clusterName = 'acme-cluster-prod' FACET index_name  SINCE 30 MINUTES AGO TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (index_name)(increase(acme_backend_guardian_query_duration_summary_total{query_name=\"reorganize_index\",cluster=\"acme-cluster-prod\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'query_name' not in label_map; used 'query_name' \u2014 verify the label exists in your stack",
+     "FACET attribute 'index_name' not in label_map; used 'index_name'",
+     "assumed counter 'acme_backend_guardian_query_duration_summary_total'; verify name/type in Mimir (/api/v1/metadata)",
+     "unit:short",
+     "count() on a Metric counter emitted as the summed increase (event count); NRQL count() strictly counts datapoints \u2014 use sum() in NR to compare like for like",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high",
+     "timefrom:now-30m"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (index_name)(rate(acme_backend_guardian_query_duration_summary_count{query_name=\"reorganize_index\",cluster=\"acme-cluster-test\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p06-w005",
+   "title": "Grx Rebuild Task",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.celery.signals) FROM Metric where task_name = 'acme_backend.tasks.grx_rebuild_indexes_task'  and clusterName = concat('acme-cluster-', {{env}}) TIMESERIES FACET `task_name` LIMIT 10 SINCE 1800 seconds ago"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "topk(10, sum by (task_name)(avg_over_time(acme_backend_celery_signals{task_name=\"acme_backend.tasks.grx_rebuild_indexes_task\",cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval])))"
+     }
+    ],
+    "notes": [
+     "attribute 'task_name' not in label_map; used 'task_name' \u2014 verify the label exists in your stack",
+     "FACET attribute 'task_name' not in label_map; used 'task_name'",
+     "assumed gauge 'acme_backend_celery_signals'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET LIMIT 10 became topk(10, ...); on range queries topk is evaluated per step so series may flicker",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "topk(10, sum by (task_name)(rate(acme_backend_celery_signals_total{task_name=\"acme_backend.tasks.grx_rebuild_indexes_task\"}[$__rate_interval])) * $__interval_ms / 1000)"
+    }
+   ]
+  },
+  {
+   "id": "p06-w006",
+   "title": "Guardian Query Durations",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT sum(`acme_backend.guardian.query.duration.median`) FROM Metric where clusterName = concat('acme-cluster-', {{env}}) and query_name != 'reorganize_index' FACET query_name SINCE 30 MINUTES AGO TIMESERIES\n--this only includes queries explicitly tracked by statsd"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "NRQL could not be parsed: unexpected character '-' near: ...RIES\n--this only includes quer"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (query_name)(rate(acme_backend_guardian_query_duration_median_sum{query_name!=\"reorganize_index\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p06-w007",
+   "title": "CpERx Index Fragmentation %",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT average(`acme_backend.guardian.table_index.average_fragmentation_percent`) FROM Metric WHERE name like 'CpERx.%' and clusterName = 'acme-cluster-prod' FACET name  SINCE 30 MINUTES AGO TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg by (span_name)(avg_over_time(acme_backend_guardian_table_index_average_fragmentation_percent{span_name=~\"(?i)CpERx\\\\..*\",cluster=\"acme-cluster-prod\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_guardian_table_index_average_fragmentation_percent'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high",
+     "timefrom:now-30m"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "avg by (span_name)(avg_over_time(acme_backend_guardian_table_index_average_fragmentation_percent{span_name=~\"(?i)CpERx\\\\..*\",cluster=\"acme-cluster-test\"}[$__rate_interval]))"
+    }
+   ]
+  },
+  {
+   "id": "p06-w008",
+   "title": "cph Index Fragmentation %",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT average(`acme_backend.guardian.table_index.average_fragmentation_percent`) FROM Metric WHERE name like 'cph.%' and clusterName = 'acme-cluster-prod' FACET name  SINCE 30 MINUTES AGO TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg by (span_name)(avg_over_time(acme_backend_guardian_table_index_average_fragmentation_percent{span_name=~\"(?i)cph\\\\..*\",cluster=\"acme-cluster-prod\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_guardian_table_index_average_fragmentation_percent'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high",
+     "timefrom:now-30m"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "avg by (span_name)(avg_over_time(acme_backend_guardian_table_index_average_fragmentation_percent{span_name=~\"(?i)cph\\\\..*\",cluster=\"acme-cluster-test\"}[$__rate_interval]))"
+    }
+   ]
+  },
+  {
+   "id": "p06-w009",
+   "title": "Guardian Indexes Page Counts",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT latest(`acme_backend.guardian.table_index.page_count`) FROM Metric where clusterName = 'acme-cluster-prod' FACET name SINCE 30 MINUTES AGO TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "max by (span_name)(last_over_time(acme_backend_guardian_table_index_page_count{cluster=\"acme-cluster-prod\"}[$__interval]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_guardian_table_index_page_count'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high",
+     "timefrom:now-30m"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "max by (span_name)(last_over_time(acme_backend_guardian_table_index_page_count{cluster=\"acme-cluster-test\"}[$__interval]))"
+    }
+   ]
+  },
+  {
+   "id": "p06-w010",
+   "title": "Top CpERx Index Fragmentation %",
+   "visualization": "viz.bar",
+   "grafana_type": "bargauge",
+   "nrql": [
+    "SELECT latest(`acme_backend.guardian.table_index.average_fragmentation_percent`) FROM Metric WHERE name like 'CpERx.%' and clusterName = 'acme-cluster-prod' FACET name  SINCE 30 MINUTES AGO"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "max by (span_name)(acme_backend_guardian_table_index_average_fragmentation_percent{span_name=~\"(?i)CpERx\\\\..*\",cluster=\"acme-cluster-prod\"})"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_guardian_table_index_average_fragmentation_percent'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high",
+     "timefrom:now-30m"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "max by (span_name)(acme_backend_guardian_table_index_average_fragmentation_percent{span_name=~\"(?i)CpERx\\\\..*\",cluster=\"acme-cluster-test\"})"
+    }
+   ]
+  },
+  {
+   "id": "p06-w011",
+   "title": "Top cph Index Fragmentation %",
+   "visualization": "viz.bar",
+   "grafana_type": "bargauge",
+   "nrql": [
+    "SELECT latest(`acme_backend.guardian.table_index.average_fragmentation_percent`) FROM Metric WHERE name like 'cph.%' and clusterName = 'acme-cluster-prod' FACET name  SINCE 30 MINUTES AGO"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "max by (span_name)(acme_backend_guardian_table_index_average_fragmentation_percent{span_name=~\"(?i)cph\\\\..*\",cluster=\"acme-cluster-prod\"})"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_guardian_table_index_average_fragmentation_percent'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high",
+     "timefrom:now-30m"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "max by (span_name)(acme_backend_guardian_table_index_average_fragmentation_percent{span_name=~\"(?i)cph\\\\..*\",cluster=\"acme-cluster-test\"})"
+    }
+   ]
+  },
+  {
+   "id": "p06-w012",
+   "title": "cph_tracking Index Fragmentation %",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT average(`acme_backend.guardian.table_index.average_fragmentation_percent`) FROM Metric WHERE name like 'cph_tracking.%' and clusterName = 'acme-cluster-prod' FACET name  SINCE 30 MINUTES AGO TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg by (span_name)(avg_over_time(acme_backend_guardian_table_index_average_fragmentation_percent{span_name=~\"(?i)cph.tracking\\\\..*\",cluster=\"acme-cluster-prod\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_guardian_table_index_average_fragmentation_percent'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high",
+     "timefrom:now-30m"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "avg by (span_name)(avg_over_time(acme_backend_guardian_table_index_average_fragmentation_percent{span_name=~\"(?i)cph.tracking\\\\..*\",cluster=\"acme-cluster-test\"}[$__rate_interval]))"
+    }
+   ]
+  },
+  {
+   "id": "p06-w013",
+   "title": "Top Called Guardian Queries",
+   "visualization": "viz.bar",
+   "grafana_type": "bargauge",
+   "nrql": [
+    "SELECT count(`acme_backend.guardian.query.duration.summary`) FROM Metric where clusterName = 'acme-cluster-prod' and query_name != 'reorganize_index' FACET query_name SINCE 30 MINUTES AGO  "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum by (query_name)(increase(acme_backend_guardian_query_duration_summary_total{cluster=\"acme-cluster-prod\",query_name!=\"reorganize_index\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "attribute 'query_name' not in label_map; used 'query_name' \u2014 verify the label exists in your stack",
+     "FACET attribute 'query_name' not in label_map; used 'query_name'",
+     "assumed counter 'acme_backend_guardian_query_duration_summary_total'; verify name/type in Mimir (/api/v1/metadata)",
+     "unit:short",
+     "count() on a Metric counter emitted as the summed increase (event count); NRQL count() strictly counts datapoints \u2014 use sum() in NR to compare like for like",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high",
+     "timefrom:now-30m"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (query_name)(increase(acme_backend_guardian_query_duration_summary_count{cluster=\"acme-cluster-test\",query_name!=\"reorganize_index\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p06-w014",
+   "title": "Top Slow Guardian Queries",
+   "visualization": "viz.bar",
+   "grafana_type": "bargauge",
+   "nrql": [
+    "SELECT average(`acme_backend.guardian.query.duration.median`) FROM Metric where clusterName = 'acme-cluster-prod' and query_name != 'reorganize_index' FACET query_name SINCE 30 MINUTES AGO  "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum by (query_name)(rate(acme_backend_guardian_query_duration_median_sum{cluster=\"acme-cluster-prod\",query_name!=\"reorganize_index\"}[$__range])) / sum by (query_name)(rate(acme_backend_guardian_query_duration_median_count{cluster=\"acme-cluster-prod\",query_name!=\"reorganize_index\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "attribute 'query_name' not in label_map; used 'query_name' \u2014 verify the label exists in your stack",
+     "FACET attribute 'query_name' not in label_map; used 'query_name'",
+     "name suggests a duration histogram; verify 'acme_backend_guardian_query_duration_median' type in Mimir",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high",
+     "timefrom:now-30m"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (query_name)(rate(acme_backend_guardian_query_duration_median_sum{cluster=\"acme-cluster-test\",query_name!=\"reorganize_index\"}[$__range])) / sum by (query_name)(rate(acme_backend_guardian_query_duration_median_count{cluster=\"acme-cluster-test\",query_name!=\"reorganize_index\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p06-w015",
+   "title": "Top cph_tracking Index Fragmentation %",
+   "visualization": "viz.bar",
+   "grafana_type": "bargauge",
+   "nrql": [
+    "SELECT latest(`acme_backend.guardian.table_index.average_fragmentation_percent`) FROM Metric WHERE name like 'cph_tracking.%' and clusterName = 'acme-cluster-prod' FACET name  SINCE 30 MINUTES AGO"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "max by (span_name)(acme_backend_guardian_table_index_average_fragmentation_percent{span_name=~\"(?i)cph.tracking\\\\..*\",cluster=\"acme-cluster-prod\"})"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_guardian_table_index_average_fragmentation_percent'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high",
+     "timefrom:now-30m"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "max by (span_name)(acme_backend_guardian_table_index_average_fragmentation_percent{span_name=~\"(?i)cph.tracking\\\\..*\",cluster=\"acme-cluster-test\"})"
+    }
+   ]
+  },
+  {
+   "id": "p06-w016",
+   "title": "Missing Indexes",
+   "visualization": "viz.bar",
+   "grafana_type": "bargauge",
+   "nrql": [
+    "SELECT latest(`acme_backend.guardian.table_index.missing_index`) FROM Metric WHERE clusterName = 'acme-cluster-prod' FACET name SINCE 30 MINUTES AGO"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "max by (span_name)(acme_backend_guardian_table_index_missing_index{cluster=\"acme-cluster-prod\"})"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_guardian_table_index_missing_index'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high",
+     "timefrom:now-30m"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "max by (span_name)(acme_backend_guardian_table_index_missing_index{cluster=\"acme-cluster-test\"})"
+    }
+   ]
+  },
+  {
+   "id": "p06-w017",
+   "title": "Index Usage",
+   "visualization": "viz.bar",
+   "grafana_type": "bargauge",
+   "nrql": [
+    "SELECT latest(`acme_backend.guardian.table_index.index_usage`) FROM Metric WHERE clusterName = 'acme-cluster-prod' FACET name SINCE 30 MINUTES AGO"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "max by (span_name)(acme_backend_guardian_table_index_index_usage{cluster=\"acme-cluster-prod\"})"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_guardian_table_index_index_usage'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high",
+     "timefrom:now-30m"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "max by (span_name)(acme_backend_guardian_table_index_index_usage{cluster=\"acme-cluster-test\"})"
+    }
+   ]
+  },
+  {
+   "id": "p06-w018",
+   "title": "(untitled)",
+   "visualization": "viz.markdown",
+   "grafana_type": "text",
+   "nrql": [],
+   "before": {
+    "confidence": "exact",
+    "queries": [],
+    "notes": []
+   },
+   "expected": []
+  },
+  {
+   "id": "p06-w019",
+   "title": "High Disk Read Queries",
+   "visualization": "viz.bar",
+   "grafana_type": "bargauge",
+   "nrql": [
+    "SELECT latest(`acme_backend.guardian.table_index.high_disk_read_query`) FROM Metric WHERE clusterName = 'acme-cluster-prod' FACET database_name, index SINCE 30 MINUTES AGO"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "max by (database_name, index)(acme_backend_guardian_table_index_high_disk_read_query{cluster=\"acme-cluster-prod\"})"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'database_name' not in label_map; used 'database_name'",
+     "FACET attribute 'index' not in label_map; used 'index'",
+     "assumed gauge 'acme_backend_guardian_table_index_high_disk_read_query'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high",
+     "timefrom:now-30m"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "max by (database_name, index)(acme_backend_guardian_table_index_high_disk_read_query{cluster=\"acme-cluster-test\"})"
+    }
+   ]
+  },
+  {
+   "id": "p06-w020",
+   "title": "High CPU Queries",
+   "visualization": "viz.bar",
+   "grafana_type": "bargauge",
+   "nrql": [
+    "SELECT latest(`acme_backend.guardian.table_index.high_cpu_query`) FROM Metric WHERE clusterName = 'acme-cluster-prod' FACET database_name, index SINCE 30 MINUTES AGO"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "max by (database_name, index)(acme_backend_guardian_table_index_high_cpu_query{cluster=\"acme-cluster-prod\"})"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'database_name' not in label_map; used 'database_name'",
+     "FACET attribute 'index' not in label_map; used 'index'",
+     "assumed gauge 'acme_backend_guardian_table_index_high_cpu_query'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high",
+     "timefrom:now-30m"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "max by (database_name, index)(acme_backend_guardian_table_index_high_cpu_query{cluster=\"acme-cluster-test\"})"
+    }
+   ]
+  },
+  {
+   "id": "p06-w021",
+   "title": "Frequently Run Queries",
+   "visualization": "viz.bar",
+   "grafana_type": "bargauge",
+   "nrql": [
+    "SELECT latest(`acme_backend.guardian.table_index.frequently_run_query`) FROM Metric WHERE clusterName = 'acme-cluster-prod' FACET database_name, index SINCE 30 MINUTES AGO"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "max by (database_name, index)(acme_backend_guardian_table_index_frequently_run_query{cluster=\"acme-cluster-prod\"})"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'database_name' not in label_map; used 'database_name'",
+     "FACET attribute 'index' not in label_map; used 'index'",
+     "assumed gauge 'acme_backend_guardian_table_index_frequently_run_query'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high",
+     "timefrom:now-30m"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "max by (database_name, index)(acme_backend_guardian_table_index_frequently_run_query{cluster=\"acme-cluster-test\"})"
+    }
+   ]
+  },
+  {
+   "id": "p06-w022",
+   "title": "Get_Cancellation_RXIDs Response Time",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT max(`acme_backend.guardian.query.duration.median`) FROM Metric where clusterName = 'acme-cluster-prod' and query_name = 'Get_Cancellation_RXIDs' TIMESERIES  "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "max(max_over_time(acme_backend_guardian_query_duration_median{cluster=\"acme-cluster-prod\",query_name=\"Get_Cancellation_RXIDs\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'query_name' not in label_map; used 'query_name' \u2014 verify the label exists in your stack",
+     "assumed gauge 'acme_backend_guardian_query_duration_median'; verify metric name/type in Mimir and add to metric_map if wrong"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "histogram_quantile(1, sum by (le)(rate(acme_backend_guardian_query_duration_median_bucket{cluster=\"acme-cluster-test\",query_name=\"Get_Cancellation_RXIDs\"}[$__rate_interval])))"
+    }
+   ]
+  },
+  {
+   "id": "p06-w023",
+   "title": "Guardian DB uptime (PROD)",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT average(`host.uptime`) FROM Metric WHERE `entity.guid` = '<REDACTED_BLOB>' TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg(avg_over_time(host_uptime{entity_guid=\"<REDACTED_BLOB>\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'entity.guid' not in label_map; used 'entity_guid' \u2014 verify the label exists in your stack",
+     "assumed gauge 'host_uptime'; verify metric name/type in Mimir and add to metric_map if wrong"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "avg(time() - node_boot_time_seconds{service_name_instance=\"<REDACTED_ENTITY>\"})"
+    }
+   ]
+  },
+  {
+   "id": "p06-w024",
+   "title": "Long Running Queries",
+   "visualization": "viz.bar",
+   "grafana_type": "bargauge",
+   "nrql": [
+    "SELECT latest(`acme_backend.guardian.table_index.long_running_query`) FROM Metric WHERE clusterName = 'acme-cluster-prod' FACET database_name, index SINCE 30 MINUTES AGO"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "max by (database_name, index)(acme_backend_guardian_table_index_long_running_query{cluster=\"acme-cluster-prod\"})"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'database_name' not in label_map; used 'database_name'",
+     "FACET attribute 'index' not in label_map; used 'index'",
+     "assumed gauge 'acme_backend_guardian_table_index_long_running_query'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high",
+     "timefrom:now-30m"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "max by (database_name, index)(acme_backend_guardian_table_index_long_running_query{cluster=\"acme-cluster-test\"})"
+    }
+   ]
+  },
+  {
+   "id": "p06-w025",
+   "title": "Top Called Guardian Queries",
+   "visualization": "viz.bar",
+   "grafana_type": "bargauge",
+   "nrql": [
+    "SELECT count(`acme_backend.guardian.query.duration.summary`) FROM Metric where clusterName = 'acme-cluster-prod' and query_name != 'reorganize_index' FACET query_name SINCE 30 MINUTES AGO  "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum by (query_name)(increase(acme_backend_guardian_query_duration_summary_total{cluster=\"acme-cluster-prod\",query_name!=\"reorganize_index\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "attribute 'query_name' not in label_map; used 'query_name' \u2014 verify the label exists in your stack",
+     "FACET attribute 'query_name' not in label_map; used 'query_name'",
+     "assumed counter 'acme_backend_guardian_query_duration_summary_total'; verify name/type in Mimir (/api/v1/metadata)",
+     "unit:short",
+     "count() on a Metric counter emitted as the summed increase (event count); NRQL count() strictly counts datapoints \u2014 use sum() in NR to compare like for like",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high",
+     "timefrom:now-30m"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (query_name)(increase(acme_backend_guardian_query_duration_summary_count{cluster=\"acme-cluster-test\",query_name!=\"reorganize_index\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p06-w026",
+   "title": "Top Called Guardian Queries",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT count(`acme_backend.guardian.query.duration.summary`) FROM Metric where clusterName = 'acme-cluster-prod' and query_name != 'reorganize_index' FACET query_name TIMESERIES  SINCE 30 MINUTES AGO  "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (query_name)(increase(acme_backend_guardian_query_duration_summary_total{cluster=\"acme-cluster-prod\",query_name!=\"reorganize_index\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'query_name' not in label_map; used 'query_name' \u2014 verify the label exists in your stack",
+     "FACET attribute 'query_name' not in label_map; used 'query_name'",
+     "assumed counter 'acme_backend_guardian_query_duration_summary_total'; verify name/type in Mimir (/api/v1/metadata)",
+     "unit:short",
+     "count() on a Metric counter emitted as the summed increase (event count); NRQL count() strictly counts datapoints \u2014 use sum() in NR to compare like for like",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high",
+     "timefrom:now-30m"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (query_name)(rate(acme_backend_guardian_query_duration_summary_count{cluster=\"acme-cluster-test\",query_name!=\"reorganize_index\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p06-w027",
+   "title": "Guardian DB PID (PROD)",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT average(`host.process.cpuPercent`) FROM Metric FACET `process.pid` WHERE `process.name` = 'sqlservr.exe' AND `entity.guid` = '<REDACTED_BLOB>' TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg by (process_pid)(avg_over_time(host_process_cpuPercent{process_name=\"sqlservr.exe\",entity_guid=\"<REDACTED_BLOB>\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'process.name' not in label_map; used 'process_name' \u2014 verify the label exists in your stack",
+     "attribute 'entity.guid' not in label_map; used 'entity_guid' \u2014 verify the label exists in your stack",
+     "FACET attribute 'process.pid' not in label_map; used 'process_pid'",
+     "assumed gauge 'host_process_cpuPercent'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "avg by (process_pid)(avg_over_time(host_process_cpuPercent{process_name=\"sqlservr.exe\",service_name_instance=\"<REDACTED_ENTITY>\"}[$__rate_interval]))"
+    }
+   ]
+  },
+  {
+   "id": "p06-w028",
+   "title": "Grx->Acme Syncing - Backlog",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT latest(acme_backend.sync_prescription.backlog_size) FROM Metric WHERE clusterName = 'acme-cluster-prod' TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(acme_backend_sync_prescription_backlog_size{cluster=\"acme-cluster-prod\"}[$__interval])"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_sync_prescription_backlog_size'; verify metric name/type in Mimir and add to metric_map if wrong"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "last_over_time(acme_backend_sync_prescription_backlog_size{cluster=\"acme-cluster-test\"}[$__interval])"
+    }
+   ]
+  },
+  {
+   "id": "p06-w029",
+   "title": "Grx->Acme Syncing - Count",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "select sum(processed_count) from Metric where metricName='acme_backend.recurring_task.success' and task_name='sync_prescriptions_from_grx' and clusterName='acme-cluster-prod' TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(avg_over_time(processed_count{metricName=\"acme_backend.recurring_task.success\",task_name=\"sync_prescriptions_from_grx\",cluster=\"acme-cluster-prod\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'metricName' not in label_map; used 'metricName' \u2014 verify the label exists in your stack",
+     "attribute 'task_name' not in label_map; used 'task_name' \u2014 verify the label exists in your stack",
+     "assumed gauge 'processed_count'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(avg_over_time(processed_count{task_name=\"sync_prescriptions_from_grx\",cluster=\"acme-cluster-test\"}[$__rate_interval]))"
+    }
+   ]
+  },
+  {
+   "id": "p06-w030",
+   "title": "Guardian Primary Filegroup Free Space %",
+   "visualization": "viz.line",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT min(acme_backend.postgres_metrics.grx_filegroup.percent_free)/100 FROM Metric\nWHERE clusterName = 'acme-cluster-prod'\n  AND name != 'Cph_log'  --this is always shrinking an growing, which distracts from the graph\nFACET name TIMESERIES"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "NRQL could not be parsed: unexpected character '-' near: ...og'  --this is always shrinkin"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "(min by (span_name)(min_over_time(acme_backend_postgres_metrics_grx_filegroup_percent_free{cluster=\"acme-cluster-test\",span_name!=\"Cph_log\"}[$__rate_interval]))) / 100"
+    }
+   ]
+  },
+  {
+   "id": "p06-w031",
+   "title": "Grx->Acme Syncing - Stale In Progress Count",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT latest(acme_backend.grx.prescription_sync.stale_in_progress_count) FROM Metric WHERE clusterName = 'acme-cluster-prod' TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(acme_backend_grx_prescription_sync_stale_in_progress_count{cluster=\"acme-cluster-prod\"}[$__interval])"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_grx_prescription_sync_stale_in_progress_count'; verify metric name/type in Mimir and add to metric_map if wrong"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "last_over_time(acme_backend_grx_prescription_sync_stale_in_progress_count{cluster=\"acme-cluster-test\"}[$__interval])"
+    }
+   ]
+  },
+  {
+   "id": "p06-w032",
+   "title": "Sync Delay In secs",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT average(acme_backend.grx.prescription_sync.sync_delay_in_seconds.mean) FROM Metric WHERE clusterName = 'acme-cluster-prod' TIMESERIES SINCE 3 days ago UNTIL now"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg(avg_over_time(acme_backend_grx_prescription_sync_sync_delay_in_seconds_mean{cluster=\"acme-cluster-prod\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_grx_prescription_sync_sync_delay_in_seconds_mean'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "timefrom:now-3d",
+     "UNTIL 'now' cannot be expressed per-panel in Grafana; adjust the dashboard time range manually"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "avg(avg_over_time(acme_backend_grx_prescription_sync_sync_delay_in_seconds_mean{cluster=\"acme-cluster-test\"}[$__rate_interval]))"
+    }
+   ]
+  },
+  {
+   "id": "p06-w033",
+   "title": "Grx->Acme Syncing - Batch Size",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "select average(processed_count) from Metric where metricName='acme_backend.recurring_task.success' and task_name='sync_prescriptions_from_grx' and clusterName='acme-cluster-prod' TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg(avg_over_time(processed_count{metricName=\"acme_backend.recurring_task.success\",task_name=\"sync_prescriptions_from_grx\",cluster=\"acme-cluster-prod\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'metricName' not in label_map; used 'metricName' \u2014 verify the label exists in your stack",
+     "attribute 'task_name' not in label_map; used 'task_name' \u2014 verify the label exists in your stack",
+     "assumed gauge 'processed_count'; verify metric name/type in Mimir and add to metric_map if wrong"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "avg(avg_over_time(processed_count{task_name=\"sync_prescriptions_from_grx\",cluster=\"acme-cluster-test\"}[$__rate_interval]))"
+    }
+   ]
+  }
+ ]
+}

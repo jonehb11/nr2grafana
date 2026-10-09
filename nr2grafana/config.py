@@ -17,9 +17,6 @@ from typing import Any, Dict
 
 
 DEFAULT_CONFIG: Dict[str, Any] = {
-    # Grafana datasource references. Using ${DS_*} placeholders keeps the
-    # output importable anywhere (Grafana prompts for the datasource on
-    # import). Set concrete uids (e.g. "mimir") to skip the prompt.
     # Grafana datasource references. Default: "${...}" placeholders that the
     # converter turns into `type: datasource` template variables, which bind
     # to the default datasource of each type on import and work through both
@@ -29,6 +26,12 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "prometheus": {"type": "prometheus", "uid": "${datasource}"},
         "loki": {"type": "loki", "uid": "${loki_datasource}"},
         "tempo": {"type": "tempo", "uid": "${tempo_datasource}"},
+        # AWS CloudWatch (core Grafana plugin). NR `aws.*` metric-stream
+        # metrics and the AWS polling-integration samples (DatastoreSample,
+        # QueueSample, ...) never land in Mimir, so those widgets become
+        # real CloudWatch targets on this datasource.
+        "cloudwatch": {"type": "cloudwatch",
+                       "uid": "${cloudwatch_datasource}"},
         # Optional fallback: the official New Relic datasource plugin for
         # Grafana. When "passthrough_fallback" is true, untranslatable
         # widgets become working panels that run the original NRQL through
@@ -107,6 +110,69 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # normalization. Populate with your own known mappings.
     "metric_map": {},
 
+    # NR metric name -> Prometheus metric KIND ("counter" | "gauge" |
+    # "histogram" | "summary") when the name/aggregation heuristics guess
+    # wrong (a sum() of a *_created app metric is a counter and gets
+    # increase()/rate() + "_total"; a gauge gets avg_over_time()). Wins
+    # over live hints and the built-in rules.
+    "metric_kinds": {},
+
+    # NR Kubernetes-integration metric -> kube-state-metrics / cAdvisor
+    # expression, extending the built-in K8S_METRIC_MAP. Each entry:
+    # {"expr": "<promql template>", "labels": [...], "kind": "gauge",
+    #  "notes": "..."}; e.g. "k8s.container.cpuRequestedCores" ->
+    # kube_pod_container_resource_requests{resource="cpu"}.
+    "k8s_metric_map": {},
+
+    # NR aws.<service>.<Metric> service segment -> CloudWatch namespace,
+    # extending the built-in map (rds -> AWS/RDS, sqs -> AWS/SQS, lambda
+    # -> AWS/Lambda, ...). Unknown services get "AWS/<Service>" and a
+    # needs-review note.
+    "cloudwatch_namespaces": {},
+
+    # Region for generated CloudWatch targets ("default" = the datasource's
+    # default region); WHERE aws.region = 'x' overrides per query.
+    "cloudwatch_region": "default",
+
+    # Period (seconds) baked into SEARCH(...) expressions (multi-resource
+    # sums, filter() queries). Builder-mode targets leave the period on
+    # auto.
+    "cloudwatch_period": 300,
+
+    # Name of the environment dashboard variable that NR {{env}}-style
+    # placeholders and concat('p-', {{env}}) values render to ($env), and
+    # that `--env` pins on export.
+    "env_var": "env",
+
+    # Concrete environment to pin for an export (sets the env variable's
+    # current value; empty = leave the variable selectable).
+    "target_env": "",
+
+    # NR environment value -> target-stack value, e.g. {"prod": "p",
+    # "staging": "s"} when cluster names are "<prefix>-p" but NR used
+    # "prod". Applied when rendering concat()/appName "(env)" suffixes
+    # and when pinning target_env.
+    "env_map": {},
+
+    # Label that identifies a service when `entity.guid = '<GUID>'` is
+    # resolved to an entity name through the live NerdGraph lookup
+    # (read-only). F10: set label_map "appName" to "job" if your stack
+    # keys services by job instead of service_name.
+    "entity_label": "service_name",
+
+    # Loki: `level = 'ERROR'` becomes a case-insensitive match
+    # (level=~"(?i)ERROR") because collectors disagree on the case of
+    # level values. Set false for an exact match.
+    "loki_case_insensitive_levels": True,
+
+    # Live hints collected by `convert --live` / `--grafana-url` (see
+    # docs/live-translation.md): {"metric_types": {prom_name: kind},
+    # "entities": {guid: {name, type, service_label}}, "attr_values":
+    # {attr: [values]}, "label_values": {label: [values]}}. Translators
+    # prefer these over heuristics. Normally filled at runtime, but a
+    # saved hints file can be pasted here for offline reproducibility.
+    "live_hints": {},
+
     # Attributes that exist as Loki *stream labels* in your setup. WHERE
     # filters on these become stream selectors; everything else becomes a
     # pipeline filter (| attr = "..." after parsing, or line filter).
@@ -126,7 +192,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     #   "otel"         -> traces_span_metrics_duration_milliseconds /
     #                     traces_span_metrics_calls_total (OTel collector
     #                     spanmetrics connector default)
-    #   "otel-seconds" -> traces_span_metrics_duration_seconds / ..._calls_total
+    #   "otel-seconds" -> traces_span_metrics_duration_seconds /
+    #                     ..._calls_total
     #   "tempo"        -> traces_spanmetrics_latency /
     #                     traces_spanmetrics_calls_total (Tempo
     #                     metrics-generator)

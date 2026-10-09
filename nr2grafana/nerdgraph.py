@@ -97,6 +97,25 @@ query($id: Int!, $q: Nrql!) {
 """
 
 
+# Read-only entity lookup used by the live translation hints: resolves
+# `entity.guid = '<GUID>'` predicates to the entity's name/type so the
+# translator can emit a service label instead of an untranslatable.
+_ENTITY_QUERY = """
+query($guid: EntityGuid!) {
+  actor {
+    entity(guid: $guid) {
+      guid
+      name
+      type
+      domain
+      entityType
+      accountId
+    }
+  }
+}
+"""
+
+
 class NerdGraphError(Exception):
     pass
 
@@ -196,6 +215,27 @@ class NerdGraphClient:
         if not entity:
             raise NerdGraphError(
                 "No dashboard found for guid %s (or key lacks access)" % guid)
+        return entity
+
+    def get_entity(self, guid: str) -> Dict[str, Any]:
+        """Resolve an entity GUID to ``{guid, name, type, domain,
+        entityType, accountId}`` (read-only ``actor { entity }`` query).
+
+        Raises :class:`NerdGraphError` when the GUID is unknown, the key
+        lacks access, or the GUID is malformed.
+        """
+        guid = (guid or "").strip()
+        if not guid or not re.match(r"^[A-Za-z0-9+/=_-]+$", guid):
+            raise NerdGraphError(
+                "entity guid %r is not a valid New Relic entity GUID "
+                "(expected the base64-like value from the NR UI/URL)"
+                % guid)
+        data = self._post(_ENTITY_QUERY, {"guid": guid})
+        entity = (data.get("actor") or {}).get("entity")
+        if not entity:
+            raise NerdGraphError(
+                "No entity found for guid %s (deleted, or the API key "
+                "lacks access to its account)" % guid)
         return entity
 
     def run_nrql(self, account_id: int, nrql: str) -> Dict[str, Any]:

@@ -1,0 +1,2391 @@
+{
+ "schema": 1,
+ "page": "Resource Utilization",
+ "widgets": [
+  {
+   "id": "p02-w001",
+   "title": "Pod Counts",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT latest(k8s.deployment.podsAvailable) as count from Metric where k8s.namespaceName = 'acme-backend' AND k8s.clusterName = concat('acme-cluster-', {{env}}) facet k8s.deploymentName TIMESERIES 1 hour SINCE 2 weeks ago\n"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "max by (k8s_deploymentName)(last_over_time(k8s_deployment_podsAvailable{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'k8s.namespaceName' not in label_map; used 'k8s_namespaceName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "FACET attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName'",
+     "assumed gauge 'k8s_deployment_podsAvailable'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "TIMESERIES 1h: Grafana buckets by the query interval; set the panel's 'Min interval' to 1h to mirror NR bucketing",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high",
+     "timefrom:now-2w"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "max by (deployment)(last_over_time(kube_deployment_status_replicas_available{namespace=\"acme-backend\"}[$__interval]))"
+    }
+   ]
+  },
+  {
+   "id": "p02-w002",
+   "title": "Redis Throughput",
+   "visualization": "viz.area",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT rate(count(apm.service.datastore.operation.duration), 1 minute) FROM Metric WHERE (entity.guid = '<REDACTED_BLOB>') AND (datastoreType = 'Redis') FACET `datastoreType`, `operation` LIMIT 5 SINCE 1800 seconds AGO TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "topk(5, sum by (datastoreType, operation)(rate(apm_service_datastore_operation_duration_total{entity_guid=\"<REDACTED_BLOB>\",datastoreType=\"Redis\"}[$__rate_interval])) * 60)"
+     }
+    ],
+    "notes": [
+     "attribute 'entity.guid' not in label_map; used 'entity_guid' \u2014 verify the label exists in your stack",
+     "attribute 'datastoreType' not in label_map; used 'datastoreType' \u2014 verify the label exists in your stack",
+     "FACET attribute 'datastoreType' not in label_map; used 'datastoreType'",
+     "FACET attribute 'operation' not in label_map; used 'operation'",
+     "assumed counter 'apm_service_datastore_operation_duration_total'; verify name/type in Mimir (/api/v1/metadata)",
+     "unit:short",
+     "FACET LIMIT 5 became topk(5, ...); on range queries topk is evaluated per step so series may flicker",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "topk(5, sum by (db_system, operation)(rate(db_client_operation_duration_seconds_count{service_name_instance=\"<REDACTED_ENTITY>\",db_system=\"Redis\"}[$__rate_interval])) * 60)"
+    }
+   ]
+  },
+  {
+   "id": "p02-w003",
+   "title": "Redis Cache hits/misses",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT count(acme_backend.caching.hit) as 'cache hits' FROM Metric WHERE clusterName = concat('acme-cluster-', {{env}}) TIMESERIES facet namespace",
+    "SELECT count(acme_backend.caching.miss) as 'cache misses' FROM Metric WHERE clusterName = 'acme-cluster-prod' TIMESERIES facet namespace"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (namespace)(increase(acme_backend_caching_hit_total{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (namespace)(increase(acme_backend_caching_miss_total{cluster=\"acme-cluster-prod\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "assumed counter 'acme_backend_caching_hit_total'; verify name/type in Mimir (/api/v1/metadata)",
+     "unit:short",
+     "count() on a Metric counter emitted as the summed increase (event count); NRQL count() strictly counts datapoints \u2014 use sum() in NR to compare like for like",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high",
+     "assumed counter 'acme_backend_caching_miss_total'; verify name/type in Mimir (/api/v1/metadata)",
+     "unit:short",
+     "count() on a Metric counter emitted as the summed increase (event count); NRQL count() strictly counts datapoints \u2014 use sum() in NR to compare like for like",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (namespace)(rate(acme_backend_caching_hit_total[$__rate_interval])) * $__interval_ms / 1000"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "sum by (namespace)(rate(acme_backend_caching_miss_total{cluster=\"acme-cluster-test\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p02-w004",
+   "title": "Redis Errors",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT count(*) FROM Log WHERE `cluster_name` = concat('acme-cluster-', {{env}}) and `namespace_name` = 'acme-backend' AND `log_name` LIKE '%cache_utils%' TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "loki",
+      "type": "range",
+      "expr": "sum(count_over_time({cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\", namespace=\"acme-backend\"} | json | log_name=~\"(?i).*cache.utils.*\" | __error__=\"\" [$__auto]))"
+     }
+    ],
+    "notes": [
+     "attribute 'log_name' not in label_map; used 'log_name' \u2014 verify the label exists in your stack",
+     "filter on 'log_name' assumes it is a parsed json field in Loki"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "loki",
+     "refId": "A",
+     "expr": "sum(count_over_time({namespace=\"acme-backend\"} | json | log_name=~\"(?i).*cache.utils.*\" | __error__=\"\" [$__auto]))"
+    }
+   ]
+  },
+  {
+   "id": "p02-w005",
+   "title": "(untitled)",
+   "visualization": "viz.markdown",
+   "grafana_type": "text",
+   "nrql": [],
+   "before": {
+    "confidence": "exact",
+    "queries": [],
+    "notes": []
+   },
+   "expected": []
+  },
+  {
+   "id": "p02-w006",
+   "title": "Memory - Celery Worker Pods",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT latest(k8s.container.memoryRequestedBytes) as memRequest, latest(k8s.container.memoryLimitBytes) as memoryLimit, percentile(k8s.container.memoryWorkingSetBytes,95) as 'memoryUsed' from Metric where k8s.namespaceName = 'acme-backend' AND k8s.clusterName = concat('acme-cluster-', {{env}}) and k8s.deploymentName ='acme-backend-worker' TIMESERIES 1 hour SINCE 2 weeks ago\n"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_memoryRequestedBytes{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-worker\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_memoryLimitBytes{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-worker\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "histogram_quantile(0.95, sum by (le)(rate(k8s_container_memoryWorkingSetBytes_bucket{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-worker\"}[$__rate_interval])))"
+     }
+    ],
+    "notes": [
+     "attribute 'k8s.namespaceName' not in label_map; used 'k8s_namespaceName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName' \u2014 verify the label exists in your stack",
+     "assumed gauge 'k8s_container_memoryRequestedBytes'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_container_memoryLimitBytes'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed 'k8s.container.memoryWorkingSetBytes' is a histogram (required by percentile()); add it to metric_map with the exact Prometheus name/type",
+     "histogram_quantile interpolates within buckets; NR percentiles are computed from event data",
+     "TIMESERIES 1h: Grafana buckets by the query interval; set the panel's 'Min interval' to 1h to mirror NR bucketing",
+     "timefrom:now-2w"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "last_over_time(kube_pod_container_resource_requests{namespace=\"acme-backend\",deployment=\"acme-backend-worker\",resource=\"memory\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "last_over_time(kube_pod_container_resource_limits{namespace=\"acme-backend\",deployment=\"acme-backend-worker\",resource=\"memory\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "C",
+     "expr": "quantile_over_time(0.95, container_memory_working_set_bytes{namespace=\"acme-backend\",deployment=\"acme-backend-worker\",container!=\"\"}[$__rate_interval])"
+    }
+   ]
+  },
+  {
+   "id": "p02-w007",
+   "title": "CPU - Celery Worker Pods",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT latest(k8s.container.cpuRequestedCores) as 'cpuRequested', latest(k8s.container.cpuLimitCores) as 'cpuLimit', percentile(k8s.container.cpuUsedCores,95) as 'cpuUsed', average(k8s.container.cpuUsedCores) as 'cpuUsed (avg)'  from Metric where k8s.namespaceName = 'acme-backend' AND k8s.clusterName = concat('acme-cluster-', {{env}}) AND k8s.deploymentName = 'acme-backend-worker' TIMESERIES 1 hour SINCE 2 weeks ago\n"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_cpuRequestedCores{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-worker\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_cpuLimitCores{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-worker\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "histogram_quantile(0.95, sum by (le)(rate(k8s_container_cpuUsedCores_bucket{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-worker\"}[$__rate_interval])))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg(avg_over_time(k8s_container_cpuUsedCores{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-worker\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'k8s.namespaceName' not in label_map; used 'k8s_namespaceName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName' \u2014 verify the label exists in your stack",
+     "assumed gauge 'k8s_container_cpuRequestedCores'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_container_cpuLimitCores'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed 'k8s.container.cpuUsedCores' is a histogram (required by percentile()); add it to metric_map with the exact Prometheus name/type",
+     "histogram_quantile interpolates within buckets; NR percentiles are computed from event data",
+     "assumed gauge 'k8s_container_cpuUsedCores'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "TIMESERIES 1h: Grafana buckets by the query interval; set the panel's 'Min interval' to 1h to mirror NR bucketing",
+     "timefrom:now-2w"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "last_over_time(kube_pod_container_resource_requests{namespace=\"acme-backend\",deployment=\"acme-backend-worker\",resource=\"cpu\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "last_over_time(kube_pod_container_resource_limits{namespace=\"acme-backend\",deployment=\"acme-backend-worker\",resource=\"cpu\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "C",
+     "expr": "quantile_over_time(0.95, (avg(rate(container_cpu_usage_seconds_total{container!=\"\",namespace=\"acme-backend\",deployment=\"acme-backend-worker\"}[$__rate_interval])))[$__rate_interval:])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "D",
+     "expr": "avg(rate(container_cpu_usage_seconds_total{container!=\"\",namespace=\"acme-backend\",deployment=\"acme-backend-worker\"}[$__rate_interval]))"
+    }
+   ]
+  },
+  {
+   "id": "p02-w008",
+   "title": "Memory - Celery Events Worker Pods",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT latest(k8s.container.memoryRequestedBytes) as memRequest, latest(k8s.container.memoryLimitBytes) as memoryLimit, percentile(k8s.container.memoryWorkingSetBytes,95) as 'memoryUsed' from Metric where k8s.namespaceName = 'acme-backend' AND k8s.clusterName = concat('acme-cluster-', {{env}}) and k8s.deploymentName ='acme-backend-priority-worker' TIMESERIES 1 hour SINCE 2 weeks ago\n"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_memoryRequestedBytes{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-priority-worker\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_memoryLimitBytes{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-priority-worker\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "histogram_quantile(0.95, sum by (le)(rate(k8s_container_memoryWorkingSetBytes_bucket{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-priority-worker\"}[$__rate_interval])))"
+     }
+    ],
+    "notes": [
+     "attribute 'k8s.namespaceName' not in label_map; used 'k8s_namespaceName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName' \u2014 verify the label exists in your stack",
+     "assumed gauge 'k8s_container_memoryRequestedBytes'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_container_memoryLimitBytes'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed 'k8s.container.memoryWorkingSetBytes' is a histogram (required by percentile()); add it to metric_map with the exact Prometheus name/type",
+     "histogram_quantile interpolates within buckets; NR percentiles are computed from event data",
+     "TIMESERIES 1h: Grafana buckets by the query interval; set the panel's 'Min interval' to 1h to mirror NR bucketing",
+     "timefrom:now-2w"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "last_over_time(kube_pod_container_resource_requests{namespace=\"acme-backend\",deployment=\"acme-backend-priority-worker\",resource=\"memory\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "last_over_time(kube_pod_container_resource_limits{namespace=\"acme-backend\",deployment=\"acme-backend-priority-worker\",resource=\"memory\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "C",
+     "expr": "quantile_over_time(0.95, container_memory_working_set_bytes{namespace=\"acme-backend\",deployment=\"acme-backend-priority-worker\",container!=\"\"}[$__rate_interval])"
+    }
+   ]
+  },
+  {
+   "id": "p02-w009",
+   "title": "CPU - Celery Events Worker Pods",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT latest(k8s.container.cpuRequestedCores) as 'cpuRequested', latest(k8s.container.cpuLimitCores) as 'cpuLimit', percentile(k8s.container.cpuUsedCores,95) as 'cpuUsed', average(k8s.container.cpuUsedCores) as 'cpuUsed (avg)' from Metric where k8s.namespaceName = 'acme-backend' AND k8s.clusterName = concat('acme-cluster-', {{env}}) AND k8s.deploymentName = 'acme-backend-events-worker' TIMESERIES 1 hour SINCE 2 weeks ago\n"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_cpuRequestedCores{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-events-worker\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_cpuLimitCores{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-events-worker\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "histogram_quantile(0.95, sum by (le)(rate(k8s_container_cpuUsedCores_bucket{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-events-worker\"}[$__rate_interval])))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg(avg_over_time(k8s_container_cpuUsedCores{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-events-worker\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'k8s.namespaceName' not in label_map; used 'k8s_namespaceName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName' \u2014 verify the label exists in your stack",
+     "assumed gauge 'k8s_container_cpuRequestedCores'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_container_cpuLimitCores'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed 'k8s.container.cpuUsedCores' is a histogram (required by percentile()); add it to metric_map with the exact Prometheus name/type",
+     "histogram_quantile interpolates within buckets; NR percentiles are computed from event data",
+     "assumed gauge 'k8s_container_cpuUsedCores'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "TIMESERIES 1h: Grafana buckets by the query interval; set the panel's 'Min interval' to 1h to mirror NR bucketing",
+     "timefrom:now-2w"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "last_over_time(kube_pod_container_resource_requests{namespace=\"acme-backend\",deployment=\"acme-backend-events-worker\",resource=\"cpu\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "last_over_time(kube_pod_container_resource_limits{namespace=\"acme-backend\",deployment=\"acme-backend-events-worker\",resource=\"cpu\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "C",
+     "expr": "quantile_over_time(0.95, (avg(rate(container_cpu_usage_seconds_total{container!=\"\",namespace=\"acme-backend\",deployment=\"acme-backend-events-worker\"}[$__rate_interval])))[$__rate_interval:])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "D",
+     "expr": "avg(rate(container_cpu_usage_seconds_total{container!=\"\",namespace=\"acme-backend\",deployment=\"acme-backend-events-worker\"}[$__rate_interval]))"
+    }
+   ]
+  },
+  {
+   "id": "p02-w010",
+   "title": "Memory - Celery Priority Worker Pods",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT latest(k8s.container.memoryRequestedBytes) as memRequest, latest(k8s.container.memoryLimitBytes) as memoryLimit, percentile(k8s.container.memoryWorkingSetBytes,95) as 'memoryUsed' from Metric where k8s.namespaceName = 'acme-backend' AND k8s.clusterName = concat('acme-cluster-', {{env}}) and k8s.deploymentName ='acme-backend-events-worker' TIMESERIES 1 hour SINCE 2 weeks ago\n"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_memoryRequestedBytes{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-events-worker\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_memoryLimitBytes{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-events-worker\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "histogram_quantile(0.95, sum by (le)(rate(k8s_container_memoryWorkingSetBytes_bucket{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-events-worker\"}[$__rate_interval])))"
+     }
+    ],
+    "notes": [
+     "attribute 'k8s.namespaceName' not in label_map; used 'k8s_namespaceName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName' \u2014 verify the label exists in your stack",
+     "assumed gauge 'k8s_container_memoryRequestedBytes'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_container_memoryLimitBytes'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed 'k8s.container.memoryWorkingSetBytes' is a histogram (required by percentile()); add it to metric_map with the exact Prometheus name/type",
+     "histogram_quantile interpolates within buckets; NR percentiles are computed from event data",
+     "TIMESERIES 1h: Grafana buckets by the query interval; set the panel's 'Min interval' to 1h to mirror NR bucketing",
+     "timefrom:now-2w"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "last_over_time(kube_pod_container_resource_requests{namespace=\"acme-backend\",deployment=\"acme-backend-events-worker\",resource=\"memory\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "last_over_time(kube_pod_container_resource_limits{namespace=\"acme-backend\",deployment=\"acme-backend-events-worker\",resource=\"memory\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "C",
+     "expr": "quantile_over_time(0.95, container_memory_working_set_bytes{namespace=\"acme-backend\",deployment=\"acme-backend-events-worker\",container!=\"\"}[$__rate_interval])"
+    }
+   ]
+  },
+  {
+   "id": "p02-w011",
+   "title": "CPU - Celery Priority Worker Pods",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT latest(k8s.container.cpuRequestedCores) as 'cpuRequested', latest(k8s.container.cpuLimitCores) as 'cpuLimit', percentile(k8s.container.cpuUsedCores,95) as 'cpuUsed', average(k8s.container.cpuUsedCores) as 'cpuUsed (avg)' from Metric where k8s.namespaceName = 'acme-backend' AND k8s.clusterName = concat('acme-cluster-', {{env}}) AND k8s.deploymentName = 'acme-backend-priority-worker' TIMESERIES 1 hour SINCE 2 weeks ago\n"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_cpuRequestedCores{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-priority-worker\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_cpuLimitCores{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-priority-worker\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "histogram_quantile(0.95, sum by (le)(rate(k8s_container_cpuUsedCores_bucket{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-priority-worker\"}[$__rate_interval])))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg(avg_over_time(k8s_container_cpuUsedCores{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-priority-worker\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'k8s.namespaceName' not in label_map; used 'k8s_namespaceName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName' \u2014 verify the label exists in your stack",
+     "assumed gauge 'k8s_container_cpuRequestedCores'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_container_cpuLimitCores'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed 'k8s.container.cpuUsedCores' is a histogram (required by percentile()); add it to metric_map with the exact Prometheus name/type",
+     "histogram_quantile interpolates within buckets; NR percentiles are computed from event data",
+     "assumed gauge 'k8s_container_cpuUsedCores'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "TIMESERIES 1h: Grafana buckets by the query interval; set the panel's 'Min interval' to 1h to mirror NR bucketing",
+     "timefrom:now-2w"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "last_over_time(kube_pod_container_resource_requests{namespace=\"acme-backend\",deployment=\"acme-backend-priority-worker\",resource=\"cpu\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "last_over_time(kube_pod_container_resource_limits{namespace=\"acme-backend\",deployment=\"acme-backend-priority-worker\",resource=\"cpu\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "C",
+     "expr": "quantile_over_time(0.95, (avg(rate(container_cpu_usage_seconds_total{container!=\"\",namespace=\"acme-backend\",deployment=\"acme-backend-priority-worker\"}[$__rate_interval])))[$__rate_interval:])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "D",
+     "expr": "avg(rate(container_cpu_usage_seconds_total{container!=\"\",namespace=\"acme-backend\",deployment=\"acme-backend-priority-worker\"}[$__rate_interval]))"
+    }
+   ]
+  },
+  {
+   "id": "p02-w012",
+   "title": "Memory - Celery High Latency Worker Pods",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT latest(k8s.container.memoryRequestedBytes) as memRequest, latest(k8s.container.memoryLimitBytes) as memoryLimit, percentile(k8s.container.memoryWorkingSetBytes,95) as 'memoryUsed' from Metric where k8s.namespaceName = 'acme-backend' AND k8s.clusterName = concat('acme-cluster-', {{env}}) and k8s.deploymentName ='acme-backend-high-latency-worker' TIMESERIES 1 hour SINCE 2 weeks ago\n"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_memoryRequestedBytes{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-high-latency-worker\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_memoryLimitBytes{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-high-latency-worker\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "histogram_quantile(0.95, sum by (le)(rate(k8s_container_memoryWorkingSetBytes_bucket{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-high-latency-worker\"}[$__rate_interval])))"
+     }
+    ],
+    "notes": [
+     "attribute 'k8s.namespaceName' not in label_map; used 'k8s_namespaceName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName' \u2014 verify the label exists in your stack",
+     "assumed gauge 'k8s_container_memoryRequestedBytes'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_container_memoryLimitBytes'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed 'k8s.container.memoryWorkingSetBytes' is a histogram (required by percentile()); add it to metric_map with the exact Prometheus name/type",
+     "histogram_quantile interpolates within buckets; NR percentiles are computed from event data",
+     "TIMESERIES 1h: Grafana buckets by the query interval; set the panel's 'Min interval' to 1h to mirror NR bucketing",
+     "timefrom:now-2w"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "last_over_time(kube_pod_container_resource_requests{namespace=\"acme-backend\",deployment=\"acme-backend-high-latency-worker\",resource=\"memory\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "last_over_time(kube_pod_container_resource_limits{namespace=\"acme-backend\",deployment=\"acme-backend-high-latency-worker\",resource=\"memory\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "C",
+     "expr": "quantile_over_time(0.95, container_memory_working_set_bytes{namespace=\"acme-backend\",deployment=\"acme-backend-high-latency-worker\",container!=\"\"}[$__rate_interval])"
+    }
+   ]
+  },
+  {
+   "id": "p02-w013",
+   "title": "CPU - Celery High Latency Worker Pods",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT latest(k8s.container.cpuRequestedCores) as 'cpuRequested', latest(k8s.container.cpuLimitCores) as 'cpuLimit', percentile(k8s.container.cpuUsedCores,95) as 'cpuUsed', average(k8s.container.cpuUsedCores) as 'cpuUsed (avg)' from Metric where k8s.namespaceName = 'acme-backend' AND k8s.clusterName = concat('acme-cluster-', {{env}}) AND k8s.deploymentName = 'acme-backend-high-latency-worker' TIMESERIES 1 hour SINCE 2 weeks ago\n"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_cpuRequestedCores{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-high-latency-worker\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_cpuLimitCores{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-high-latency-worker\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "histogram_quantile(0.95, sum by (le)(rate(k8s_container_cpuUsedCores_bucket{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-high-latency-worker\"}[$__rate_interval])))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg(avg_over_time(k8s_container_cpuUsedCores{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-high-latency-worker\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'k8s.namespaceName' not in label_map; used 'k8s_namespaceName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName' \u2014 verify the label exists in your stack",
+     "assumed gauge 'k8s_container_cpuRequestedCores'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_container_cpuLimitCores'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed 'k8s.container.cpuUsedCores' is a histogram (required by percentile()); add it to metric_map with the exact Prometheus name/type",
+     "histogram_quantile interpolates within buckets; NR percentiles are computed from event data",
+     "assumed gauge 'k8s_container_cpuUsedCores'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "TIMESERIES 1h: Grafana buckets by the query interval; set the panel's 'Min interval' to 1h to mirror NR bucketing",
+     "timefrom:now-2w"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "last_over_time(kube_pod_container_resource_requests{namespace=\"acme-backend\",deployment=\"acme-backend-high-latency-worker\",resource=\"cpu\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "last_over_time(kube_pod_container_resource_limits{namespace=\"acme-backend\",deployment=\"acme-backend-high-latency-worker\",resource=\"cpu\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "C",
+     "expr": "quantile_over_time(0.95, (avg(rate(container_cpu_usage_seconds_total{container!=\"\",namespace=\"acme-backend\",deployment=\"acme-backend-high-latency-worker\"}[$__rate_interval])))[$__rate_interval:])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "D",
+     "expr": "avg(rate(container_cpu_usage_seconds_total{container!=\"\",namespace=\"acme-backend\",deployment=\"acme-backend-high-latency-worker\"}[$__rate_interval]))"
+    }
+   ]
+  },
+  {
+   "id": "p02-w014",
+   "title": "Memory - Celery Grx Sync Worker Pods",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT latest(k8s.container.memoryRequestedBytes) as memRequest, latest(k8s.container.memoryLimitBytes) as memoryLimit, percentile(k8s.container.memoryWorkingSetBytes,95) as 'memoryUsed' from Metric where k8s.namespaceName = 'acme-backend' AND k8s.clusterName = concat('acme-cluster-', {{env}}) and k8s.deploymentName ='acme-backend-grx-sync-worker' TIMESERIES 1 hour SINCE 2 weeks ago\n"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_memoryRequestedBytes{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-grx-sync-worker\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_memoryLimitBytes{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-grx-sync-worker\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "histogram_quantile(0.95, sum by (le)(rate(k8s_container_memoryWorkingSetBytes_bucket{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-grx-sync-worker\"}[$__rate_interval])))"
+     }
+    ],
+    "notes": [
+     "attribute 'k8s.namespaceName' not in label_map; used 'k8s_namespaceName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName' \u2014 verify the label exists in your stack",
+     "assumed gauge 'k8s_container_memoryRequestedBytes'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_container_memoryLimitBytes'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed 'k8s.container.memoryWorkingSetBytes' is a histogram (required by percentile()); add it to metric_map with the exact Prometheus name/type",
+     "histogram_quantile interpolates within buckets; NR percentiles are computed from event data",
+     "TIMESERIES 1h: Grafana buckets by the query interval; set the panel's 'Min interval' to 1h to mirror NR bucketing",
+     "timefrom:now-2w"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "last_over_time(kube_pod_container_resource_requests{namespace=\"acme-backend\",deployment=\"acme-backend-grx-sync-worker\",resource=\"memory\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "last_over_time(kube_pod_container_resource_limits{namespace=\"acme-backend\",deployment=\"acme-backend-grx-sync-worker\",resource=\"memory\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "C",
+     "expr": "quantile_over_time(0.95, container_memory_working_set_bytes{namespace=\"acme-backend\",deployment=\"acme-backend-grx-sync-worker\",container!=\"\"}[$__rate_interval])"
+    }
+   ]
+  },
+  {
+   "id": "p02-w015",
+   "title": "CPU - Celery Grx Sync Worker Pods",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT latest(k8s.container.cpuRequestedCores) as 'cpuRequested', latest(k8s.container.cpuLimitCores) as 'cpuLimit', percentile(k8s.container.cpuUsedCores,95) as 'cpuUsed', average(k8s.container.cpuUsedCores) as 'cpuUsed (avg)' from Metric where k8s.namespaceName = 'acme-backend' AND k8s.clusterName = concat('acme-cluster-', {{env}}) AND k8s.deploymentName = 'acme-backend-grx-sync-worker' TIMESERIES 1 hour SINCE 2 weeks ago\n"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_cpuRequestedCores{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-grx-sync-worker\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_cpuLimitCores{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-grx-sync-worker\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "histogram_quantile(0.95, sum by (le)(rate(k8s_container_cpuUsedCores_bucket{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-grx-sync-worker\"}[$__rate_interval])))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg(avg_over_time(k8s_container_cpuUsedCores{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-grx-sync-worker\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'k8s.namespaceName' not in label_map; used 'k8s_namespaceName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName' \u2014 verify the label exists in your stack",
+     "assumed gauge 'k8s_container_cpuRequestedCores'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_container_cpuLimitCores'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed 'k8s.container.cpuUsedCores' is a histogram (required by percentile()); add it to metric_map with the exact Prometheus name/type",
+     "histogram_quantile interpolates within buckets; NR percentiles are computed from event data",
+     "assumed gauge 'k8s_container_cpuUsedCores'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "TIMESERIES 1h: Grafana buckets by the query interval; set the panel's 'Min interval' to 1h to mirror NR bucketing",
+     "timefrom:now-2w"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "last_over_time(kube_pod_container_resource_requests{namespace=\"acme-backend\",deployment=\"acme-backend-grx-sync-worker\",resource=\"cpu\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "last_over_time(kube_pod_container_resource_limits{namespace=\"acme-backend\",deployment=\"acme-backend-grx-sync-worker\",resource=\"cpu\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "C",
+     "expr": "quantile_over_time(0.95, (avg(rate(container_cpu_usage_seconds_total{container!=\"\",namespace=\"acme-backend\",deployment=\"acme-backend-grx-sync-worker\"}[$__rate_interval])))[$__rate_interval:])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "D",
+     "expr": "avg(rate(container_cpu_usage_seconds_total{container!=\"\",namespace=\"acme-backend\",deployment=\"acme-backend-grx-sync-worker\"}[$__rate_interval]))"
+    }
+   ]
+  },
+  {
+   "id": "p02-w016",
+   "title": "Memory - Celery Order Summary Worker Pods",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT latest(k8s.container.memoryRequestedBytes) as memRequest, latest(k8s.container.memoryLimitBytes) as memoryLimit, percentile(k8s.container.memoryWorkingSetBytes,95) as 'memoryUsed' from Metric where k8s.namespaceName = 'acme-backend' AND k8s.clusterName = concat('acme-cluster-', {{env}}) and k8s.deploymentName ='acme-backend-order-summary-worker' TIMESERIES 1 hour SINCE 2 weeks ago\n"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_memoryRequestedBytes{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-order-summary-worker\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_memoryLimitBytes{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-order-summary-worker\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "histogram_quantile(0.95, sum by (le)(rate(k8s_container_memoryWorkingSetBytes_bucket{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-order-summary-worker\"}[$__rate_interval])))"
+     }
+    ],
+    "notes": [
+     "attribute 'k8s.namespaceName' not in label_map; used 'k8s_namespaceName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName' \u2014 verify the label exists in your stack",
+     "assumed gauge 'k8s_container_memoryRequestedBytes'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_container_memoryLimitBytes'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed 'k8s.container.memoryWorkingSetBytes' is a histogram (required by percentile()); add it to metric_map with the exact Prometheus name/type",
+     "histogram_quantile interpolates within buckets; NR percentiles are computed from event data",
+     "TIMESERIES 1h: Grafana buckets by the query interval; set the panel's 'Min interval' to 1h to mirror NR bucketing",
+     "timefrom:now-2w"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "last_over_time(kube_pod_container_resource_requests{namespace=\"acme-backend\",deployment=\"acme-backend-order-summary-worker\",resource=\"memory\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "last_over_time(kube_pod_container_resource_limits{namespace=\"acme-backend\",deployment=\"acme-backend-order-summary-worker\",resource=\"memory\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "C",
+     "expr": "quantile_over_time(0.95, container_memory_working_set_bytes{namespace=\"acme-backend\",deployment=\"acme-backend-order-summary-worker\",container!=\"\"}[$__rate_interval])"
+    }
+   ]
+  },
+  {
+   "id": "p02-w017",
+   "title": "CPU - Celery Order Summary Worker Pods",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT latest(k8s.container.cpuRequestedCores) as 'cpuRequested', latest(k8s.container.cpuLimitCores) as 'cpuLimit', percentile(k8s.container.cpuUsedCores,95) as 'cpuUsed', average(k8s.container.cpuUsedCores) as 'cpuUsed (avg)' from Metric where k8s.namespaceName = 'acme-backend' AND k8s.clusterName = concat('acme-cluster-', {{env}}) AND k8s.deploymentName = 'acme-backend-order-summary-worker' TIMESERIES 1 hour SINCE 2 weeks ago\n"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_cpuRequestedCores{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-order-summary-worker\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_cpuLimitCores{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-order-summary-worker\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "histogram_quantile(0.95, sum by (le)(rate(k8s_container_cpuUsedCores_bucket{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-order-summary-worker\"}[$__rate_interval])))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg(avg_over_time(k8s_container_cpuUsedCores{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-order-summary-worker\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'k8s.namespaceName' not in label_map; used 'k8s_namespaceName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName' \u2014 verify the label exists in your stack",
+     "assumed gauge 'k8s_container_cpuRequestedCores'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_container_cpuLimitCores'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed 'k8s.container.cpuUsedCores' is a histogram (required by percentile()); add it to metric_map with the exact Prometheus name/type",
+     "histogram_quantile interpolates within buckets; NR percentiles are computed from event data",
+     "assumed gauge 'k8s_container_cpuUsedCores'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "TIMESERIES 1h: Grafana buckets by the query interval; set the panel's 'Min interval' to 1h to mirror NR bucketing",
+     "timefrom:now-2w"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "last_over_time(kube_pod_container_resource_requests{namespace=\"acme-backend\",deployment=\"acme-backend-order-summary-worker\",resource=\"cpu\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "last_over_time(kube_pod_container_resource_limits{namespace=\"acme-backend\",deployment=\"acme-backend-order-summary-worker\",resource=\"cpu\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "C",
+     "expr": "quantile_over_time(0.95, (avg(rate(container_cpu_usage_seconds_total{container!=\"\",namespace=\"acme-backend\",deployment=\"acme-backend-order-summary-worker\"}[$__rate_interval])))[$__rate_interval:])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "D",
+     "expr": "avg(rate(container_cpu_usage_seconds_total{container!=\"\",namespace=\"acme-backend\",deployment=\"acme-backend-order-summary-worker\"}[$__rate_interval]))"
+    }
+   ]
+  },
+  {
+   "id": "p02-w018",
+   "title": "Memory - Celery Scheduler Pods",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT latest(k8s.container.memoryRequestedBytes) as memRequest, latest(k8s.container.memoryLimitBytes) as memoryLimit, percentile(k8s.container.memoryWorkingSetBytes,95) as 'memoryUsed' from Metric where k8s.namespaceName = 'acme-backend' AND k8s.clusterName = concat('acme-cluster-', {{env}}) and k8s.deploymentName ='acme-backend-scheduler' TIMESERIES 1 hour SINCE 2 weeks ago\n"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_memoryRequestedBytes{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-scheduler\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_memoryLimitBytes{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-scheduler\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "histogram_quantile(0.95, sum by (le)(rate(k8s_container_memoryWorkingSetBytes_bucket{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-scheduler\"}[$__rate_interval])))"
+     }
+    ],
+    "notes": [
+     "attribute 'k8s.namespaceName' not in label_map; used 'k8s_namespaceName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName' \u2014 verify the label exists in your stack",
+     "assumed gauge 'k8s_container_memoryRequestedBytes'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_container_memoryLimitBytes'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed 'k8s.container.memoryWorkingSetBytes' is a histogram (required by percentile()); add it to metric_map with the exact Prometheus name/type",
+     "histogram_quantile interpolates within buckets; NR percentiles are computed from event data",
+     "TIMESERIES 1h: Grafana buckets by the query interval; set the panel's 'Min interval' to 1h to mirror NR bucketing",
+     "timefrom:now-2w"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "last_over_time(kube_pod_container_resource_requests{namespace=\"acme-backend\",deployment=\"acme-backend-scheduler\",resource=\"memory\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "last_over_time(kube_pod_container_resource_limits{namespace=\"acme-backend\",deployment=\"acme-backend-scheduler\",resource=\"memory\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "C",
+     "expr": "quantile_over_time(0.95, container_memory_working_set_bytes{namespace=\"acme-backend\",deployment=\"acme-backend-scheduler\",container!=\"\"}[$__rate_interval])"
+    }
+   ]
+  },
+  {
+   "id": "p02-w019",
+   "title": "CPU - Celery Scheduler Pods",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT latest(k8s.container.cpuRequestedCores) as 'cpuRequested', latest(k8s.container.cpuLimitCores) as 'cpuLimit', percentile(k8s.container.cpuUsedCores,95) as 'cpuUsed', average(k8s.container.cpuUsedCores) as 'cpuUsed (avg)' from Metric where k8s.namespaceName = 'acme-backend' AND k8s.clusterName = concat('acme-cluster-', {{env}}) AND k8s.deploymentName = 'acme-backend-scheduler' TIMESERIES 1 hour SINCE 2 weeks ago\n"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_cpuRequestedCores{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-scheduler\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_cpuLimitCores{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-scheduler\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "histogram_quantile(0.95, sum by (le)(rate(k8s_container_cpuUsedCores_bucket{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-scheduler\"}[$__rate_interval])))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg(avg_over_time(k8s_container_cpuUsedCores{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-scheduler\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'k8s.namespaceName' not in label_map; used 'k8s_namespaceName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName' \u2014 verify the label exists in your stack",
+     "assumed gauge 'k8s_container_cpuRequestedCores'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_container_cpuLimitCores'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed 'k8s.container.cpuUsedCores' is a histogram (required by percentile()); add it to metric_map with the exact Prometheus name/type",
+     "histogram_quantile interpolates within buckets; NR percentiles are computed from event data",
+     "assumed gauge 'k8s_container_cpuUsedCores'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "TIMESERIES 1h: Grafana buckets by the query interval; set the panel's 'Min interval' to 1h to mirror NR bucketing",
+     "timefrom:now-2w"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "last_over_time(kube_pod_container_resource_requests{namespace=\"acme-backend\",deployment=\"acme-backend-scheduler\",resource=\"cpu\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "last_over_time(kube_pod_container_resource_limits{namespace=\"acme-backend\",deployment=\"acme-backend-scheduler\",resource=\"cpu\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "C",
+     "expr": "quantile_over_time(0.95, (avg(rate(container_cpu_usage_seconds_total{container!=\"\",namespace=\"acme-backend\",deployment=\"acme-backend-scheduler\"}[$__rate_interval])))[$__rate_interval:])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "D",
+     "expr": "avg(rate(container_cpu_usage_seconds_total{container!=\"\",namespace=\"acme-backend\",deployment=\"acme-backend-scheduler\"}[$__rate_interval]))"
+    }
+   ]
+  },
+  {
+   "id": "p02-w020",
+   "title": "(untitled)",
+   "visualization": "viz.markdown",
+   "grafana_type": "text",
+   "nrql": [],
+   "before": {
+    "confidence": "exact",
+    "queries": [],
+    "notes": []
+   },
+   "expected": []
+  },
+  {
+   "id": "p02-w021",
+   "title": "Memory - Camunda Worker Pods",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT latest(k8s.container.memoryRequestedBytes) as memRequest, latest(k8s.container.memoryLimitBytes) as memoryLimit, percentile(k8s.container.memoryWorkingSetBytes,95) as 'memoryUsed' from Metric where k8s.namespaceName = 'acme-backend' AND k8s.clusterName = concat('acme-cluster-', {{env}}) and k8s.deploymentName ='acme-backend-workflow-automation-worker' TIMESERIES 1 hour SINCE 2 weeks ago\n"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_memoryRequestedBytes{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-workflow-automation-worker\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_memoryLimitBytes{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-workflow-automation-worker\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "histogram_quantile(0.95, sum by (le)(rate(k8s_container_memoryWorkingSetBytes_bucket{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-workflow-automation-worker\"}[$__rate_interval])))"
+     }
+    ],
+    "notes": [
+     "attribute 'k8s.namespaceName' not in label_map; used 'k8s_namespaceName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName' \u2014 verify the label exists in your stack",
+     "assumed gauge 'k8s_container_memoryRequestedBytes'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_container_memoryLimitBytes'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed 'k8s.container.memoryWorkingSetBytes' is a histogram (required by percentile()); add it to metric_map with the exact Prometheus name/type",
+     "histogram_quantile interpolates within buckets; NR percentiles are computed from event data",
+     "TIMESERIES 1h: Grafana buckets by the query interval; set the panel's 'Min interval' to 1h to mirror NR bucketing",
+     "timefrom:now-2w"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "last_over_time(kube_pod_container_resource_requests{namespace=\"acme-backend\",deployment=\"acme-backend-workflow-automation-worker\",resource=\"memory\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "last_over_time(kube_pod_container_resource_limits{namespace=\"acme-backend\",deployment=\"acme-backend-workflow-automation-worker\",resource=\"memory\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "C",
+     "expr": "quantile_over_time(0.95, container_memory_working_set_bytes{namespace=\"acme-backend\",deployment=\"acme-backend-workflow-automation-worker\",container!=\"\"}[$__rate_interval])"
+    }
+   ]
+  },
+  {
+   "id": "p02-w022",
+   "title": "CPU - New Camunda 7 Worker Pods",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT latest(k8s.container.cpuRequestedCores) as 'cpuRequested', latest(k8s.container.cpuLimitCores) as 'cpuLimit', percentile(k8s.container.cpuUsedCores,95) as 'cpuUsed' from Metric where k8s.namespaceName = 'acme-backend' AND k8s.clusterName = concat('acme-cluster-', {{env}}) AND k8s.deploymentName = 'acme-backend-workflow-automation-worker-c7-new' TIMESERIES 1 hour SINCE 2 weeks ago\n"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_cpuRequestedCores{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-workflow-automation-worker-c7-new\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_cpuLimitCores{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-workflow-automation-worker-c7-new\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "histogram_quantile(0.95, sum by (le)(rate(k8s_container_cpuUsedCores_bucket{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-workflow-automation-worker-c7-new\"}[$__rate_interval])))"
+     }
+    ],
+    "notes": [
+     "attribute 'k8s.namespaceName' not in label_map; used 'k8s_namespaceName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName' \u2014 verify the label exists in your stack",
+     "assumed gauge 'k8s_container_cpuRequestedCores'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_container_cpuLimitCores'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed 'k8s.container.cpuUsedCores' is a histogram (required by percentile()); add it to metric_map with the exact Prometheus name/type",
+     "histogram_quantile interpolates within buckets; NR percentiles are computed from event data",
+     "TIMESERIES 1h: Grafana buckets by the query interval; set the panel's 'Min interval' to 1h to mirror NR bucketing",
+     "timefrom:now-2w"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "last_over_time(kube_pod_container_resource_requests{namespace=\"acme-backend\",deployment=\"acme-backend-workflow-automation-worker-c7-new\",resource=\"cpu\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "last_over_time(kube_pod_container_resource_limits{namespace=\"acme-backend\",deployment=\"acme-backend-workflow-automation-worker-c7-new\",resource=\"cpu\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "C",
+     "expr": "quantile_over_time(0.95, (avg(rate(container_cpu_usage_seconds_total{container!=\"\",namespace=\"acme-backend\",deployment=\"acme-backend-workflow-automation-worker-c7-new\"}[$__rate_interval])))[$__rate_interval:])"
+    }
+   ]
+  },
+  {
+   "id": "p02-w023",
+   "title": "Memory - New Camunda 7 Worker Pods",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT latest(k8s.container.memoryRequestedBytes) as memRequest, latest(k8s.container.memoryLimitBytes) as memoryLimit, percentile(k8s.container.memoryWorkingSetBytes,95) as 'memoryUsed' from Metric where k8s.namespaceName = 'acme-backend' AND k8s.clusterName = concat('acme-cluster-', {{env}}) and k8s.deploymentName ='acme-backend-workflow-automation-worker-c7-new' TIMESERIES 1 hour SINCE 2 weeks ago\n"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_memoryRequestedBytes{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-workflow-automation-worker-c7-new\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_memoryLimitBytes{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-workflow-automation-worker-c7-new\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "histogram_quantile(0.95, sum by (le)(rate(k8s_container_memoryWorkingSetBytes_bucket{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-workflow-automation-worker-c7-new\"}[$__rate_interval])))"
+     }
+    ],
+    "notes": [
+     "attribute 'k8s.namespaceName' not in label_map; used 'k8s_namespaceName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName' \u2014 verify the label exists in your stack",
+     "assumed gauge 'k8s_container_memoryRequestedBytes'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_container_memoryLimitBytes'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed 'k8s.container.memoryWorkingSetBytes' is a histogram (required by percentile()); add it to metric_map with the exact Prometheus name/type",
+     "histogram_quantile interpolates within buckets; NR percentiles are computed from event data",
+     "TIMESERIES 1h: Grafana buckets by the query interval; set the panel's 'Min interval' to 1h to mirror NR bucketing",
+     "timefrom:now-2w"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "last_over_time(kube_pod_container_resource_requests{namespace=\"acme-backend\",deployment=\"acme-backend-workflow-automation-worker-c7-new\",resource=\"memory\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "last_over_time(kube_pod_container_resource_limits{namespace=\"acme-backend\",deployment=\"acme-backend-workflow-automation-worker-c7-new\",resource=\"memory\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "C",
+     "expr": "quantile_over_time(0.95, container_memory_working_set_bytes{namespace=\"acme-backend\",deployment=\"acme-backend-workflow-automation-worker-c7-new\",container!=\"\"}[$__rate_interval])"
+    }
+   ]
+  },
+  {
+   "id": "p02-w024",
+   "title": "CPU - Camunda Worker Pods",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT latest(k8s.container.cpuRequestedCores) as 'cpuRequested', latest(k8s.container.cpuLimitCores) as 'cpuLimit', percentile(k8s.container.cpuUsedCores,95) as 'cpuUsed' from Metric where k8s.namespaceName = 'acme-backend' AND k8s.clusterName = concat('acme-cluster-', {{env}}) AND k8s.deploymentName = 'acme-backend-workflow-automation-worker' TIMESERIES 1 hour SINCE 2 weeks ago\n"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_cpuRequestedCores{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-workflow-automation-worker\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_cpuLimitCores{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-workflow-automation-worker\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "histogram_quantile(0.95, sum by (le)(rate(k8s_container_cpuUsedCores_bucket{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-workflow-automation-worker\"}[$__rate_interval])))"
+     }
+    ],
+    "notes": [
+     "attribute 'k8s.namespaceName' not in label_map; used 'k8s_namespaceName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName' \u2014 verify the label exists in your stack",
+     "assumed gauge 'k8s_container_cpuRequestedCores'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_container_cpuLimitCores'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed 'k8s.container.cpuUsedCores' is a histogram (required by percentile()); add it to metric_map with the exact Prometheus name/type",
+     "histogram_quantile interpolates within buckets; NR percentiles are computed from event data",
+     "TIMESERIES 1h: Grafana buckets by the query interval; set the panel's 'Min interval' to 1h to mirror NR bucketing",
+     "timefrom:now-2w"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "last_over_time(kube_pod_container_resource_requests{namespace=\"acme-backend\",deployment=\"acme-backend-workflow-automation-worker\",resource=\"cpu\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "last_over_time(kube_pod_container_resource_limits{namespace=\"acme-backend\",deployment=\"acme-backend-workflow-automation-worker\",resource=\"cpu\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "C",
+     "expr": "quantile_over_time(0.95, (avg(rate(container_cpu_usage_seconds_total{container!=\"\",namespace=\"acme-backend\",deployment=\"acme-backend-workflow-automation-worker\"}[$__rate_interval])))[$__rate_interval:])"
+    }
+   ]
+  },
+  {
+   "id": "p02-w025",
+   "title": "Memory - New Camunda 8 Worker Pods",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT latest(k8s.container.memoryRequestedBytes) as memRequest, latest(k8s.container.memoryLimitBytes) as memoryLimit, percentile(k8s.container.memoryWorkingSetBytes,95) as 'memoryUsed' from Metric where k8s.namespaceName = 'acme-backend' AND k8s.clusterName = concat('acme-cluster-', {{env}}) and k8s.deploymentName ='acme-backend-workflow-automation-worker-c8' TIMESERIES 1 hour SINCE 2 weeks ago\n"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_memoryRequestedBytes{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-workflow-automation-worker-c8\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_memoryLimitBytes{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-workflow-automation-worker-c8\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "histogram_quantile(0.95, sum by (le)(rate(k8s_container_memoryWorkingSetBytes_bucket{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-workflow-automation-worker-c8\"}[$__rate_interval])))"
+     }
+    ],
+    "notes": [
+     "attribute 'k8s.namespaceName' not in label_map; used 'k8s_namespaceName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName' \u2014 verify the label exists in your stack",
+     "assumed gauge 'k8s_container_memoryRequestedBytes'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_container_memoryLimitBytes'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed 'k8s.container.memoryWorkingSetBytes' is a histogram (required by percentile()); add it to metric_map with the exact Prometheus name/type",
+     "histogram_quantile interpolates within buckets; NR percentiles are computed from event data",
+     "TIMESERIES 1h: Grafana buckets by the query interval; set the panel's 'Min interval' to 1h to mirror NR bucketing",
+     "timefrom:now-2w"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "last_over_time(kube_pod_container_resource_requests{namespace=\"acme-backend\",deployment=\"acme-backend-workflow-automation-worker-c8\",resource=\"memory\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "last_over_time(kube_pod_container_resource_limits{namespace=\"acme-backend\",deployment=\"acme-backend-workflow-automation-worker-c8\",resource=\"memory\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "C",
+     "expr": "quantile_over_time(0.95, container_memory_working_set_bytes{namespace=\"acme-backend\",deployment=\"acme-backend-workflow-automation-worker-c8\",container!=\"\"}[$__rate_interval])"
+    }
+   ]
+  },
+  {
+   "id": "p02-w026",
+   "title": "CPU - Camunda C8 Worker Pods",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT latest(k8s.container.cpuRequestedCores) as 'cpuRequested', latest(k8s.container.cpuLimitCores) as 'cpuLimit', percentile(k8s.container.cpuUsedCores,95) as 'cpuUsed', average(k8s.container.cpuUsedCores) as 'cpuUsed (avg)' from Metric where k8s.namespaceName = 'acme-backend' AND k8s.clusterName = concat('acme-cluster-', {{env}}) AND k8s.deploymentName = 'acme-backend-workflow-automation-worker-c8' TIMESERIES 1 hour SINCE 2 weeks ago\n"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_cpuRequestedCores{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-workflow-automation-worker-c8\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_cpuLimitCores{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-workflow-automation-worker-c8\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "histogram_quantile(0.95, sum by (le)(rate(k8s_container_cpuUsedCores_bucket{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-workflow-automation-worker-c8\"}[$__rate_interval])))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg(avg_over_time(k8s_container_cpuUsedCores{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-workflow-automation-worker-c8\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'k8s.namespaceName' not in label_map; used 'k8s_namespaceName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName' \u2014 verify the label exists in your stack",
+     "assumed gauge 'k8s_container_cpuRequestedCores'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_container_cpuLimitCores'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed 'k8s.container.cpuUsedCores' is a histogram (required by percentile()); add it to metric_map with the exact Prometheus name/type",
+     "histogram_quantile interpolates within buckets; NR percentiles are computed from event data",
+     "assumed gauge 'k8s_container_cpuUsedCores'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "TIMESERIES 1h: Grafana buckets by the query interval; set the panel's 'Min interval' to 1h to mirror NR bucketing",
+     "timefrom:now-2w"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "last_over_time(kube_pod_container_resource_requests{namespace=\"acme-backend\",deployment=\"acme-backend-workflow-automation-worker-c8\",resource=\"cpu\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "last_over_time(kube_pod_container_resource_limits{namespace=\"acme-backend\",deployment=\"acme-backend-workflow-automation-worker-c8\",resource=\"cpu\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "C",
+     "expr": "quantile_over_time(0.95, (avg(rate(container_cpu_usage_seconds_total{container!=\"\",namespace=\"acme-backend\",deployment=\"acme-backend-workflow-automation-worker-c8\"}[$__rate_interval])))[$__rate_interval:])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "D",
+     "expr": "avg(rate(container_cpu_usage_seconds_total{container!=\"\",namespace=\"acme-backend\",deployment=\"acme-backend-workflow-automation-worker-c8\"}[$__rate_interval]))"
+    }
+   ]
+  },
+  {
+   "id": "p02-w027",
+   "title": "Throttling CPU - New Camunda 7 Worker Pods (%)",
+   "visualization": "viz.line",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT sum(containerCpuCfsThrottledPeriodsDelta) / sum(containerCpuCfsPeriodsDelta) * 100 AS 'CPU throttling (%)' FROM K8sContainerSample WHERE (clusterName = concat('acme-cluster-', {{env}}) AND namespaceName = 'acme-backend' AND deploymentName in ('acme-backend-workflow-automation-worker-c7-new') ) FACET `containerName` LIMIT 20 SINCE 12 hours ago TIMESERIES UNTIL now "
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "no metric mapping for FROM K8sContainerSample"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p02-w028",
+   "title": "(untitled)",
+   "visualization": "viz.markdown",
+   "grafana_type": "text",
+   "nrql": [],
+   "before": {
+    "confidence": "exact",
+    "queries": [],
+    "notes": []
+   },
+   "expected": []
+  },
+  {
+   "id": "p02-w029",
+   "title": "Memory - Internal Pods",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT latest(k8s.container.memoryRequestedBytes) as memRequest, latest(k8s.container.memoryLimitBytes) as memoryLimit, percentile(k8s.container.memoryWorkingSetBytes,95) as 'memoryUsed' from Metric where k8s.namespaceName = 'acme-backend' AND k8s.clusterName = concat('acme-cluster-', {{env}}) and k8s.deploymentName ='acme-backend-internal' TIMESERIES 1 hour SINCE 2 weeks ago\n"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_memoryRequestedBytes{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-internal\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_memoryLimitBytes{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-internal\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "histogram_quantile(0.95, sum by (le)(rate(k8s_container_memoryWorkingSetBytes_bucket{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-internal\"}[$__rate_interval])))"
+     }
+    ],
+    "notes": [
+     "attribute 'k8s.namespaceName' not in label_map; used 'k8s_namespaceName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName' \u2014 verify the label exists in your stack",
+     "assumed gauge 'k8s_container_memoryRequestedBytes'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_container_memoryLimitBytes'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed 'k8s.container.memoryWorkingSetBytes' is a histogram (required by percentile()); add it to metric_map with the exact Prometheus name/type",
+     "histogram_quantile interpolates within buckets; NR percentiles are computed from event data",
+     "TIMESERIES 1h: Grafana buckets by the query interval; set the panel's 'Min interval' to 1h to mirror NR bucketing",
+     "timefrom:now-2w"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "last_over_time(kube_pod_container_resource_requests{namespace=\"acme-backend\",deployment=\"acme-backend-internal\",resource=\"memory\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "last_over_time(kube_pod_container_resource_limits{namespace=\"acme-backend\",deployment=\"acme-backend-internal\",resource=\"memory\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "C",
+     "expr": "quantile_over_time(0.95, container_memory_working_set_bytes{namespace=\"acme-backend\",deployment=\"acme-backend-internal\",container!=\"\"}[$__rate_interval])"
+    }
+   ]
+  },
+  {
+   "id": "p02-w030",
+   "title": "CPU Internal Pods",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT \nlatest(k8s.container.cpuRequestedCores) as 'cpuRequested', \nlatest(k8s.container.cpuLimitCores) as 'cpuLimit', \npercentile(k8s.container.cpuUsedCores,95) as 'cpuUsed p95',\naverage(k8s.container.cpuUsedCores) as 'cpuUsed avg'  \nfrom Metric \nwhere k8s.namespaceName = 'acme-backend' \nAND k8s.clusterName = concat('acme-cluster-', {{env}}) \nAND k8s.deploymentName = 'acme-backend-internal' \nTIMESERIES 1 hour \n"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_cpuRequestedCores{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-internal\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_cpuLimitCores{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-internal\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "histogram_quantile(0.95, sum by (le)(rate(k8s_container_cpuUsedCores_bucket{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-internal\"}[$__rate_interval])))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg(avg_over_time(k8s_container_cpuUsedCores{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-internal\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'k8s.namespaceName' not in label_map; used 'k8s_namespaceName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName' \u2014 verify the label exists in your stack",
+     "assumed gauge 'k8s_container_cpuRequestedCores'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_container_cpuLimitCores'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed 'k8s.container.cpuUsedCores' is a histogram (required by percentile()); add it to metric_map with the exact Prometheus name/type",
+     "histogram_quantile interpolates within buckets; NR percentiles are computed from event data",
+     "assumed gauge 'k8s_container_cpuUsedCores'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "TIMESERIES 1h: Grafana buckets by the query interval; set the panel's 'Min interval' to 1h to mirror NR bucketing"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "last_over_time(kube_pod_container_resource_requests{namespace=\"acme-backend\",deployment=\"acme-backend-internal\",resource=\"cpu\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "last_over_time(kube_pod_container_resource_limits{namespace=\"acme-backend\",deployment=\"acme-backend-internal\",resource=\"cpu\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "C",
+     "expr": "quantile_over_time(0.95, (avg(rate(container_cpu_usage_seconds_total{container!=\"\",namespace=\"acme-backend\",deployment=\"acme-backend-internal\"}[$__rate_interval])))[$__rate_interval:])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "D",
+     "expr": "avg(rate(container_cpu_usage_seconds_total{container!=\"\",namespace=\"acme-backend\",deployment=\"acme-backend-internal\"}[$__rate_interval]))"
+    }
+   ]
+  },
+  {
+   "id": "p02-w031",
+   "title": "CPU (p95) - Internal Pods",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT \nlatest(k8s.container.cpuRequestedCores) as 'cpuRequested', \nlatest(k8s.container.cpuLimitCores) as 'cpuLimit', \npercentile(k8s.container.cpuUsedCores,95) as 'cpuUsed' \nfrom Metric \nwhere k8s.namespaceName = 'acme-backend' \nAND k8s.clusterName = concat('acme-cluster-', {{env}}) \nAND k8s.deploymentName = 'acme-backend-internal' \nTIMESERIES 1 hour \n"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_cpuRequestedCores{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-internal\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_cpuLimitCores{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-internal\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "histogram_quantile(0.95, sum by (le)(rate(k8s_container_cpuUsedCores_bucket{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-internal\"}[$__rate_interval])))"
+     }
+    ],
+    "notes": [
+     "attribute 'k8s.namespaceName' not in label_map; used 'k8s_namespaceName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName' \u2014 verify the label exists in your stack",
+     "assumed gauge 'k8s_container_cpuRequestedCores'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_container_cpuLimitCores'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed 'k8s.container.cpuUsedCores' is a histogram (required by percentile()); add it to metric_map with the exact Prometheus name/type",
+     "histogram_quantile interpolates within buckets; NR percentiles are computed from event data",
+     "TIMESERIES 1h: Grafana buckets by the query interval; set the panel's 'Min interval' to 1h to mirror NR bucketing"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "last_over_time(kube_pod_container_resource_requests{namespace=\"acme-backend\",deployment=\"acme-backend-internal\",resource=\"cpu\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "last_over_time(kube_pod_container_resource_limits{namespace=\"acme-backend\",deployment=\"acme-backend-internal\",resource=\"cpu\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "C",
+     "expr": "quantile_over_time(0.95, (avg(rate(container_cpu_usage_seconds_total{container!=\"\",namespace=\"acme-backend\",deployment=\"acme-backend-internal\"}[$__rate_interval])))[$__rate_interval:])"
+    }
+   ]
+  },
+  {
+   "id": "p02-w032",
+   "title": "(untitled)",
+   "visualization": "viz.markdown",
+   "grafana_type": "text",
+   "nrql": [],
+   "before": {
+    "confidence": "exact",
+    "queries": [],
+    "notes": []
+   },
+   "expected": []
+  },
+  {
+   "id": "p02-w033",
+   "title": "Memory - Internal Pods",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT latest(k8s.container.memoryRequestedBytes) as memRequest, latest(k8s.container.memoryLimitBytes) as memoryLimit, percentile(k8s.container.memoryWorkingSetBytes,95) as 'memoryUsed' from Metric where k8s.namespaceName = 'acme-backend' AND k8s.clusterName = concat('acme-cluster-', {{env}}) and k8s.deploymentName ='acme-backend-topic-consumer' TIMESERIES 1 hour SINCE 2 weeks ago\n"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_memoryRequestedBytes{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-topic-consumer\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_memoryLimitBytes{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-topic-consumer\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "histogram_quantile(0.95, sum by (le)(rate(k8s_container_memoryWorkingSetBytes_bucket{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-topic-consumer\"}[$__rate_interval])))"
+     }
+    ],
+    "notes": [
+     "attribute 'k8s.namespaceName' not in label_map; used 'k8s_namespaceName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName' \u2014 verify the label exists in your stack",
+     "assumed gauge 'k8s_container_memoryRequestedBytes'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_container_memoryLimitBytes'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed 'k8s.container.memoryWorkingSetBytes' is a histogram (required by percentile()); add it to metric_map with the exact Prometheus name/type",
+     "histogram_quantile interpolates within buckets; NR percentiles are computed from event data",
+     "TIMESERIES 1h: Grafana buckets by the query interval; set the panel's 'Min interval' to 1h to mirror NR bucketing",
+     "timefrom:now-2w"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "last_over_time(kube_pod_container_resource_requests{namespace=\"acme-backend\",deployment=\"acme-backend-topic-consumer\",resource=\"memory\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "last_over_time(kube_pod_container_resource_limits{namespace=\"acme-backend\",deployment=\"acme-backend-topic-consumer\",resource=\"memory\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "C",
+     "expr": "quantile_over_time(0.95, container_memory_working_set_bytes{namespace=\"acme-backend\",deployment=\"acme-backend-topic-consumer\",container!=\"\"}[$__rate_interval])"
+    }
+   ]
+  },
+  {
+   "id": "p02-w034",
+   "title": "CPU (p95) - SQS Pods",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT \nlatest(k8s.container.cpuRequestedCores) as 'cpuRequested', \nlatest(k8s.container.cpuLimitCores) as 'cpuLimit', \naverage(k8s.container.cpuUsedCores) as 'cpuUsed (avg)',\npercentile(k8s.container.cpuUsedCores,95) as 'cpuUsed' \nfrom Metric \nwhere k8s.namespaceName = 'acme-backend' \nAND k8s.clusterName = concat('acme-cluster-', {{env}}) \nAND k8s.deploymentName = 'acme-backend-topic-consumer' \nTIMESERIES 1 hour \n"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_cpuRequestedCores{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-topic-consumer\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_cpuLimitCores{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-topic-consumer\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg(avg_over_time(k8s_container_cpuUsedCores{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-topic-consumer\"}[$__rate_interval]))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "histogram_quantile(0.95, sum by (le)(rate(k8s_container_cpuUsedCores_bucket{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-topic-consumer\"}[$__rate_interval])))"
+     }
+    ],
+    "notes": [
+     "attribute 'k8s.namespaceName' not in label_map; used 'k8s_namespaceName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName' \u2014 verify the label exists in your stack",
+     "assumed gauge 'k8s_container_cpuRequestedCores'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_container_cpuLimitCores'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_container_cpuUsedCores'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed 'k8s.container.cpuUsedCores' is a histogram (required by percentile()); add it to metric_map with the exact Prometheus name/type",
+     "histogram_quantile interpolates within buckets; NR percentiles are computed from event data",
+     "TIMESERIES 1h: Grafana buckets by the query interval; set the panel's 'Min interval' to 1h to mirror NR bucketing"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "last_over_time(kube_pod_container_resource_requests{namespace=\"acme-backend\",deployment=\"acme-backend-topic-consumer\",resource=\"cpu\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "last_over_time(kube_pod_container_resource_limits{namespace=\"acme-backend\",deployment=\"acme-backend-topic-consumer\",resource=\"cpu\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "C",
+     "expr": "avg(rate(container_cpu_usage_seconds_total{container!=\"\",namespace=\"acme-backend\",deployment=\"acme-backend-topic-consumer\"}[$__rate_interval]))"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "D",
+     "expr": "quantile_over_time(0.95, (avg(rate(container_cpu_usage_seconds_total{container!=\"\",namespace=\"acme-backend\",deployment=\"acme-backend-topic-consumer\"}[$__rate_interval])))[$__rate_interval:])"
+    }
+   ]
+  },
+  {
+   "id": "p02-w035",
+   "title": "CPU Throttling",
+   "visualization": "viz.line",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT sum(containerCpuCfsThrottledPeriodsDelta) / sum(containerCpuCfsPeriodsDelta) * 100 AS 'CPU throttling (%)' FROM K8sContainerSample WHERE (clusterName = concat('acme-cluster-', {{env}}) AND namespaceName = 'acme-backend' AND deploymentName in ('acme-backend-topic-consumer') ) FACET podName, containerName TIMESERIES"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "no metric mapping for FROM K8sContainerSample"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p02-w036",
+   "title": "(untitled)",
+   "visualization": "viz.markdown",
+   "grafana_type": "text",
+   "nrql": [],
+   "before": {
+    "confidence": "exact",
+    "queries": [],
+    "notes": []
+   },
+   "expected": []
+  },
+  {
+   "id": "p02-w037",
+   "title": "Memory - Public Pods",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT latest(k8s.container.memoryRequestedBytes) as memRequest, latest(k8s.container.memoryLimitBytes) as memoryLimit, percentile(k8s.container.memoryWorkingSetBytes,95) as 'memoryUsed' from Metric where k8s.namespaceName = 'acme-backend' AND k8s.clusterName = concat('acme-cluster-', {{env}}) and k8s.deploymentName ='acme-backend-public' TIMESERIES 1 hour SINCE 2 weeks ago\n"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_memoryRequestedBytes{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-public\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_memoryLimitBytes{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-public\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "histogram_quantile(0.95, sum by (le)(rate(k8s_container_memoryWorkingSetBytes_bucket{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-public\"}[$__rate_interval])))"
+     }
+    ],
+    "notes": [
+     "attribute 'k8s.namespaceName' not in label_map; used 'k8s_namespaceName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName' \u2014 verify the label exists in your stack",
+     "assumed gauge 'k8s_container_memoryRequestedBytes'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_container_memoryLimitBytes'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed 'k8s.container.memoryWorkingSetBytes' is a histogram (required by percentile()); add it to metric_map with the exact Prometheus name/type",
+     "histogram_quantile interpolates within buckets; NR percentiles are computed from event data",
+     "TIMESERIES 1h: Grafana buckets by the query interval; set the panel's 'Min interval' to 1h to mirror NR bucketing",
+     "timefrom:now-2w"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "last_over_time(kube_pod_container_resource_requests{namespace=\"acme-backend\",deployment=\"acme-backend-public\",resource=\"memory\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "last_over_time(kube_pod_container_resource_limits{namespace=\"acme-backend\",deployment=\"acme-backend-public\",resource=\"memory\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "C",
+     "expr": "quantile_over_time(0.95, container_memory_working_set_bytes{namespace=\"acme-backend\",deployment=\"acme-backend-public\",container!=\"\"}[$__rate_interval])"
+    }
+   ]
+  },
+  {
+   "id": "p02-w038",
+   "title": "CPU - Public Pods (p95)",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT latest(k8s.container.cpuRequestedCores) as 'cpuRequested', latest(k8s.container.cpuLimitCores) as 'cpuLimit', percentile(k8s.container.cpuUsedCores,95) as 'cpuUsed', average(k8s.container.cpuUsedCores) as 'cpuUsed (avg)' from Metric where k8s.namespaceName = 'acme-backend' AND k8s.clusterName = concat('acme-cluster-', {{env}}) AND k8s.deploymentName = 'acme-backend-public' TIMESERIES 1 hour SINCE 2 weeks ago\n"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_cpuRequestedCores{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-public\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_cpuLimitCores{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-public\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "histogram_quantile(0.95, sum by (le)(rate(k8s_container_cpuUsedCores_bucket{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-public\"}[$__rate_interval])))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg(avg_over_time(k8s_container_cpuUsedCores{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-public\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'k8s.namespaceName' not in label_map; used 'k8s_namespaceName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName' \u2014 verify the label exists in your stack",
+     "assumed gauge 'k8s_container_cpuRequestedCores'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_container_cpuLimitCores'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed 'k8s.container.cpuUsedCores' is a histogram (required by percentile()); add it to metric_map with the exact Prometheus name/type",
+     "histogram_quantile interpolates within buckets; NR percentiles are computed from event data",
+     "assumed gauge 'k8s_container_cpuUsedCores'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "TIMESERIES 1h: Grafana buckets by the query interval; set the panel's 'Min interval' to 1h to mirror NR bucketing",
+     "timefrom:now-2w"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "last_over_time(kube_pod_container_resource_requests{namespace=\"acme-backend\",deployment=\"acme-backend-public\",resource=\"cpu\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "last_over_time(kube_pod_container_resource_limits{namespace=\"acme-backend\",deployment=\"acme-backend-public\",resource=\"cpu\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "C",
+     "expr": "quantile_over_time(0.95, (avg(rate(container_cpu_usage_seconds_total{container!=\"\",namespace=\"acme-backend\",deployment=\"acme-backend-public\"}[$__rate_interval])))[$__rate_interval:])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "D",
+     "expr": "avg(rate(container_cpu_usage_seconds_total{container!=\"\",namespace=\"acme-backend\",deployment=\"acme-backend-public\"}[$__rate_interval]))"
+    }
+   ]
+  },
+  {
+   "id": "p02-w039",
+   "title": "Restart Count Delta - Public Pods",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(k8s.container.restartCountDelta) as delta from Metric where k8s.namespaceName = 'acme-backend' AND k8s.clusterName = concat('acme-cluster-', {{env}}) and k8s.deploymentName ='acme-backend-public' timeseries 1 hour\n"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(avg_over_time(k8s_container_restartCountDelta{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-public\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'k8s.namespaceName' not in label_map; used 'k8s_namespaceName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName' \u2014 verify the label exists in your stack",
+     "assumed gauge 'k8s_container_restartCountDelta'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "TIMESERIES 1h: Grafana buckets by the query interval; set the panel's 'Min interval' to 1h to mirror NR bucketing"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(rate(k8s_container_restartCountDelta_total{namespace=\"acme-backend\",deployment=\"acme-backend-public\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p02-w040",
+   "title": "CPU Cores Utilization - Public Pods",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT latest(k8s.container.cpuCoresUtilization) from Metric where k8s.namespaceName = 'acme-backend' AND k8s.clusterName = concat('acme-cluster-', {{env}}) AND k8s.deploymentName = 'acme-backend-public' TIMESERIES 1 hour SINCE 2 weeks ago COMPARE WITH 24 hour ago\n"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_cpuCoresUtilization{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-public\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_cpuCoresUtilization{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-public\"}[$__interval] offset 24h)"
+     }
+    ],
+    "notes": [
+     "attribute 'k8s.namespaceName' not in label_map; used 'k8s_namespaceName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName' \u2014 verify the label exists in your stack",
+     "assumed gauge 'k8s_container_cpuCoresUtilization'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "TIMESERIES 1h: Grafana buckets by the query interval; set the panel's 'Min interval' to 1h to mirror NR bucketing",
+     "timefrom:now-2w"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "100 * avg(sum by (namespace, pod, container)(rate(container_cpu_usage_seconds_total{container!=\"\",namespace=\"acme-backend\",deployment=\"acme-backend-public\"}[$__rate_interval])) / on (namespace, pod, container) max by (namespace, pod, container)(kube_pod_container_resource_limits{resource=\"cpu\",namespace=\"acme-backend\",deployment=\"acme-backend-public\"}))"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "100 * avg(sum by (namespace, pod, container)(rate(container_cpu_usage_seconds_total{container!=\"\",namespace=\"acme-backend\",deployment=\"acme-backend-public\"}[$__rate_interval] offset 1d)) / on (namespace, pod, container) max by (namespace, pod, container)(kube_pod_container_resource_limits{resource=\"cpu\",namespace=\"acme-backend\",deployment=\"acme-backend-public\"} offset 1d))"
+    }
+   ]
+  },
+  {
+   "id": "p02-w041",
+   "title": "(untitled)",
+   "visualization": "viz.markdown",
+   "grafana_type": "text",
+   "nrql": [],
+   "before": {
+    "confidence": "exact",
+    "queries": [],
+    "notes": []
+   },
+   "expected": []
+  },
+  {
+   "id": "p02-w042",
+   "title": "Memory - Admin Pods",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT latest(k8s.container.memoryRequestedBytes) as memRequest, latest(k8s.container.memoryLimitBytes) as memoryLimit, percentile(k8s.container.memoryWorkingSetBytes,95) as 'memoryUsed' from Metric where k8s.namespaceName = 'acme-backend' AND k8s.clusterName = concat('acme-cluster-', {{env}}) and k8s.deploymentName ='acme-backend-admin' TIMESERIES 1 hour SINCE 2 weeks ago\n"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_memoryRequestedBytes{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-admin\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_memoryLimitBytes{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-admin\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "histogram_quantile(0.95, sum by (le)(rate(k8s_container_memoryWorkingSetBytes_bucket{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-admin\"}[$__rate_interval])))"
+     }
+    ],
+    "notes": [
+     "attribute 'k8s.namespaceName' not in label_map; used 'k8s_namespaceName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName' \u2014 verify the label exists in your stack",
+     "assumed gauge 'k8s_container_memoryRequestedBytes'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_container_memoryLimitBytes'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed 'k8s.container.memoryWorkingSetBytes' is a histogram (required by percentile()); add it to metric_map with the exact Prometheus name/type",
+     "histogram_quantile interpolates within buckets; NR percentiles are computed from event data",
+     "TIMESERIES 1h: Grafana buckets by the query interval; set the panel's 'Min interval' to 1h to mirror NR bucketing",
+     "timefrom:now-2w"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "last_over_time(kube_pod_container_resource_requests{namespace=\"acme-backend\",deployment=\"acme-backend-admin\",resource=\"memory\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "last_over_time(kube_pod_container_resource_limits{namespace=\"acme-backend\",deployment=\"acme-backend-admin\",resource=\"memory\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "C",
+     "expr": "quantile_over_time(0.95, container_memory_working_set_bytes{namespace=\"acme-backend\",deployment=\"acme-backend-admin\",container!=\"\"}[$__rate_interval])"
+    }
+   ]
+  },
+  {
+   "id": "p02-w043",
+   "title": "CPU - Admin Pods",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT latest(k8s.container.cpuRequestedCores) as 'cpuRequested', latest(k8s.container.cpuLimitCores) as 'cpuLimit', percentile(k8s.container.cpuUsedCores,95) as 'cpuUsed' from Metric where k8s.namespaceName = 'acme-backend' AND k8s.clusterName = concat('acme-cluster-', {{env}}) AND k8s.deploymentName = 'acme-backend-admin' TIMESERIES 1 hour SINCE 2 weeks ago\n"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_cpuRequestedCores{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-admin\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_cpuLimitCores{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-admin\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "histogram_quantile(0.95, sum by (le)(rate(k8s_container_cpuUsedCores_bucket{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-admin\"}[$__rate_interval])))"
+     }
+    ],
+    "notes": [
+     "attribute 'k8s.namespaceName' not in label_map; used 'k8s_namespaceName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName' \u2014 verify the label exists in your stack",
+     "assumed gauge 'k8s_container_cpuRequestedCores'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_container_cpuLimitCores'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed 'k8s.container.cpuUsedCores' is a histogram (required by percentile()); add it to metric_map with the exact Prometheus name/type",
+     "histogram_quantile interpolates within buckets; NR percentiles are computed from event data",
+     "TIMESERIES 1h: Grafana buckets by the query interval; set the panel's 'Min interval' to 1h to mirror NR bucketing",
+     "timefrom:now-2w"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "last_over_time(kube_pod_container_resource_requests{namespace=\"acme-backend\",deployment=\"acme-backend-admin\",resource=\"cpu\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "last_over_time(kube_pod_container_resource_limits{namespace=\"acme-backend\",deployment=\"acme-backend-admin\",resource=\"cpu\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "C",
+     "expr": "quantile_over_time(0.95, (avg(rate(container_cpu_usage_seconds_total{container!=\"\",namespace=\"acme-backend\",deployment=\"acme-backend-admin\"}[$__rate_interval])))[$__rate_interval:])"
+    }
+   ]
+  },
+  {
+   "id": "p02-w044",
+   "title": "(untitled)",
+   "visualization": "viz.markdown",
+   "grafana_type": "text",
+   "nrql": [],
+   "before": {
+    "confidence": "exact",
+    "queries": [],
+    "notes": []
+   },
+   "expected": []
+  },
+  {
+   "id": "p02-w045",
+   "title": "Memory - POT Pods",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT latest(k8s.container.memoryRequestedBytes) as memRequest, latest(k8s.container.memoryLimitBytes) as memoryLimit, percentile(k8s.container.memoryWorkingSetBytes,95) as 'memoryUsed' from Metric where k8s.namespaceName = 'acme-backend' AND k8s.clusterName = concat('acme-cluster-', {{env}}) and k8s.deploymentName ='acme-backend-pot' TIMESERIES 1 hour SINCE 2 weeks ago\n"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_memoryRequestedBytes{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-pot\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_memoryLimitBytes{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-pot\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "histogram_quantile(0.95, sum by (le)(rate(k8s_container_memoryWorkingSetBytes_bucket{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-pot\"}[$__rate_interval])))"
+     }
+    ],
+    "notes": [
+     "attribute 'k8s.namespaceName' not in label_map; used 'k8s_namespaceName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName' \u2014 verify the label exists in your stack",
+     "assumed gauge 'k8s_container_memoryRequestedBytes'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_container_memoryLimitBytes'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed 'k8s.container.memoryWorkingSetBytes' is a histogram (required by percentile()); add it to metric_map with the exact Prometheus name/type",
+     "histogram_quantile interpolates within buckets; NR percentiles are computed from event data",
+     "TIMESERIES 1h: Grafana buckets by the query interval; set the panel's 'Min interval' to 1h to mirror NR bucketing",
+     "timefrom:now-2w"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "last_over_time(kube_pod_container_resource_requests{namespace=\"acme-backend\",deployment=\"acme-backend-pot\",resource=\"memory\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "last_over_time(kube_pod_container_resource_limits{namespace=\"acme-backend\",deployment=\"acme-backend-pot\",resource=\"memory\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "C",
+     "expr": "quantile_over_time(0.95, container_memory_working_set_bytes{namespace=\"acme-backend\",deployment=\"acme-backend-pot\",container!=\"\"}[$__rate_interval])"
+    }
+   ]
+  },
+  {
+   "id": "p02-w046",
+   "title": "CPU - POT Pods",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT latest(k8s.container.cpuRequestedCores) as 'cpuRequested', latest(k8s.container.cpuLimitCores) as 'cpuLimit', percentile(k8s.container.cpuUsedCores,95) as 'cpuUsed', average(k8s.container.cpuUsedCores) as 'cpuUsed (avg)' from Metric where k8s.namespaceName = 'acme-backend' AND k8s.clusterName = concat('acme-cluster-', {{env}}) AND k8s.deploymentName = 'acme-backend-pot' TIMESERIES 1 hour SINCE 2 weeks ago\n"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_cpuRequestedCores{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-pot\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_cpuLimitCores{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-pot\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "histogram_quantile(0.95, sum by (le)(rate(k8s_container_cpuUsedCores_bucket{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-pot\"}[$__rate_interval])))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg(avg_over_time(k8s_container_cpuUsedCores{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-pot\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'k8s.namespaceName' not in label_map; used 'k8s_namespaceName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName' \u2014 verify the label exists in your stack",
+     "assumed gauge 'k8s_container_cpuRequestedCores'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_container_cpuLimitCores'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed 'k8s.container.cpuUsedCores' is a histogram (required by percentile()); add it to metric_map with the exact Prometheus name/type",
+     "histogram_quantile interpolates within buckets; NR percentiles are computed from event data",
+     "assumed gauge 'k8s_container_cpuUsedCores'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "TIMESERIES 1h: Grafana buckets by the query interval; set the panel's 'Min interval' to 1h to mirror NR bucketing",
+     "timefrom:now-2w"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "last_over_time(kube_pod_container_resource_requests{namespace=\"acme-backend\",deployment=\"acme-backend-pot\",resource=\"cpu\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "last_over_time(kube_pod_container_resource_limits{namespace=\"acme-backend\",deployment=\"acme-backend-pot\",resource=\"cpu\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "C",
+     "expr": "quantile_over_time(0.95, (avg(rate(container_cpu_usage_seconds_total{container!=\"\",namespace=\"acme-backend\",deployment=\"acme-backend-pot\"}[$__rate_interval])))[$__rate_interval:])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "D",
+     "expr": "avg(rate(container_cpu_usage_seconds_total{container!=\"\",namespace=\"acme-backend\",deployment=\"acme-backend-pot\"}[$__rate_interval]))"
+    }
+   ]
+  },
+  {
+   "id": "p02-w047",
+   "title": "(untitled)",
+   "visualization": "viz.markdown",
+   "grafana_type": "text",
+   "nrql": [],
+   "before": {
+    "confidence": "exact",
+    "queries": [],
+    "notes": []
+   },
+   "expected": []
+  },
+  {
+   "id": "p02-w048",
+   "title": "Memory - Patient Sync Pods",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT latest(k8s.container.memoryRequestedBytes) as memRequest, latest(k8s.container.memoryLimitBytes) as memoryLimit, percentile(k8s.container.memoryWorkingSetBytes,95) as 'memoryUsed' from Metric where k8s.namespaceName = 'acme-backend' AND k8s.clusterName = concat('acme-cluster-', {{env}}) and k8s.deploymentName ='acme-backend-patient-sync-worker' TIMESERIES 1 hour SINCE 2 weeks ago\n"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_memoryRequestedBytes{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-patient-sync-worker\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_memoryLimitBytes{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-patient-sync-worker\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "histogram_quantile(0.95, sum by (le)(rate(k8s_container_memoryWorkingSetBytes_bucket{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-patient-sync-worker\"}[$__rate_interval])))"
+     }
+    ],
+    "notes": [
+     "attribute 'k8s.namespaceName' not in label_map; used 'k8s_namespaceName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName' \u2014 verify the label exists in your stack",
+     "assumed gauge 'k8s_container_memoryRequestedBytes'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_container_memoryLimitBytes'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed 'k8s.container.memoryWorkingSetBytes' is a histogram (required by percentile()); add it to metric_map with the exact Prometheus name/type",
+     "histogram_quantile interpolates within buckets; NR percentiles are computed from event data",
+     "TIMESERIES 1h: Grafana buckets by the query interval; set the panel's 'Min interval' to 1h to mirror NR bucketing",
+     "timefrom:now-2w"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "last_over_time(kube_pod_container_resource_requests{namespace=\"acme-backend\",deployment=\"acme-backend-patient-sync-worker\",resource=\"memory\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "last_over_time(kube_pod_container_resource_limits{namespace=\"acme-backend\",deployment=\"acme-backend-patient-sync-worker\",resource=\"memory\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "C",
+     "expr": "quantile_over_time(0.95, container_memory_working_set_bytes{namespace=\"acme-backend\",deployment=\"acme-backend-patient-sync-worker\",container!=\"\"}[$__rate_interval])"
+    }
+   ]
+  },
+  {
+   "id": "p02-w049",
+   "title": "CPU - Patient Sync Pods",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT latest(k8s.container.cpuRequestedCores) as 'cpuRequested', latest(k8s.container.cpuLimitCores) as 'cpuLimit', percentile(k8s.container.cpuUsedCores,95) as 'cpuUsed', average(k8s.container.cpuUsedCores) as 'cpuUsed (avg)' from Metric where k8s.namespaceName = 'acme-backend' AND k8s.clusterName = concat('acme-cluster-', {{env}}) AND k8s.deploymentName = 'acme-backend-patient-sync-worker' TIMESERIES 1 hour SINCE 2 weeks ago\n"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_cpuRequestedCores{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-patient-sync-worker\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_container_cpuLimitCores{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-patient-sync-worker\"}[$__interval])"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "histogram_quantile(0.95, sum by (le)(rate(k8s_container_cpuUsedCores_bucket{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-patient-sync-worker\"}[$__rate_interval])))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg(avg_over_time(k8s_container_cpuUsedCores{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-patient-sync-worker\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'k8s.namespaceName' not in label_map; used 'k8s_namespaceName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName' \u2014 verify the label exists in your stack",
+     "assumed gauge 'k8s_container_cpuRequestedCores'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_container_cpuLimitCores'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed 'k8s.container.cpuUsedCores' is a histogram (required by percentile()); add it to metric_map with the exact Prometheus name/type",
+     "histogram_quantile interpolates within buckets; NR percentiles are computed from event data",
+     "assumed gauge 'k8s_container_cpuUsedCores'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "TIMESERIES 1h: Grafana buckets by the query interval; set the panel's 'Min interval' to 1h to mirror NR bucketing",
+     "timefrom:now-2w"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "last_over_time(kube_pod_container_resource_requests{namespace=\"acme-backend\",deployment=\"acme-backend-patient-sync-worker\",resource=\"cpu\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "last_over_time(kube_pod_container_resource_limits{namespace=\"acme-backend\",deployment=\"acme-backend-patient-sync-worker\",resource=\"cpu\"}[$__interval])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "C",
+     "expr": "quantile_over_time(0.95, (avg(rate(container_cpu_usage_seconds_total{container!=\"\",namespace=\"acme-backend\",deployment=\"acme-backend-patient-sync-worker\"}[$__rate_interval])))[$__rate_interval:])"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "D",
+     "expr": "avg(rate(container_cpu_usage_seconds_total{container!=\"\",namespace=\"acme-backend\",deployment=\"acme-backend-patient-sync-worker\"}[$__rate_interval]))"
+    }
+   ]
+  }
+ ]
+}

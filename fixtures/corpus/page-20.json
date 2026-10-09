@@ -1,0 +1,520 @@
+{
+ "schema": 1,
+ "page": "Pods",
+ "widgets": [
+  {
+   "id": "p20-w001",
+   "title": "New pod restarts with reason",
+   "visualization": "viz.line",
+   "grafana_type": "text",
+   "nrql": [
+    "FROM K8sContainerSample SELECT sum(restartCountDelta) AS 'new_restarts' WHERE clusterName = concat('acme-cluster-', {{env}}) AND namespaceName = 'acme-backend' FACET deploymentName, lastTerminatedExitReason TIMESERIES AUTO since 1 weeks ago"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "no metric mapping for FROM K8sContainerSample"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p20-w002",
+   "title": "Public Deployment - Pods Allocation",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT max(k8s.deployment.podsAvailable) as 'Available', max(k8s.deployment.podsDesired) as 'Desired', max(k8s.deployment.podsMissing) as 'Missing' from Metric where k8s.namespaceName = 'acme-backend' WHERE `k8s.clusterName` = concat('acme-cluster-', {{env}}) and k8s.deploymentName LIKE 'acme-backend-public' TIMESERIES 1 minute SINCE 2 hours ago"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "max(max_over_time(k8s_deployment_podsAvailable{k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=~\"(?i)acme-backend-public\"}[$__rate_interval]))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "max(max_over_time(k8s_deployment_podsDesired{k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=~\"(?i)acme-backend-public\"}[$__rate_interval]))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "max(max_over_time(k8s_deployment_podsMissing{k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=~\"(?i)acme-backend-public\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName' \u2014 verify the label exists in your stack",
+     "assumed gauge 'k8s_deployment_podsAvailable'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_deployment_podsDesired'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_deployment_podsMissing'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "TIMESERIES 1m: Grafana buckets by the query interval; set the panel's 'Min interval' to 1m to mirror NR bucketing",
+     "timefrom:now-2h"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "max(max_over_time(kube_deployment_status_replicas_available{deployment=~\"(?i)acme-backend-public\"}[$__rate_interval]))"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "max(max_over_time(kube_deployment_spec_replicas{deployment=~\"(?i)acme-backend-public\"}[$__rate_interval]))"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "C",
+     "expr": "max(kube_deployment_spec_replicas{deployment=~\"(?i)acme-backend-public\"} - kube_deployment_status_replicas_available{deployment=~\"(?i)acme-backend-public\"})"
+    }
+   ]
+  },
+  {
+   "id": "p20-w003",
+   "title": "Internal Deployment - Pods Allocation",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT max(k8s.deployment.podsAvailable) as 'Available', max(k8s.deployment.podsDesired) as 'Desired', max(k8s.deployment.podsMissing) as 'Missing' from Metric where k8s.namespaceName = 'acme-backend' WHERE `k8s.clusterName` = concat('acme-cluster-', {{env}}) and k8s.deploymentName LIKE 'acme-backend-internal' TIMESERIES 1 minute SINCE 2 hours ago"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "max(max_over_time(k8s_deployment_podsAvailable{k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=~\"(?i)acme-backend-internal\"}[$__rate_interval]))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "max(max_over_time(k8s_deployment_podsDesired{k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=~\"(?i)acme-backend-internal\"}[$__rate_interval]))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "max(max_over_time(k8s_deployment_podsMissing{k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=~\"(?i)acme-backend-internal\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName' \u2014 verify the label exists in your stack",
+     "assumed gauge 'k8s_deployment_podsAvailable'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_deployment_podsDesired'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_deployment_podsMissing'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "TIMESERIES 1m: Grafana buckets by the query interval; set the panel's 'Min interval' to 1m to mirror NR bucketing",
+     "timefrom:now-2h"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "max(max_over_time(kube_deployment_status_replicas_available{deployment=~\"(?i)acme-backend-internal\"}[$__rate_interval]))"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "max(max_over_time(kube_deployment_spec_replicas{deployment=~\"(?i)acme-backend-internal\"}[$__rate_interval]))"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "C",
+     "expr": "max(kube_deployment_spec_replicas{deployment=~\"(?i)acme-backend-internal\"} - kube_deployment_status_replicas_available{deployment=~\"(?i)acme-backend-internal\"})"
+    }
+   ]
+  },
+  {
+   "id": "p20-w004",
+   "title": "Camunda Workers - Pods Allocation",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT max(k8s.deployment.podsAvailable) as 'Available', max(k8s.deployment.podsDesired) as 'Desired', max(k8s.deployment.podsMissing) as 'Missing' from Metric where k8s.namespaceName = 'acme-backend' WHERE `k8s.clusterName` = concat('acme-cluster-', {{env}}) and k8s.deploymentName LIKE 'acme-backend-workflow-automation-worker%' TIMESERIES 1 minute SINCE 2 hours ago facet k8s.deploymentName"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "max by (k8s_deploymentName)(max_over_time(k8s_deployment_podsAvailable{k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=~\"(?i)acme-backend-workflow-automation-worker.*\"}[$__rate_interval]))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "max by (k8s_deploymentName)(max_over_time(k8s_deployment_podsDesired{k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=~\"(?i)acme-backend-workflow-automation-worker.*\"}[$__rate_interval]))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "max by (k8s_deploymentName)(max_over_time(k8s_deployment_podsMissing{k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=~\"(?i)acme-backend-workflow-automation-worker.*\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName' \u2014 verify the label exists in your stack",
+     "FACET attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName'",
+     "assumed gauge 'k8s_deployment_podsAvailable'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_deployment_podsDesired'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_deployment_podsMissing'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "TIMESERIES 1m: Grafana buckets by the query interval; set the panel's 'Min interval' to 1m to mirror NR bucketing",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high",
+     "timefrom:now-2h"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "max by (deployment)(max_over_time(kube_deployment_status_replicas_available{deployment=~\"(?i)acme-backend-workflow-automation-worker.*\"}[$__rate_interval]))"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "max by (deployment)(max_over_time(kube_deployment_spec_replicas{deployment=~\"(?i)acme-backend-workflow-automation-worker.*\"}[$__rate_interval]))"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "C",
+     "expr": "max by (deployment)(kube_deployment_spec_replicas{deployment=~\"(?i)acme-backend-workflow-automation-worker.*\"} - kube_deployment_status_replicas_available{deployment=~\"(?i)acme-backend-workflow-automation-worker.*\"})"
+    }
+   ]
+  },
+  {
+   "id": "p20-w005",
+   "title": "Celery Workers - Pods Allocation",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT max(k8s.deployment.podsAvailable) as 'Available', max(k8s.deployment.podsDesired) as 'Desired', max(k8s.deployment.podsMissing) as 'Missing' from Metric where k8s.namespaceName = 'acme-backend' WHERE `k8s.clusterName` = concat('acme-cluster-', {{env}}) and k8s.deploymentName LIKE 'acme-backend-worker' TIMESERIES 1 minute SINCE 2 hours ago"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "max(max_over_time(k8s_deployment_podsAvailable{k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=~\"(?i)acme-backend-worker\"}[$__rate_interval]))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "max(max_over_time(k8s_deployment_podsDesired{k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=~\"(?i)acme-backend-worker\"}[$__rate_interval]))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "max(max_over_time(k8s_deployment_podsMissing{k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=~\"(?i)acme-backend-worker\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName' \u2014 verify the label exists in your stack",
+     "assumed gauge 'k8s_deployment_podsAvailable'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_deployment_podsDesired'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_deployment_podsMissing'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "TIMESERIES 1m: Grafana buckets by the query interval; set the panel's 'Min interval' to 1m to mirror NR bucketing",
+     "timefrom:now-2h"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "max(max_over_time(kube_deployment_status_replicas_available{deployment=~\"(?i)acme-backend-worker\"}[$__rate_interval]))"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "max(max_over_time(kube_deployment_spec_replicas{deployment=~\"(?i)acme-backend-worker\"}[$__rate_interval]))"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "C",
+     "expr": "max(kube_deployment_spec_replicas{deployment=~\"(?i)acme-backend-worker\"} - kube_deployment_status_replicas_available{deployment=~\"(?i)acme-backend-worker\"})"
+    }
+   ]
+  },
+  {
+   "id": "p20-w006",
+   "title": "SQS Topic Consumer - Pods Allocation",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT max(k8s.deployment.podsAvailable) as 'Available', max(k8s.deployment.podsDesired) as 'Desired', max(k8s.deployment.podsMissing) as 'Missing' from Metric where k8s.namespaceName = 'acme-backend' WHERE `k8s.clusterName` = concat('acme-cluster-', {{env}}) and k8s.deploymentName LIKE 'acme-backend-topic-consumer' TIMESERIES 1 minute SINCE 2 hours ago"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "max(max_over_time(k8s_deployment_podsAvailable{k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=~\"(?i)acme-backend-topic-consumer\"}[$__rate_interval]))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "max(max_over_time(k8s_deployment_podsDesired{k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=~\"(?i)acme-backend-topic-consumer\"}[$__rate_interval]))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "max(max_over_time(k8s_deployment_podsMissing{k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=~\"(?i)acme-backend-topic-consumer\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName' \u2014 verify the label exists in your stack",
+     "assumed gauge 'k8s_deployment_podsAvailable'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_deployment_podsDesired'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_deployment_podsMissing'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "TIMESERIES 1m: Grafana buckets by the query interval; set the panel's 'Min interval' to 1m to mirror NR bucketing",
+     "timefrom:now-2h"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "max(max_over_time(kube_deployment_status_replicas_available{deployment=~\"(?i)acme-backend-topic-consumer\"}[$__rate_interval]))"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "max(max_over_time(kube_deployment_spec_replicas{deployment=~\"(?i)acme-backend-topic-consumer\"}[$__rate_interval]))"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "C",
+     "expr": "max(kube_deployment_spec_replicas{deployment=~\"(?i)acme-backend-topic-consumer\"} - kube_deployment_status_replicas_available{deployment=~\"(?i)acme-backend-topic-consumer\"})"
+    }
+   ]
+  },
+  {
+   "id": "p20-w007",
+   "title": "Admin Deployment - Pods Allocation",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT max(k8s.deployment.podsAvailable) as 'Available', max(k8s.deployment.podsDesired) as 'Desired', max(k8s.deployment.podsMissing) as 'Missing' from Metric where k8s.namespaceName = 'acme-backend' WHERE `k8s.clusterName` = concat('acme-cluster-', {{env}}) and k8s.deploymentName LIKE 'acme-backend-admin' TIMESERIES 1 minute SINCE 2 hours ago"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "max(max_over_time(k8s_deployment_podsAvailable{k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=~\"(?i)acme-backend-admin\"}[$__rate_interval]))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "max(max_over_time(k8s_deployment_podsDesired{k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=~\"(?i)acme-backend-admin\"}[$__rate_interval]))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "max(max_over_time(k8s_deployment_podsMissing{k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=~\"(?i)acme-backend-admin\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName' \u2014 verify the label exists in your stack",
+     "assumed gauge 'k8s_deployment_podsAvailable'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_deployment_podsDesired'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_deployment_podsMissing'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "TIMESERIES 1m: Grafana buckets by the query interval; set the panel's 'Min interval' to 1m to mirror NR bucketing",
+     "timefrom:now-2h"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "max(max_over_time(kube_deployment_status_replicas_available{deployment=~\"(?i)acme-backend-admin\"}[$__rate_interval]))"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "max(max_over_time(kube_deployment_spec_replicas{deployment=~\"(?i)acme-backend-admin\"}[$__rate_interval]))"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "C",
+     "expr": "max(kube_deployment_spec_replicas{deployment=~\"(?i)acme-backend-admin\"} - kube_deployment_status_replicas_available{deployment=~\"(?i)acme-backend-admin\"})"
+    }
+   ]
+  },
+  {
+   "id": "p20-w008",
+   "title": "Celery Events Workers - Pods Allocation",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT max(k8s.deployment.podsAvailable) as 'Available', max(k8s.deployment.podsDesired) as 'Desired', max(k8s.deployment.podsMissing) as 'Missing' from Metric where k8s.namespaceName = 'acme-backend' WHERE `k8s.clusterName` = concat('acme-cluster-', {{env}}) and k8s.deploymentName LIKE 'acme-backend-events-worker' TIMESERIES 1 minute SINCE 2 hours ago"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "max(max_over_time(k8s_deployment_podsAvailable{k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=~\"(?i)acme-backend-events-worker\"}[$__rate_interval]))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "max(max_over_time(k8s_deployment_podsDesired{k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=~\"(?i)acme-backend-events-worker\"}[$__rate_interval]))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "max(max_over_time(k8s_deployment_podsMissing{k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=~\"(?i)acme-backend-events-worker\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName' \u2014 verify the label exists in your stack",
+     "assumed gauge 'k8s_deployment_podsAvailable'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_deployment_podsDesired'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_deployment_podsMissing'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "TIMESERIES 1m: Grafana buckets by the query interval; set the panel's 'Min interval' to 1m to mirror NR bucketing",
+     "timefrom:now-2h"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "max(max_over_time(kube_deployment_status_replicas_available{deployment=~\"(?i)acme-backend-events-worker\"}[$__rate_interval]))"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "max(max_over_time(kube_deployment_spec_replicas{deployment=~\"(?i)acme-backend-events-worker\"}[$__rate_interval]))"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "C",
+     "expr": "max(kube_deployment_spec_replicas{deployment=~\"(?i)acme-backend-events-worker\"} - kube_deployment_status_replicas_available{deployment=~\"(?i)acme-backend-events-worker\"})"
+    }
+   ]
+  },
+  {
+   "id": "p20-w009",
+   "title": "Celery Scheduler - Pods Allocation",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT max(k8s.deployment.podsAvailable) as 'Available', max(k8s.deployment.podsDesired) as 'Desired', max(k8s.deployment.podsMissing) as 'Missing' from Metric where k8s.namespaceName = 'acme-backend' WHERE `k8s.clusterName` = concat('acme-cluster-', {{env}}) and k8s.deploymentName LIKE 'acme-backend-scheduler' TIMESERIES 1 minute SINCE 2 hours ago"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "max(max_over_time(k8s_deployment_podsAvailable{k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=~\"(?i)acme-backend-scheduler\"}[$__rate_interval]))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "max(max_over_time(k8s_deployment_podsDesired{k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=~\"(?i)acme-backend-scheduler\"}[$__rate_interval]))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "max(max_over_time(k8s_deployment_podsMissing{k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=~\"(?i)acme-backend-scheduler\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName' \u2014 verify the label exists in your stack",
+     "assumed gauge 'k8s_deployment_podsAvailable'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_deployment_podsDesired'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_deployment_podsMissing'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "TIMESERIES 1m: Grafana buckets by the query interval; set the panel's 'Min interval' to 1m to mirror NR bucketing",
+     "timefrom:now-2h"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "max(max_over_time(kube_deployment_status_replicas_available{deployment=~\"(?i)acme-backend-scheduler\"}[$__rate_interval]))"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "max(max_over_time(kube_deployment_spec_replicas{deployment=~\"(?i)acme-backend-scheduler\"}[$__rate_interval]))"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "C",
+     "expr": "max(kube_deployment_spec_replicas{deployment=~\"(?i)acme-backend-scheduler\"} - kube_deployment_status_replicas_available{deployment=~\"(?i)acme-backend-scheduler\"})"
+    }
+   ]
+  },
+  {
+   "id": "p20-w010",
+   "title": "POT(Patient Onboarding Tool) - Pods Allocation",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT max(k8s.deployment.podsAvailable) as 'Available', max(k8s.deployment.podsDesired) as 'Desired', max(k8s.deployment.podsMissing) as 'Missing' from Metric where k8s.namespaceName = 'acme-backend' WHERE `k8s.clusterName` = concat('acme-cluster-', {{env}}) and k8s.deploymentName LIKE 'acme-backend-pot' TIMESERIES 1 minute SINCE 2 hours ago"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "max(max_over_time(k8s_deployment_podsAvailable{k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=~\"(?i)acme-backend-pot\"}[$__rate_interval]))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "max(max_over_time(k8s_deployment_podsDesired{k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=~\"(?i)acme-backend-pot\"}[$__rate_interval]))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "max(max_over_time(k8s_deployment_podsMissing{k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=~\"(?i)acme-backend-pot\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName' \u2014 verify the label exists in your stack",
+     "assumed gauge 'k8s_deployment_podsAvailable'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_deployment_podsDesired'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'k8s_deployment_podsMissing'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "TIMESERIES 1m: Grafana buckets by the query interval; set the panel's 'Min interval' to 1m to mirror NR bucketing",
+     "timefrom:now-2h"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "max(max_over_time(kube_deployment_status_replicas_available{deployment=~\"(?i)acme-backend-pot\"}[$__rate_interval]))"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "max(max_over_time(kube_deployment_spec_replicas{deployment=~\"(?i)acme-backend-pot\"}[$__rate_interval]))"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "C",
+     "expr": "max(kube_deployment_spec_replicas{deployment=~\"(?i)acme-backend-pot\"} - kube_deployment_status_replicas_available{deployment=~\"(?i)acme-backend-pot\"})"
+    }
+   ]
+  }
+ ]
+}

@@ -210,7 +210,7 @@ class NoCommandTests(unittest.TestCase):
 
 class VersionTests(unittest.TestCase):
     def test_package_version(self):
-        self.assertEqual(nr2grafana.__version__, "1.10.0")
+        self.assertEqual(nr2grafana.__version__, "1.11.0")
 
 
 class _TempDbMixin:
@@ -1703,7 +1703,7 @@ def _rca_stub_modules(available=True, anomalies=None, with_flowlogs=True):
         return anomalies if anomalies is not None else []
 
     def caller_identity(region="us-east-1", profile=""):
-        return {"Account": "348342704569"}
+        return {"Account": "123456789012"}
 
     awscost.aws_available = aws_available
     awscost.list_profiles = list_profiles
@@ -1722,7 +1722,7 @@ def _rca_stub_modules(available=True, anomalies=None, with_flowlogs=True):
                 if cause.get("UsageType"):
                     usage = cause["UsageType"]
         return {"usage_type": usage, "service": "EBS",
-                "account": "348342704569", "region": "us-east-1",
+                "account": "123456789012", "region": "us-east-1",
                 "usd_per_day": 164.0, "hypothesis_class": "CROSS_AZ_NETWORK"}
 
     def analyze(anomaly, aws=None, flowlogs=None, deepdive=None,
@@ -1735,7 +1735,7 @@ def _rca_stub_modules(available=True, anomalies=None, with_flowlogs=True):
             "schema": "nr2grafana/rca/v1",
             "incident": {"usage_type": anomaly.get("usage_type"),
                          "service": anomaly.get("service"),
-                         "account": "348342704569", "region": "us-east-1",
+                         "account": "123456789012", "region": "us-east-1",
                          "usd_per_day": 164.0, "gb_per_day": 16470.0,
                          "onset": "2026-08-31",
                          "step_change": "2026-08-31"},
@@ -2217,6 +2217,707 @@ class ExposeAiWizardTests(unittest.TestCase):
         # and the headless API serve command
         self.assertIn("api serve", text)
         self.assertIn("N2G_API_TOKEN", text)
+
+
+# ---------------------------------------------------------------------------
+# convert --live / --env, export, import --bind-datasources (1.11 SEAM-BIND)
+# ---------------------------------------------------------------------------
+
+def _hints_stub(hints=None, fail=False):
+    """A fake nr2grafana.translate.hints module recording collect_hints
+    calls (the live agent builds the real one)."""
+    import types
+    stub = types.ModuleType("nr2grafana.translate.hints")
+    calls = []
+
+    def collect_hints(nr=None, grafana=None, dash=None, cfg=None,
+                      log=None):
+        calls.append({"nr": nr, "grafana": grafana, "dash": dash,
+                      "cfg": cfg})
+        if fail:
+            raise RuntimeError("mimir metadata timeout")
+        return hints if hints is not None else {
+            "metric_types": {"acme_backend_orders_total": "counter"},
+            "entities": {}, "attr_values": {"env": ["prod", "staging"]}}
+
+    stub.collect_hints = collect_hints
+    stub.calls = calls
+    return stub
+
+
+def _ds_var(name, ds_type):
+    return {"type": "datasource", "name": name, "query": ds_type,
+            "current": {}, "options": []}
+
+
+def _portable_dash(title="Checkout", uid="u1"):
+    """A converted-style dashboard with datasource pickers + env var."""
+    return {
+        "title": title, "uid": uid,
+        "templating": {"list": [
+            _ds_var("datasource", "prometheus"),
+            _ds_var("loki_datasource", "loki"),
+            {"type": "custom", "name": "env",
+             "query": "Production : prod, Staging : staging",
+             "options": [{"selected": True, "text": "Production",
+                          "value": "prod"},
+                         {"selected": False, "text": "Staging",
+                          "value": "staging"}],
+             "current": {"selected": True, "text": "Production",
+                         "value": "prod"}}]},
+        "panels": [
+            {"id": 1, "type": "timeseries", "title": "rps",
+             "datasource": {"type": "prometheus", "uid": "${datasource}"},
+             "targets": [{"refId": "A", "datasource": {
+                 "type": "prometheus", "uid": "${datasource}"},
+                 "expr": "sum(rate(acme_backend_orders_total{cluster="
+                         "\"acme-cluster-$env\"}[$__rate_interval]))"}]},
+            {"id": 2, "type": "logs", "title": "logs",
+             "datasource": {"type": "loki", "uid": "${loki_datasource}"},
+             "targets": [{"refId": "A", "datasource": {
+                 "type": "loki", "uid": "${loki_datasource}"},
+                 "expr": "{app=\"acme-backend\", env=\"$env\"}"}]},
+        ],
+    }
+
+
+def _fake_bind_live(ds_map=None, fail=False):
+    fake = _fake_live()
+    if fail:
+        fake.resolve_ds_map.side_effect = GrafanaError("401 unauthorized")
+    else:
+        fake.resolve_ds_map.return_value = ds_map if ds_map is not None \
+            else {"datasource": "mimir-uid", "${datasource}": "mimir-uid",
+                  "loki_datasource": "loki-uid",
+                  "${loki_datasource}": "loki-uid"}
+    return fake
+
+
+class ConvertLiveTests(_TempDbMixin, unittest.TestCase):
+    def _run(self, argv, stub, env=None, live_fake=None):
+        real_build = cli.build_dashboards
+        seen_cfgs = []
+
+        def build(nr, cfg):
+            seen_cfgs.append(cfg)
+            return real_build(nr, cfg)
+
+        env = dict(env or {})
+        with mock.patch.dict("sys.modules",
+                             {"nr2grafana.translate.hints": stub}), \
+                mock.patch.object(cli, "build_dashboards",
+                                  side_effect=build), \
+                mock.patch.object(cli, "GrafanaLive",
+                                  return_value=live_fake or _fake_live()) \
+                as live_ctor, \
+                mock.patch.object(cli, "NerdGraphClient") as nr_ctor, \
+                mock.patch.dict(os.environ, env, clear=False):
+            for var in ("NEW_RELIC_API_KEY", "GRAFANA_URL",
+                        "GRAFANA_TOKEN"):
+                if var not in env:
+                    os.environ.pop(var, None)
+            code, out, err = run_cli(argv)
+        return code, out, err, seen_cfgs, live_ctor, nr_ctor
+
+    def test_live_collects_hints_and_threads_cfg(self):
+        stub = _hints_stub()
+        with tempfile.TemporaryDirectory() as out_dir:
+            code, out, err, cfgs, live_ctor, nr_ctor = self._run(
+                ["convert", SAMPLE, "-o", out_dir, "--live",
+                 "--api-key", "NRAK-x", "--grafana-url",
+                 "http://gr:3000", "--grafana-token", "tok"], stub)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(stub.calls), 1)
+        call = stub.calls[0]
+        self.assertIs(call["nr"], nr_ctor.return_value)
+        self.assertIs(call["grafana"], live_ctor.return_value)
+        self.assertTrue(hasattr(call["dash"], "pages"))  # the NR model
+        # translators receive the hints via cfg["live_hints"]
+        self.assertEqual(cfgs[0]["live_hints"]["metric_types"],
+                         {"acme_backend_orders_total": "counter"})
+        self.assertIn("live hints for", err)
+        self.assertIn("1 metric type", err)
+        # the Grafana client is built read-only from the given url/token
+        self.assertEqual(live_ctor.call_args[0][0], "http://gr:3000")
+        # NerdGraph gets the key (never printed)
+        self.assertEqual(nr_ctor.call_args[0][0], "NRAK-x")
+        self.assertNotIn("NRAK-x", err + out)
+
+    def test_live_from_environment_only_grafana(self):
+        stub = _hints_stub()
+        with tempfile.TemporaryDirectory() as out_dir:
+            code, out, err, cfgs, _l, nr_ctor = self._run(
+                ["convert", SAMPLE, "-o", out_dir, "--live"], stub,
+                env={"GRAFANA_URL": "http://gr:3000"})
+        self.assertEqual(code, 0, err)
+        self.assertIsNone(stub.calls[0]["nr"])
+        self.assertIsNotNone(stub.calls[0]["grafana"])
+        nr_ctor.assert_not_called()
+
+    def test_live_without_sources_exits_two(self):
+        stub = _hints_stub()
+        with tempfile.TemporaryDirectory() as out_dir:
+            code, out, err, cfgs, _l, _n = self._run(
+                ["convert", SAMPLE, "-o", out_dir, "--live"], stub)
+        self.assertEqual(code, 2)
+        self.assertIn("--live needs", err)
+        self.assertIn("NEW_RELIC_API_KEY", err)
+        self.assertIn("GRAFANA_URL", err)
+        self.assertEqual(stub.calls, [])
+
+    def test_live_hints_module_missing_exits_two(self):
+        with tempfile.TemporaryDirectory() as out_dir, \
+                mock.patch.dict("sys.modules",
+                                {"nr2grafana.translate.hints": None}):
+            code, out, err = run_cli(
+                ["convert", SAMPLE, "-o", out_dir, "--live",
+                 "--api-key", "NRAK-x"])
+        self.assertEqual(code, 2)
+        self.assertIn("live hints are unavailable", err)
+
+    def test_live_hint_failure_degrades_to_static_rules(self):
+        stub = _hints_stub(fail=True)
+        with tempfile.TemporaryDirectory() as out_dir:
+            code, out, err, cfgs, _l, _n = self._run(
+                ["convert", SAMPLE, "-o", out_dir, "--live",
+                 "--api-key", "NRAK-x"], stub)
+            written = [n for n in os.listdir(out_dir)
+                       if n.endswith(".json")
+                       and n != "migration-report.json"]
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(written), 1)
+        self.assertIn("live hints unavailable", err)
+        self.assertIn("mimir metadata timeout", err)
+        self.assertEqual(cfgs[0]["live_hints"], {})
+
+    def test_live_package_keeps_hints_file(self):
+        stub = _hints_stub()
+        with tempfile.TemporaryDirectory() as out_dir:
+            code, out, err, cfgs, _l, _n = self._run(
+                ["convert", SAMPLE, "-o", out_dir, "--live", "--package",
+                 "--api-key", "NRAK-x"], stub)
+            pkg = os.path.join(out_dir, "checkout-service-overview")
+            hints_path = os.path.join(pkg, "live-hints.json")
+            self.assertTrue(os.path.isfile(hints_path), err)
+            with open(hints_path, encoding="utf-8") as f:
+                saved = json.load(f)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(saved["attr_values"]["env"], ["prod", "staging"])
+
+    def test_without_live_hints_not_collected(self):
+        stub = _hints_stub()
+        with tempfile.TemporaryDirectory() as out_dir:
+            code, out, err, cfgs, _l, _n = self._run(
+                ["convert", SAMPLE, "-o", out_dir], stub)
+        self.assertEqual(code, 0)
+        self.assertEqual(stub.calls, [])
+        self.assertFalse(cfgs[0].get("live_hints"))
+
+
+class ConvertEnvTests(_TempDbMixin, unittest.TestCase):
+    def _convert(self, extra):
+        with tempfile.TemporaryDirectory() as out_dir:
+            code, out, err = run_cli(
+                ["convert", SAMPLE, "-o", out_dir] + extra)
+            files = [n for n in os.listdir(out_dir)
+                     if n.endswith(".json")
+                     and n != "migration-report.json"]
+            with open(os.path.join(out_dir, files[0]),
+                      encoding="utf-8") as f:
+                dash = json.load(f)
+        return code, err, dash
+
+    def test_env_sets_variable_current(self):
+        code, err, dash = self._convert(["--env", "staging"])
+        self.assertEqual(code, 0, err)
+        env = [v for v in dash["templating"]["list"]
+               if v.get("name") == "env"][0]
+        self.assertEqual(env["current"]["value"], "staging")
+        self.assertEqual([o["value"] for o in env["options"]
+                          if o["selected"]], ["staging"])
+        # portable: datasource pickers and $env interpolation remain
+        self.assertTrue([v for v in dash["templating"]["list"]
+                         if v.get("type") == "datasource"])
+
+    def test_env_unknown_value_added_as_option(self):
+        code, err, dash = self._convert(["--env", "qa"])
+        self.assertEqual(code, 0, err)
+        env = [v for v in dash["templating"]["list"]
+               if v.get("name") == "env"][0]
+        self.assertEqual(env["current"]["value"], "qa")
+        self.assertIn("qa", [o["value"] for o in env["options"]])
+
+    def test_env_map_from_config(self):
+        with tempfile.TemporaryDirectory() as work:
+            cfg_path = os.path.join(work, "cfg.json")
+            with open(cfg_path, "w", encoding="utf-8") as f:
+                json.dump({"env_map": {"prod": "production"}}, f)
+            code, err, dash = self._convert(
+                ["--env", "prod", "-c", cfg_path])
+        self.assertEqual(code, 0, err)
+        env = [v for v in dash["templating"]["list"]
+               if v.get("name") == "env"][0]
+        self.assertEqual(env["current"]["value"], "production")
+
+    def test_env_in_json_summary(self):
+        with tempfile.TemporaryDirectory() as out_dir:
+            code, out, err = run_cli(
+                ["--json", "convert", SAMPLE, "-o", out_dir,
+                 "--env", "prod"])
+        self.assertEqual(code, 0, err)
+        obj = json.loads(out)
+        self.assertEqual(obj["result"]["env"], "prod")
+        self.assertFalse(obj["result"]["live"])
+
+
+class ExportCommandTests(_TempDbMixin, unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.work = self.tmp.name
+        self.pkg = os.path.join(self.work, "checkout")
+        os.makedirs(self.pkg)
+        self.dash_path = os.path.join(self.pkg, "dashboard.json")
+        with open(self.dash_path, "w", encoding="utf-8") as f:
+            json.dump(_portable_dash(), f)
+        self.bound_path = os.path.join(self.pkg, "dashboard.bound.json")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+        super().tearDown()
+
+    def _bound(self, path=None):
+        with open(path or self.bound_path, encoding="utf-8") as f:
+            return json.load(f)
+
+    def _portable(self):
+        with open(self.dash_path, encoding="utf-8") as f:
+            return json.load(f)
+
+    def test_bind_via_live_instance(self):
+        fake = _fake_bind_live()
+        with mock.patch.object(cli, "GrafanaLive", return_value=fake):
+            code, out, err = run_cli(
+                ["export", self.work, "--bind-datasources",
+                 "--url", "http://gr:3000", "--token", "tok"])
+        self.assertEqual(code, 0, err)
+        self.assertTrue(os.path.isfile(self.bound_path))
+        bound = self._bound()
+        self.assertEqual(bound["panels"][0]["targets"][0]["datasource"],
+                         {"type": "prometheus", "uid": "mimir-uid"})
+        self.assertEqual(bound["panels"][1]["datasource"],
+                         {"type": "loki", "uid": "loki-uid"})
+        self.assertEqual([v["name"] for v in bound["templating"]["list"]],
+                         ["env"])
+        # the portable dashboard.json is untouched
+        self.assertEqual(self._portable(), _portable_dash())
+        self.assertIn("dashboard.bound.json", err)
+        self.assertIn("datasource=mimir-uid", err)
+        fake.resolve_ds_map.assert_called_once()
+        _args, kwargs = fake.resolve_ds_map.call_args
+        self.assertEqual(kwargs.get("preferred"), {})
+
+    def test_unbound_variable_exits_one_with_fix(self):
+        fake = _fake_bind_live({"datasource": "mimir-uid",
+                                "${datasource}": "mimir-uid"})
+        with mock.patch.object(cli, "GrafanaLive", return_value=fake):
+            code, out, err = run_cli(
+                ["export", self.pkg, "--bind-datasources",
+                 "--url", "http://gr:3000", "--token", "tok"])
+        self.assertEqual(code, 1)
+        self.assertIn("unbound datasource variable(s): loki_datasource",
+                      err)
+        self.assertIn("add-datasource --type loki", err)
+        self.assertIn("--ds loki_datasource=<uid>", err)
+        # the bound file still exists (partial) so the user can inspect
+        bound = self._bound()
+        self.assertEqual(bound["panels"][1]["datasource"]["uid"],
+                         "${loki_datasource}")
+
+    def test_explicit_ds_offline(self):
+        code, out, err = run_cli(
+            ["export", self.pkg, "--ds", "datasource=p1",
+             "--ds", "${loki_datasource}=l1"])
+        self.assertEqual(code, 0, err)
+        bound = self._bound()
+        self.assertEqual(bound["panels"][0]["targets"][0]["datasource"]
+                         ["uid"], "p1")
+        self.assertEqual(bound["panels"][1]["targets"][0]["datasource"]
+                         ["uid"], "l1")
+
+    def test_explicit_ds_overrides_live_pick(self):
+        fake = _fake_bind_live()
+        with mock.patch.object(cli, "GrafanaLive", return_value=fake):
+            code, out, err = run_cli(
+                ["export", self.pkg, "--bind-datasources",
+                 "--ds", "loki_datasource=loki-eu",
+                 "--url", "http://gr:3000", "--token", "tok"])
+        self.assertEqual(code, 0, err)
+        _args, kwargs = fake.resolve_ds_map.call_args
+        self.assertEqual(kwargs.get("preferred"),
+                         {"loki_datasource": "loki-eu"})
+        bound = self._bound()
+        self.assertEqual(bound["panels"][1]["targets"][0]["datasource"]
+                         ["uid"], "loki-eu")
+
+    def test_bad_ds_spec_exits_two(self):
+        code, out, err = run_cli(["export", self.pkg, "--ds", "nonsense"])
+        self.assertEqual(code, 2)
+        self.assertIn("VARIABLE=UID", err)
+
+    def test_env_sets_current_without_binding(self):
+        code, out, err = run_cli(["export", self.pkg, "--env", "staging"])
+        self.assertEqual(code, 0, err)
+        bound = self._bound()
+        env = [v for v in bound["templating"]["list"]
+               if v["name"] == "env"][0]
+        self.assertEqual(env["current"]["value"], "staging")
+        # datasource pickers untouched when no binding was requested
+        self.assertEqual(bound["panels"][0]["datasource"]["uid"],
+                         "${datasource}")
+
+    def test_pin_env_rewrites_queries(self):
+        code, out, err = run_cli(
+            ["export", self.pkg, "--ds", "datasource=p1",
+             "--ds", "loki_datasource=l1", "--env", "staging",
+             "--pin-env"])
+        self.assertEqual(code, 0, err)
+        bound = self._bound()
+        self.assertNotIn("env", [v["name"]
+                                 for v in bound["templating"]["list"]])
+        self.assertIn("acme-cluster-staging",
+                      bound["panels"][0]["targets"][0]["expr"])
+        self.assertIn('env="staging"',
+                      bound["panels"][1]["targets"][0]["expr"])
+        self.assertNotIn("$env", json.dumps(bound))
+        self.assertIn("env staging (pinned)", err)
+
+    def test_pin_env_requires_env(self):
+        code, out, err = run_cli(["export", self.pkg, "--pin-env",
+                                  "--ds", "datasource=p1"])
+        self.assertEqual(code, 2)
+        self.assertIn("--pin-env needs --env", err)
+
+    def test_nothing_to_do_exits_two(self):
+        code, out, err = run_cli(["export", self.pkg])
+        self.assertEqual(code, 2)
+        self.assertIn("nothing to export", err)
+        self.assertFalse(os.path.exists(self.bound_path))
+
+    def test_bind_without_url_exits_two(self):
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("GRAFANA_URL", "GRAFANA_TOKEN")}
+        with mock.patch.dict(os.environ, env, clear=True):
+            with self.assertRaises(SystemExit) as ctx:
+                run_cli(["export", self.pkg, "--bind-datasources"])
+        self.assertEqual(ctx.exception.code, 2)
+
+    def test_connect_failure_exits_one(self):
+        fake = _fake_bind_live()
+        fake.health.side_effect = GrafanaError("connection refused")
+        with mock.patch.object(cli, "GrafanaLive", return_value=fake):
+            code, out, err = run_cli(
+                ["export", self.pkg, "--bind-datasources",
+                 "--url", "http://gr:3000", "--token", "tok"])
+        self.assertEqual(code, 1)
+        self.assertIn("cannot connect", err)
+        self.assertIn("--ds VARIABLE=UID", err)
+
+    def test_resolve_failure_exits_one(self):
+        fake = _fake_bind_live(fail=True)
+        with mock.patch.object(cli, "GrafanaLive", return_value=fake):
+            code, out, err = run_cli(
+                ["export", self.pkg, "--bind-datasources",
+                 "--url", "http://gr:3000", "--token", "tok"])
+        self.assertEqual(code, 1)
+        self.assertIn("could not resolve datasources", err)
+        self.assertFalse(os.path.exists(self.bound_path))
+
+    def test_keep_vars(self):
+        code, out, err = run_cli(
+            ["export", self.pkg, "--ds", "datasource=p1",
+             "--ds", "loki_datasource=l1", "--keep-vars"])
+        self.assertEqual(code, 0, err)
+        names = [v["name"] for v in self._bound()["templating"]["list"]]
+        self.assertIn("datasource", names)
+        self.assertIn("loki_datasource", names)
+
+    def test_flat_file_and_out_dir(self):
+        flat = os.path.join(self.work, "flat.json")
+        with open(flat, "w", encoding="utf-8") as f:
+            json.dump(_portable_dash("Flat", "u2"), f)
+        code, out, err = run_cli(
+            ["export", flat, "--ds", "datasource=p1",
+             "--ds", "loki_datasource=l1"])
+        self.assertEqual(code, 0, err)
+        self.assertTrue(os.path.isfile(
+            os.path.join(self.work, "flat.bound.json")))
+        out_dir = os.path.join(self.work, "bound-out")
+        code, out, err = run_cli(
+            ["export", self.pkg, "--ds", "datasource=p1",
+             "--ds", "loki_datasource=l1", "--out", out_dir])
+        self.assertEqual(code, 0, err)
+        self.assertTrue(os.path.isfile(
+            os.path.join(out_dir, "checkout.bound.json")))
+
+    def test_dir_scan_skips_bound_files(self):
+        # a flat output dir holding x.json + x.bound.json exports only
+        # the portable one (never x.bound.bound.json)
+        flat_dir = os.path.join(self.work, "flat")
+        os.makedirs(flat_dir)
+        with open(os.path.join(flat_dir, "x.json"), "w",
+                  encoding="utf-8") as f:
+            json.dump(_portable_dash("X", "ux"), f)
+        with open(os.path.join(flat_dir, "x.bound.json"), "w",
+                  encoding="utf-8") as f:
+            json.dump(_portable_dash("X", "ux"), f)
+        code, out, err = run_cli(
+            ["export", flat_dir, "--ds", "datasource=p1",
+             "--ds", "loki_datasource=l1"])
+        self.assertEqual(code, 0, err)
+        self.assertEqual(sorted(os.listdir(flat_dir)),
+                         ["x.bound.json", "x.json"])
+
+    def test_json_envelope(self):
+        code, out, err = run_cli(
+            ["--json", "export", self.pkg, "--ds", "datasource=p1",
+             "--env", "prod"])
+        self.assertEqual(code, 1)  # loki still unbound
+        obj = json.loads(out)
+        self.assertFalse(obj["ok"])
+        self.assertEqual(obj["command"], "export")
+        row = obj["result"]["exports"][0]
+        self.assertEqual(row["slug"], "checkout")
+        self.assertEqual(row["ds_map"], {"datasource": "p1"})
+        self.assertEqual(row["unbound"], ["loki_datasource"])
+        self.assertEqual(row["env"], "prod")
+        self.assertEqual(obj["result"]["totals"]["unbound"], 1)
+
+    def test_no_inputs_exits_two(self):
+        code, out, err = run_cli(["export", os.path.join(self.work, "no"),
+                                  "--env", "prod"])
+        self.assertEqual(code, 2)
+        self.assertIn("no dashboard JSON files found", err)
+
+    def test_export_listed_in_help(self):
+        code, out, err = run_cli([])
+        self.assertIn("export", out)
+        with contextlib.redirect_stdout(io.StringIO()) as buf:
+            with self.assertRaises(SystemExit):
+                cli.main(["export", "--help"])
+        text = buf.getvalue()
+        for flag in ("--bind-datasources", "--ds", "--env", "--pin-env",
+                     "--keep-vars"):
+            self.assertIn(flag, text)
+
+
+class GrafanaImportBindTests(_TempDbMixin, unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.work = self.tmp.name
+        self.pkg = os.path.join(self.work, "checkout")
+        os.makedirs(self.pkg)
+        with open(os.path.join(self.pkg, "dashboard.json"), "w",
+                  encoding="utf-8") as f:
+            json.dump(_portable_dash(), f)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+        super().tearDown()
+
+    def test_import_binds_and_writes_bound_copy(self):
+        fake = _fake_bind_live()
+        with mock.patch.object(cli, "GrafanaLive", return_value=fake):
+            code, out, err = run_cli(
+                ["grafana", "import", self.work, "--bind-datasources",
+                 "--env", "staging", "--url", "http://gr:3000",
+                 "--token", "tok"])
+        self.assertEqual(code, 0, err)
+        (dash,), kwargs = fake.import_dashboard.call_args
+        self.assertEqual(dash["panels"][0]["targets"][0]["datasource"]
+                         ["uid"], "mimir-uid")
+        env = [v for v in dash["templating"]["list"]
+               if v["name"] == "env"][0]
+        self.assertEqual(env["current"]["value"], "staging")
+        self.assertNotIn("datasource", [v["name"] for v in
+                                        dash["templating"]["list"]])
+        bound_path = os.path.join(self.pkg, "dashboard.bound.json")
+        self.assertTrue(os.path.isfile(bound_path))
+        self.assertIn("bound Checkout", err)
+        self.assertIn("1 imported, 0 failed", err)
+
+    def test_import_pin_env(self):
+        fake = _fake_bind_live()
+        with mock.patch.object(cli, "GrafanaLive", return_value=fake):
+            code, out, err = run_cli(
+                ["grafana", "import", self.pkg, "--bind-datasources",
+                 "--env", "prod", "--pin-env", "--url",
+                 "http://gr:3000", "--token", "tok"])
+        self.assertEqual(code, 0, err)
+        (dash,), _kw = fake.import_dashboard.call_args
+        self.assertNotIn("$env", json.dumps(dash))
+        self.assertIn("acme-cluster-prod",
+                      dash["panels"][0]["targets"][0]["expr"])
+
+    def test_import_unbound_fails_loudly_and_skips(self):
+        fake = _fake_bind_live({"datasource": "mimir-uid",
+                                "${datasource}": "mimir-uid"})
+        with mock.patch.object(cli, "GrafanaLive", return_value=fake):
+            code, out, err = run_cli(
+                ["grafana", "import", self.pkg, "--bind-datasources",
+                 "--url", "http://gr:3000", "--token", "tok"])
+        self.assertEqual(code, 1)
+        fake.import_dashboard.assert_not_called()
+        self.assertIn("unbound datasource variable(s): loki_datasource",
+                      out)
+        self.assertIn("0 imported, 1 failed", err)
+
+    def test_import_without_bind_unchanged(self):
+        fake = _fake_bind_live()
+        with mock.patch.object(cli, "GrafanaLive", return_value=fake):
+            code, out, err = run_cli(
+                ["grafana", "import", self.pkg, "--url",
+                 "http://gr:3000", "--token", "tok"])
+        self.assertEqual(code, 0, err)
+        fake.resolve_ds_map.assert_not_called()
+        (dash,), _kw = fake.import_dashboard.call_args
+        self.assertEqual(dash["panels"][0]["targets"][0]["datasource"]
+                         ["uid"], "${datasource}")
+        self.assertFalse(os.path.exists(
+            os.path.join(self.pkg, "dashboard.bound.json")))
+
+    def test_import_pin_without_env_exits_two(self):
+        fake = _fake_bind_live()
+        with mock.patch.object(cli, "GrafanaLive", return_value=fake):
+            code, out, err = run_cli(
+                ["grafana", "import", self.pkg, "--pin-env", "--url",
+                 "http://gr:3000", "--token", "tok"])
+        self.assertEqual(code, 2)
+        self.assertIn("--pin-env needs --env", err)
+
+
+class BindWizardTests(unittest.TestCase):
+    """Wizard entries for live convert + bound export drive the CLI
+    functions with the right Namespace (prompts are scripted)."""
+
+    def _wizard(self):
+        from nr2grafana.interactive import Wizard
+        w = Wizard.__new__(Wizard)
+        w.state = {}
+        w.remember = lambda k, v: w.state.__setitem__(k, v)
+        return w
+
+    def test_flow_export_calls_cmd_export(self):
+        from nr2grafana import interactive
+        w = self._wizard()
+        prompts = iter(["./pkg", "http://gr:3000", "loki_datasource",
+                        "loki-uid", "staging"])
+        confirms = iter([True, True, False, False])
+        with tempfile.TemporaryDirectory() as work, \
+                mock.patch.object(interactive, "prompt",
+                                  side_effect=lambda *a, **k:
+                                  next(prompts).replace("./pkg", work)), \
+                mock.patch.object(interactive, "confirm",
+                                  side_effect=lambda *a, **k:
+                                  next(confirms)), \
+                mock.patch.object(interactive, "prompt_secret",
+                                  return_value="tok"), \
+                mock.patch.object(cli, "cmd_export", return_value=0) \
+                as cmd, \
+                contextlib.redirect_stdout(io.StringIO()):
+            rc = w.flow_export()
+        self.assertEqual(rc, 0)
+        ns = cmd.call_args[0][0]
+        self.assertTrue(ns.bind_datasources)
+        self.assertEqual(ns.ds_overrides, ["loki_datasource=loki-uid"])
+        self.assertEqual(ns.env, "staging")
+        self.assertFalse(ns.pin_env)
+        self.assertEqual(ns.grafana_token, "tok")
+        self.assertEqual(w.state.get("target_env"), "staging")
+
+    def test_flow_export_nothing_selected(self):
+        from nr2grafana import interactive
+        w = self._wizard()
+        with tempfile.TemporaryDirectory() as work, \
+                mock.patch.object(interactive, "prompt",
+                                  side_effect=[work, ""]), \
+                mock.patch.object(interactive, "confirm",
+                                  return_value=False), \
+                mock.patch.object(cli, "cmd_export") as cmd, \
+                contextlib.redirect_stdout(io.StringIO()):
+            rc = w.flow_export()
+        self.assertEqual(rc, 2)
+        cmd.assert_not_called()
+
+    def test_flow_convert_passes_live_and_env(self):
+        from nr2grafana import interactive
+        w = self._wizard()
+        w.pick_config = lambda: ""
+        w.summarize_report = lambda p: None
+        with tempfile.TemporaryDirectory() as work:
+            prompts = iter([SAMPLE, work, "http://gr:3000", "prod"])
+            # passthrough? no; live? yes; package? no
+            confirms = iter([False, True, False])
+            with mock.patch.object(interactive, "prompt",
+                                   side_effect=lambda *a, **k:
+                                   next(prompts)), \
+                    mock.patch.object(interactive, "confirm",
+                                      side_effect=lambda *a, **k:
+                                      next(confirms)), \
+                    mock.patch.object(interactive, "menu",
+                                      return_value=0), \
+                    mock.patch.object(interactive, "prompt_secret",
+                                      side_effect=["NRAK-x", "gtok"]), \
+                    mock.patch.object(cli, "cmd_convert", return_value=0) \
+                    as cmd, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                rc = w.flow_convert()
+        self.assertEqual(rc, 0)
+        ns = cmd.call_args[0][0]
+        self.assertTrue(ns.live)
+        self.assertEqual(ns.api_key, "NRAK-x")
+        self.assertEqual(ns.region, "US")
+        self.assertEqual(ns.grafana_url, "http://gr:3000")
+        self.assertEqual(ns.grafana_token, "gtok")
+        self.assertEqual(ns.env, "prod")
+        self.assertEqual(ns.page_strategy, "rows")
+
+    def test_flow_convert_without_live(self):
+        from nr2grafana import interactive
+        w = self._wizard()
+        w.pick_config = lambda: ""
+        w.summarize_report = lambda p: None
+        with tempfile.TemporaryDirectory() as work:
+            prompts = iter([SAMPLE, work, ""])
+            confirms = iter([False, False, False])
+            with mock.patch.object(interactive, "prompt",
+                                   side_effect=lambda *a, **k:
+                                   next(prompts)), \
+                    mock.patch.object(interactive, "confirm",
+                                      side_effect=lambda *a, **k:
+                                      next(confirms)), \
+                    mock.patch.object(interactive, "menu",
+                                      return_value=0), \
+                    mock.patch.object(cli, "cmd_convert", return_value=0) \
+                    as cmd, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                rc = w.flow_convert()
+        self.assertEqual(rc, 0)
+        ns = cmd.call_args[0][0]
+        self.assertFalse(ns.live)
+        self.assertEqual(ns.env, "")
+        self.assertEqual(ns.api_key, "")
+
+    def test_main_menu_lists_export(self):
+        import inspect
+        from nr2grafana.interactive import Wizard
+        src = inspect.getsource(Wizard.run)
+        self.assertIn("Export bound dashboards", src)
+        self.assertIn("self.flow_export()", src)
+        src = inspect.getsource(Wizard.offer_next_steps)
+        self.assertIn("self.flow_export()", src)
+
 
 
 if __name__ == "__main__":

@@ -1,9 +1,14 @@
 # Translation notes: NRQL -> PromQL / LogQL / TraceQL
 
-Honest support matrix for the nr2grafana 1.2 translation layer
-(`nr2grafana/nrql/parser.py` + `nr2grafana/translate/`). Every translated
-query carries a confidence level; this document says exactly what each
-construct becomes and where the semantics drift.
+Honest support matrix for the nr2grafana translation layer
+(`nr2grafana/nrql/parser.py` + `nr2grafana/translate/`), current as of
+1.11. Every translated query carries a confidence level; this document
+says exactly what each construct becomes and where the semantics drift.
+The 1.11 fidelity rules (metric kind inference, counter semantics,
+summaries, the K8s map, CloudWatch targets, `concat()`/`$env`, live
+hints, datasource binding, `[MANUAL]` placeholders) are documented in
+depth in [live-translation.md](live-translation.md); the tables below
+only summarize them.
 
 Confidence taxonomy (worst wins across a query):
 
@@ -24,25 +29,38 @@ General invariants:
 - Units are never numerically rescaled; a `unit:` hint sets the panel
   unit instead. Count-shaped aggregations always hint `unit:short`.
 - Untranslatable or unparsable queries never abort a conversion: the
-  panel is emitted with the original NRQL preserved and a precise note.
+  panel becomes a `[MANUAL]` text panel (WHY + closest equivalent +
+  original NRQL) and the widget report carries `closest_equivalent`.
+  There are no silent empty panels.
+- Label values are rendered by one shared rule (metrics, logs,
+  CloudWatch): literals verbatim, `{{var}}` -> `$var`, `concat('p-',
+  {{env}})` -> `p-$env`, IN/OR lists -> regex alternation of the
+  rendered values. A Python-looking node repr in an emitted query is a
+  bug.
 
 ## Event-type routing (FROM ...)
 
 | FROM | Target | Status | Notes |
 | --- | --- | --- | --- |
-| `Metric` | PromQL | varies | name via `metric_map` config, else heuristics (`_total` -> counter, `_bucket` -> histogram, `histogram()`/`apdex()` arg -> histogram, `percentile()`/`median()` arg -> histogram only when the name looks like a duration/latency histogram else gauge, else gauge); heuristic hits are `needs-review` |
+| `Metric` (app metrics) | PromQL | varies | deterministic rename (dots/dashes -> `_`, camelCase kept, counters get `_total`) + kind inference: `metric_map` > `metric_kinds` > live Mimir metadata (`--live`) > name rules (gauge words / event words / summary / histogram suffixes) > aggregation rules (`sum()`/`count()` -> counter, `latest()`/`average()`/`max()`/`min()` -> gauge, `percentile()` -> histogram) > gauge; name/aggregation-rule hits are `approximate` (the default and `percentile()` of an unknown name are `needs-review`). See [live-translation.md section 1](live-translation.md#1-metric-rename-and-kind-inference) |
+| `Metric` (`aws.*`) | CloudWatch | approximate | real CloudWatch datasource target `{namespace, metricName, statistic, dimensions}` (or a Metric Insights `SEARCH` expression for `filter()`/multi-queue sums); the `cloudwatch` datasource becomes REQUIRED |
+| `Metric` (`k8s.*`) | PromQL | exact / approximate | `K8S_METRIC_MAP` -> kube-state-metrics / cAdvisor / node_exporter expressions; `k8s.<x>Name` attributes -> `<x>` labels; extensible via `k8s_metric_map` |
+| `Metric` (summary views `.mean/.median/.upper/.percentiles/...`) | PromQL | approximate | NR summary -> Prometheus summary `_sum`/`_count` (`sum(rate(_sum))/sum(rate(_count))`) |
 | `Transaction` | PromQL | approximate | OTel semconv `http_server_request_duration_seconds` histogram (legacy flavor and config overrides supported); requires OTel instrumentation |
 | `TransactionError` | PromQL | needs-review | approximated as 5xx responses on the same histogram |
 | `Span` (aggregations) | PromQL | needs-review | span metrics (`spanmetrics_flavor` config: otel / otel-seconds / tempo / legacy); metric names are deployment-specific |
 | `Span` (raw / SELECT *) | TraceQL | approximate | trace search; results differ from raw span listings |
 | `Log` | LogQL | varies | see LogQL section |
 | `SystemSample` / `NetworkSample` / `StorageSample` | PromQL | exact / approximate | canonical node_exporter expressions (see INFRA_MAP); flagged needs-review because exporter presence is assumed |
-| `K8s*Sample` | PromQL | exact-shaped | kube-state-metrics / cAdvisor expressions; same exporter caveat |
+| `K8s*Sample` | PromQL | exact-shaped | kube-state-metrics / cAdvisor expressions; same exporter caveat; `containerCpuCfsThrottledPeriodsDelta / containerCpuCfsPeriodsDelta` -> `rate(..._throttled_periods_total)/rate(..._periods_total)` |
+| AWS integration samples (`AwsRds*`, `QueueSample`, ...) | CloudWatch | approximate | routed like `aws.*` metrics |
 | `PageView` / `Browser*` / `JavaScriptError` / `AjaxRequest` | - | untranslatable | names Grafana Faro as the LGTM equivalent |
 | `Mobile*` | - | untranslatable | names Grafana Faro |
 | `Synthetic*` | - | untranslatable | names blackbox_exporter / Grafana Synthetic Monitoring |
-| `NrConsumption` / `NrUsage` / `NrAuditEvent` | - | untranslatable | New Relic-only; needs the NR datasource plugin |
-| multiple event types | first only | needs-review | only the first FROM entry is translated; noted |
+| `NrConsumption` / `NrUsage` / `NrAuditEvent` | - | untranslatable | New Relic-only; `[MANUAL]` with closest equivalent = the NR datasource plugin (`--passthrough`) |
+| `FinanceSample` | - | untranslatable | `[MANUAL]`; closest equivalent = AWS Cost Explorer (`tco analyze`) |
+| `Deployment` | - | untranslatable | `[MANUAL]`; closest equivalent = Grafana annotations |
+| multiple event types (`FROM Log, Log_dev`) | first only | needs-review | only the first FROM entry is translated; noted |
 
 ## Aggregations -> PromQL
 
@@ -51,9 +69,12 @@ General invariants:
 | `count(*)` on counter | approximate | `sum by (...)(increase(m[W]))`; on `FROM Metric` NR count() counts datapoints, not increase - noted |
 | `count(*)` on histogram | exact | `sum(increase(m_count[W]))` |
 | `count(*)` on gauge | needs-review | `count(m)` counts series, not events |
-| `sum(x)` counter | exact | `sum(increase(m[W]))` |
+| `sum(x)` counter | exact | instant: `sum(increase(m_total[$__range]))` (total over the window); `TIMESERIES`: `sum(increase(m_total[$__interval]))` (per bucket) |
+| `sum(x)` / `count(x)` on an unknown app metric | approximate | inferred counter (AGG-RULES) -> the counter shape above, never `avg_over_time`; `metric_kinds` to override |
+| `rate(sum(x), 1 second)` counter | exact | `sum(rate(m_total[$__rate_interval]))` (scaled for other units) |
 | `sum(x)` gauge | approximate | `sum(avg_over_time(m[W]))` (current-total semantics) |
 | `average(x)` histogram | exact | `sum(rate(_sum)) / sum(rate(_count))` |
+| `average(x.mean)` / `average(x.upper.percentiles)` summary | approximate | `sum(rate(x_mean_sum[W])) / sum(rate(x_mean_count[W]))` |
 | `average(x)` gauge | exact | `avg(avg_over_time(m[W]))` |
 | `max(x)` / `min(x)` gauge | exact | `max(max_over_time)` / `min(min_over_time)` |
 | `max(x)` histogram | approximate | `histogram_quantile(1, ...)` = top bucket bound (overestimate) |
@@ -75,6 +96,10 @@ General invariants:
 | `stddev(x)` gauge | approximate | per-series `stddev_over_time` (NR computes over all events) |
 | `stddev(x)` counter/histogram | untranslatable | needs raw values; no sum-of-squares series |
 | `uniqueCount(attr)` | approximate | `count(count by (label)(...))` - distinct label values on series, not event-level uniqueness |
+| `agg(x) * N`, `24*7*max(x)` (constants both sides) | preserved | arithmetic between aggregates and constants kept in the expr; `10e8`-style scientific notation parses |
+| `agg(x) + agg(y)`, `agg(x) - agg(y)` | approximate | both operands translated in the same context and combined as `(left) + (right)`; a series present in only one operand drops out (note says to add `or vector(0)`). Over `aws.*` metrics this (and `agg(x) / agg(y)`) becomes a CloudWatch Metric Math target: hidden operand queries `m1`, `m2`, ... plus an expression query `m1 + m2` |
+| `sum(0)` / `latest(N)` (constant) | exact | `vector(N)` (placeholder widgets) |
+| `filter(count(*), WHERE ...) * 100 / count(*)` on `FROM Log` | approximate | LogQL ratio `100 * (left) / (right)` (unit percent) |
 | `filter(agg, WHERE c)` | composes | embedded WHERE becomes extra label matchers on that aggregation only |
 | `percentage(agg, WHERE c)` | composes | `100 * filtered / unfiltered`; `unit:percent` hint |
 | `agg(if(cond, x))` | approximate | rewritten to a filtered aggregation (sound: NRQL aggregations skip NULL). `count(if(c, 1))` and `sum(if(c, 1, 0))` -> filtered `count(*)`; `ELSE 0` accepted for `sum` only |
@@ -92,6 +117,14 @@ General invariants:
 | Clause | Status | Notes |
 | --- | --- | --- |
 | `WHERE a = / != v` | exact | label matcher (`=~ ${var:regex}` for dashboard variables) |
+| `WHERE a = concat('p-', {{env}})` | exact | `a="p-$env"` (shared value renderer); in IN/OR lists -> `=~"p-$env\|q-$env"` |
+| `WHERE flag` (bare boolean attr) / `a IS TRUE/FALSE` | exact | `flag="true"` / `="false"` |
+| `WHERE appName = 'svc (prod)'` | approximate | `job="svc"` (label via `label_map`); the `(env)` suffix feeds the env variable |
+| `WHERE entity.guid = '<GUID>'` | needs-review / exact with `--live` | offline: `[MANUAL]`-style note; `--live` resolves the GUID through NerdGraph (read-only) to `service_name="<entity name>"` (`entity_label`) |
+| `` WHERE `backticked.attr` = v `` | exact | backticks accepted everywhere |
+| `-- comments` | exact | stripped anywhere in the NRQL |
+| two `SELECT`s in one NRQL string | composes | split; the second becomes an extra target |
+| `WITH METRIC_FORMAT`, `dateOf/hourOf/weekOf` | note | dropped with a note |
 | `WHERE a IN (...)` / `NOT IN` | exact | anchored regex alternation; `IN ({{var}})` -> `=~ ${var:regex}` |
 | `WHERE a LIKE p` | exact | `%`/`_` -> `.*`/`.`; case-insensitive `(?i)` to match NRQL LIKE |
 | `WHERE a RLIKE p` | exact | passed through as regex matcher |
@@ -101,11 +134,14 @@ General invariants:
 | `WHERE` OR across attributes | needs-review | cannot be label matchers; clause DROPPED with an explicit note |
 | `NOT (...)` | exact where flippable | matcher ops flip; negated AND (OR in disguise) is dropped with a note |
 | numeric comparison on status code | exact | `>= 400` etc. -> status-class regex (`4..|5..`); other numeric label comparisons dropped, needs-review |
-| attribute not in `label_map` | needs-review | sanitized name used; note says to verify the label exists |
+| attribute not in `label_map` | approximate | sanitized name used (custom metric dimensions keep their name through OTel/Prom); note says to verify the label exists |
+| `WHERE a ... FACET x WHERE b` (two WHERE clauses) | exact | NRQL allows several `WHERE` clauses; they are ANDed (1.11 - earlier versions silently kept only the last) |
 | `FACET attr` | exact | `by (label)` grouping + legend |
 | `FACET fn(...)` (except cases) | needs-review | no label equivalent; grouping dropped |
 | `FACET ... LIMIT n` | approximate | `topk(n, ...)`; per-step evaluation on range queries noted |
 | `FACET` without LIMIT | note | NR defaults to top 10; translation returns ALL groups (note suggests topk) |
+| `FACET k8s.namespaceName, k8s.deploymentName` | exact | `by (namespace, deployment)` (K8s attribute rule) |
+| `FACET aws.<svc>.<Dim>` | approximate | CloudWatch `dimensions[Dim] = ["*"]` + `dimension_keys` |
 | `TIMESERIES [AUTO/MAX]` | exact | range query, Grafana picks the step |
 | `TIMESERIES <fixed>` | note | Grafana buckets by query interval; note says to set panel Min interval |
 | `SLIDE BY n` | approximate | no sliding-window equivalent; honest note (series look more stepped) |
@@ -133,6 +169,11 @@ after `| json` / `| logfmt` (config `loki_parser`) with an
 | `SELECT *` / plain attrs | exact | log-stream query + `panel-hint:logs`; column projection not supported (full line shown, approximate); `LIMIT` -> `maxlines:` |
 | no stream-label filter | needs-review | emits `{service_name=~".+"}` (scans all streams) with a warning note |
 | `message = / LIKE / RLIKE ...` | approximate/exact | line filters `|=`, `|~ "(?i)..."`, `!~`; equality degrades to substring `|=` (noted) |
+| `allColumnSearch('t', insensitive: true)` | approximate | `|~ "(?i)t"` (line filter; NR searches all attributes) |
+| `log_level = 'ERROR'` (level-like labels) | exact | `log_level=~"(?i)ERROR"` when `loki_case_insensitive_levels` is true (default) |
+| stream label `= concat('p-', {{env}})` | exact | `{cluster="p-$env"}` (shared value renderer) |
+| `SELECT f1, f2 FROM Log` (projection) | approximate | logs panel with `| json | line_format "{{.f1}} {{.f2}}"` |
+| `bytecountestimate()` | approximate | `bytes_over_time` |
 | `count(*)` | exact | `sum by (...)(count_over_time(stream [W]))` |
 | `rate(count(*), N unit)` | exact | `sum(rate(stream [W])) * N-seconds` |
 | `average/sum/max/min(attr)` | approximate | `*_over_time(stream | unwrap field [W]) by (...)`; unwrap assumes a numeric parsed field (noted); explicit `by ()` keeps NR's single-series event-level semantics |
@@ -143,6 +184,7 @@ after `| json` / `| logfmt` (config `loki_parser`) with an
 | `filter(agg, WHERE c)` | composes | embedded WHERE merged BEFORE the selector is built, so it can contribute stream labels |
 | `agg(if(cond, x))` | approximate | same trivially-a-filter rewrite as metrics |
 | `FACET` on non-stream label | needs-review | requires the parser stage; field names must be verified |
+| `FACET aparse(message, '%[TOPIC:*]%')` / `capture(message, r'...')` | approximate | `| regexp "(?P<topic>...)"` (NR `%`/`*` wildcards -> regex) + `sum by (topic)` |
 | `COMPARE WITH` | needs-review | `offset` on the range vector (Loki 2.3+); dropped for log-stream panels |
 | other aggregations | untranslatable | precise per-function message |
 
@@ -158,6 +200,16 @@ after `| json` / `| logfmt` (config `loki_parser`) with an
 | `IS [NOT] NULL` | exact | `field = nil` / `!= nil` |
 | `FACET` / `COMPARE WITH` | needs-review | not applicable to a trace-search panel; dropped with notes |
 | `LIMIT n` | hint | `limit:` note consumed by the builder |
+
+## Output contract: `[MANUAL]` placeholders and the widget report
+
+An `untranslatable` widget becomes a text panel titled
+`<title> [MANUAL]` whose body is WHY + the closest equivalent (datasource
+and an example query / CloudWatch target) + the original NRQL. Each
+`widget-report.json` entry carries `metric_kind`, `missing_datasource`,
+`closest_equivalent`, `manual`, `render_vars`, `k8s_mapped` and
+`cloudwatch`; `requirements.json` carries `missing_datasources`. See
+[live-translation.md sections 9-10](live-translation.md#9-the-manual-placeholder-contract).
 
 ## Changed test expectations in the 1.2 fidelity pass
 

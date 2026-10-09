@@ -22,11 +22,24 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from . import __version__
 from .model import NRDashboard
 from .nrql.parser import NrqlParseError, parse_nrql
 
 SCHEMA = "nr2grafana/requirements/v1"
-GENERATED_BY = "nr2grafana 1.1.0"
+GENERATED_BY = "nr2grafana %s" % __version__
+
+# Datasource family emitted for CloudWatch targets (translate/cloudwatch
+# + grafana/builder) and its default ``${var}`` reference.
+CLOUDWATCH_FAMILY = "cloudwatch"
+_CLOUDWATCH_UID_REF = "${cloudwatch_datasource}"
+
+# Default plugin type per family when the config has no entry.
+_FAMILY_PLUGIN = {
+    "prometheus": "prometheus", "loki": "loki", "tempo": "tempo",
+    "cloudwatch": "cloudwatch",
+    "newrelic": "nrgrafanaplugin-newrelic-datasource",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -212,6 +225,7 @@ _FAMILY_PURPOSE = {
     "prometheus": "metrics (Mimir/Prometheus)",
     "loki": "logs (Loki)",
     "tempo": "traces (Tempo)",
+    "cloudwatch": "AWS metrics (CloudWatch)",
     "newrelic": "NRQL passthrough (New Relic datasource plugin)",
 }
 
@@ -435,6 +449,7 @@ def _iter_panels(dash: Dict[str, Any]):
 def _family_map(cfg: Dict[str, Any]) -> Dict[str, str]:
     """Datasource plugin type -> config family name."""
     out = {"prometheus": "prometheus", "loki": "loki", "tempo": "tempo",
+           "cloudwatch": "cloudwatch",
            "nrgrafanaplugin-newrelic-datasource": "newrelic"}
     for family, spec in (cfg.get("datasources") or {}).items():
         if isinstance(spec, dict) and spec.get("type"):
@@ -442,10 +457,56 @@ def _family_map(cfg: Dict[str, Any]) -> Dict[str, str]:
     return out
 
 
+def _family_ref(cfg: Dict[str, Any], family: str) -> Tuple[str, str]:
+    """(plugin type, uid ref) the builder would emit for ``family``."""
+    spec = (cfg.get("datasources") or {}).get(family) or {}
+    ds_type = spec.get("type") or _FAMILY_PLUGIN.get(family, family)
+    uid = spec.get("uid") or ""
+    if not uid:
+        uid = (_CLOUDWATCH_UID_REF if family == CLOUDWATCH_FAMILY
+               else "${%s_datasource}" % family)
+    return ds_type, uid
+
+
+def _report_wants_cloudwatch(entry: Dict[str, Any]) -> bool:
+    """True when a widget-report entry needs the CloudWatch family:
+    the builder flagged it (``cloudwatch: true``), it reports the family
+    as missing, or its closest equivalent is a CloudWatch target."""
+    if entry.get("cloudwatch") is True:
+        return True
+    if entry.get("missing_datasource") == CLOUDWATCH_FAMILY:
+        return True
+    ce = entry.get("closest_equivalent")
+    if isinstance(ce, dict) and (ce.get("datasource") == CLOUDWATCH_FAMILY
+                                 or ce.get("cw_target")):
+        return True
+    for q in entry.get("queries") or []:
+        if isinstance(q, dict) and q.get("datasource") == CLOUDWATCH_FAMILY:
+            return True
+    return False
+
+
 def _collect_datasources(dash: Dict[str, Any],
-                         cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
+                         cfg: Dict[str, Any],
+                         widget_report: Optional[List[Dict[str, Any]]] = None
+                         ) -> List[Dict[str, Any]]:
     fam_of = _family_map(cfg)
     found: Dict[str, Dict[str, Any]] = {}
+
+    def add(family: str, ds_type: str, uid_ref: str,
+            pid: Any) -> None:
+        entry = found.setdefault(family, {
+            "family": family,
+            "plugin_id": ds_type,
+            "core": ds_type in _CORE_PLUGINS,
+            "uid_ref": uid_ref,
+            "purpose": _FAMILY_PURPOSE.get(family, ds_type),
+            "panel_ids": [],
+            "required": True,
+        })
+        if pid is not None and pid not in entry["panel_ids"]:
+            entry["panel_ids"].append(pid)
+
     for panel in _iter_panels(dash):
         for target in panel.get("targets") or []:
             ds = target.get("datasource") or {}
@@ -453,18 +514,16 @@ def _collect_datasources(dash: Dict[str, Any],
             if not ds_type or ds_type == "datasource":
                 continue
             family = fam_of.get(ds_type, ds_type)
-            entry = found.setdefault(family, {
-                "family": family,
-                "plugin_id": ds_type,
-                "core": ds_type in _CORE_PLUGINS,
-                "uid_ref": ds.get("uid", ""),
-                "purpose": _FAMILY_PURPOSE.get(family, ds_type),
-                "panel_ids": [],
-                "required": True,
-            })
-            pid = panel.get("id")
-            if pid is not None and pid not in entry["panel_ids"]:
-                entry["panel_ids"].append(pid)
+            add(family, ds_type, ds.get("uid", ""), panel.get("id"))
+    # CloudWatch is REQUIRED as soon as the widget report says a panel
+    # needs it, even when that panel is a [MANUAL] placeholder (text
+    # panel, no target) whose closest equivalent is a CloudWatch query.
+    for entry in widget_report or []:
+        if _report_wants_cloudwatch(entry):
+            ds_type, uid_ref = _family_ref(cfg, CLOUDWATCH_FAMILY)
+            add(CLOUDWATCH_FAMILY, ds_type, uid_ref, entry.get("panel_id"))
+    for entry in found.values():
+        entry["panel_ids"].sort(key=lambda p: (isinstance(p, str), p))
     return sorted(found.values(), key=lambda e: e["family"])
 
 
@@ -545,12 +604,86 @@ def _collect_nr_native(widget_report: List[Dict[str, Any]],
         if report.get("fallback") == "nrql-passthrough":
             equivalent = ("currently NRQL passthrough via the New Relic "
                           "datasource plugin; alternative: " + equivalent)
+        ce = _closest_equivalent(report)
+        if ce:
+            equivalent = _equivalent_text(ce) or equivalent
         out.append({
             "panel_id": report.get("panel_id"),
             "widget": viz or report.get("widget",
                                         report.get("widget_title", "")),
             "why": why,
             "equivalent": equivalent,
+            "missing_datasource": report.get("missing_datasource") or None,
+            "closest_equivalent": ce,
+        })
+    return out
+
+
+def _closest_equivalent(entry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The builder's ``closest_equivalent`` dict for a report entry
+    (``{datasource, example_query | cw_target, note}``), or None."""
+    ce = entry.get("closest_equivalent")
+    if isinstance(ce, dict) and ce:
+        return dict(ce)
+    if isinstance(ce, str) and ce.strip():
+        return {"datasource": "", "note": ce.strip()}
+    return None
+
+
+def _equivalent_text(ce: Dict[str, Any]) -> str:
+    """One-line rendering of a closest_equivalent dict."""
+    parts: List[str] = []
+    ds = ce.get("datasource") or ""
+    query = ce.get("example_query") or ce.get("expr") or ""
+    cw = ce.get("cw_target")
+    if query:
+        parts.append("%s: %s" % (ds, query) if ds else str(query))
+    elif isinstance(cw, dict) and cw:
+        desc = "%s %s" % (cw.get("namespace", ""), cw.get("metricName", ""))
+        if cw.get("statistic"):
+            desc += " (%s)" % cw["statistic"]
+        dims = cw.get("dimensions")
+        if isinstance(dims, dict) and dims:
+            desc += " by " + ", ".join(sorted(dims))
+        parts.append("%s target: %s" % (ds or CLOUDWATCH_FAMILY,
+                                        desc.strip()))
+    elif ds:
+        parts.append("%s datasource" % ds)
+    note = ce.get("note") or ""
+    if note:
+        parts.append(str(note))
+    return " -- ".join(parts)
+
+
+def _is_manual(entry: Dict[str, Any]) -> bool:
+    return bool(entry.get("manual")) or \
+        entry.get("confidence") == "untranslatable"
+
+
+def _collect_manual_panels(widget_report: List[Dict[str, Any]]) \
+        -> List[Dict[str, Any]]:
+    """Per-panel [MANUAL] surface: every panel the builder could not
+    translate (or flagged ``manual``), with WHY, the datasource family
+    it is missing (if any) and the closest equivalent query/target."""
+    out: List[Dict[str, Any]] = []
+    for entry in widget_report or []:
+        if not _is_manual(entry):
+            continue
+        notes = [str(n) for n in entry.get("notes") or [] if n]
+        ce = _closest_equivalent(entry)
+        nrql = [q for q in entry.get("nrql") or [] if q]
+        out.append({
+            "panel_id": entry.get("panel_id"),
+            "title": entry.get("widget_title") or entry.get("widget")
+            or "(untitled)",
+            "page": entry.get("page") or "",
+            "visualization": entry.get("visualization") or "",
+            "confidence": entry.get("confidence") or "",
+            "why": "; ".join(notes[:3]) or "query could not be translated",
+            "nrql": nrql[0] if nrql else "",
+            "missing_datasource": entry.get("missing_datasource") or None,
+            "closest_equivalent": ce,
+            "equivalent": _equivalent_text(ce) if ce else "",
         })
     return out
 
@@ -580,16 +713,226 @@ def _collect_expectations(dash: Dict[str, Any],
                 out.append({"panel_id": panel.get("id"),
                             "datasource": "tempo",
                             "needs": {"traceql": query}})
+            elif family == CLOUDWATCH_FAMILY:
+                out.append({"panel_id": panel.get("id"),
+                            "datasource": CLOUDWATCH_FAMILY,
+                            "needs": _cloudwatch_needs(target)})
+    return out
+
+
+def _cloudwatch_needs(target: Dict[str, Any]) -> Dict[str, Any]:
+    """What a CloudWatch target expects to find in the AWS account."""
+    dims = target.get("dimensions")
+    if not isinstance(dims, dict):
+        dims = {}
+    needs: Dict[str, Any] = {
+        "namespace": target.get("namespace") or "",
+        "metricName": target.get("metricName") or "",
+        "statistic": target.get("statistic") or "",
+        "dimensions": sorted(str(k) for k in dims),
+        "region": target.get("region") or "default",
+    }
+    if target.get("expression"):
+        needs["expression"] = target["expression"]
+    return needs
+
+
+# ---------------------------------------------------------------------------
+# Missing datasources (what to add before import)
+# ---------------------------------------------------------------------------
+
+# Fallback add-datasource field specs when grafana.live.DS_TEMPLATES is
+# unavailable; same shape as that table's "fields" (name/path/required/
+# placeholder).
+_FALLBACK_FIELDS: Dict[str, List[Dict[str, Any]]] = {
+    "prometheus": [
+        {"name": "url", "path": "url", "required": True,
+         "placeholder": "http://mimir:9009/prometheus"},
+        {"name": "httpMethod", "path": "jsonData.httpMethod",
+         "required": False, "placeholder": "POST"},
+    ],
+    "loki": [
+        {"name": "url", "path": "url", "required": True,
+         "placeholder": "http://loki:3100"},
+    ],
+    "tempo": [
+        {"name": "url", "path": "url", "required": True,
+         "placeholder": "http://tempo:3200"},
+    ],
+    "cloudwatch": [
+        {"name": "authType", "path": "jsonData.authType", "required": True,
+         "placeholder": "keys"},
+        {"name": "defaultRegion", "path": "jsonData.defaultRegion",
+         "required": True, "placeholder": "us-east-1"},
+        {"name": "accessKey", "path": "secureJsonData.accessKey",
+         "required": False, "placeholder": "AKIA...", "secret": True},
+        {"name": "secretKey", "path": "secureJsonData.secretKey",
+         "required": False, "placeholder": "", "secret": True},
+    ],
+}
+
+
+def _ds_template_spec(plugin_id: str) -> Tuple[List[Dict[str, Any]], str]:
+    """(field specs, notes) for ``plugin_id`` from grafana.live's guided
+    add-datasource forms, falling back to a built-in table."""
+    try:
+        from .grafana.live import DS_TEMPLATES
+    except Exception:  # noqa: BLE001 - optional, never fatal
+        DS_TEMPLATES = {}
+    spec = DS_TEMPLATES.get(plugin_id) if isinstance(DS_TEMPLATES, dict) \
+        else None
+    if isinstance(spec, dict) and spec.get("fields"):
+        return list(spec["fields"]), str(spec.get("notes") or "")
+    return list(_FALLBACK_FIELDS.get(plugin_id) or []), ""
+
+
+def _set_path(payload: Dict[str, Any], path: str, value: Any) -> None:
+    parts = path.split(".")
+    cur = payload
+    for key in parts[:-1]:
+        cur = cur.setdefault(key, {})
+    cur[parts[-1]] = value
+
+
+def add_datasource_template(family: str, plugin_id: str = "",
+                            name: str = "") -> Dict[str, Any]:
+    """The exact payload/commands that add a datasource of ``family``.
+
+    Returns ``{"cli", "ui", "api", "payload", "required_fields",
+    "notes"}`` where ``payload`` is a ready-to-edit body for
+    ``POST /api/datasources`` with ``<...>`` placeholders for values the
+    operator must fill in (secrets are never pre-filled).
+    """
+    plugin_id = plugin_id or _FAMILY_PLUGIN.get(family, family)
+    fields, notes = _ds_template_spec(plugin_id)
+    payload: Dict[str, Any] = {
+        "name": name or family, "type": plugin_id, "access": "proxy",
+    }
+    required: List[str] = []
+    for field in fields:
+        fname = field.get("name", "")
+        path = field.get("path") or fname
+        if not fname or not path:
+            continue
+        if field.get("secret"):
+            value = "<%s>" % fname
+        else:
+            value = field.get("placeholder") or "<%s>" % fname
+        _set_path(payload, path, value)
+        if field.get("required"):
+            required.append(fname)
+    return {
+        "cli": "nr2grafana grafana add-datasource --type %s --name %s"
+               % (plugin_id, name or family),
+        "ui": "Connections -> Data sources -> Add new data source -> %s"
+              % plugin_id,
+        "api": 'curl -sS -X POST "$GRAFANA_URL/api/datasources" '
+               '-H "Authorization: Bearer $GRAFANA_TOKEN" '
+               '-H "Content-Type: application/json" -d @datasource.json',
+        "payload": payload,
+        "required_fields": required,
+        "notes": notes,
+    }
+
+
+def _check_status_by_family(check_rows: Optional[List[Dict[str, Any]]]) \
+        -> Optional[Dict[str, Dict[str, Any]]]:
+    """GrafanaLive.check_requirements rows -> {family: row}; None when no
+    check ran."""
+    if check_rows is None:
+        return None
+    out: Dict[str, Dict[str, Any]] = {}
+    for row in check_rows or []:
+        item = str(row.get("item") or "")
+        if item.startswith("datasource:"):
+            out[item.split(":", 1)[1]] = row
+    return out
+
+
+def _collect_missing(datasources: List[Dict[str, Any]],
+                     widget_report: List[Dict[str, Any]],
+                     check_rows: Optional[List[Dict[str, Any]]] = None) \
+        -> List[Dict[str, Any]]:
+    """Families the dashboard needs but that nothing binds yet.
+
+    Without a live check a family is missing when its uid reference is
+    still a ``${var}`` template variable (nothing bound it to a concrete
+    datasource). With ``check_rows`` (GrafanaLive.check_requirements),
+    the instance decides: ``missing``/``wrong-type`` rows are missing,
+    ``ok`` rows are not even if the reference is unbound (the instance
+    has a datasource of that type to bind at import time).
+    """
+    status = _check_status_by_family(check_rows)
+    out: List[Dict[str, Any]] = []
+    for ds in datasources:
+        if not ds.get("required", True):
+            continue
+        family = ds.get("family", "")
+        uid_ref = ds.get("uid_ref") or ""
+        unbound = (not uid_ref) or uid_ref.startswith("${")
+        reason, detail = "", ""
+        if status is not None:
+            row = status.get(family)
+            if row is None:
+                if unbound:
+                    reason = "unbound"
+                    detail = ("%s not covered by the instance check; uid "
+                              "reference %r is unbound" % (family, uid_ref))
+            elif row.get("status") in ("missing", "wrong-type"):
+                reason = "absent" if row.get("status") == "missing" \
+                    else "wrong-type"
+                detail = str(row.get("detail") or "")
+        elif unbound:
+            reason = "unbound"
+            detail = ("no concrete datasource uid bound; the dashboard "
+                      "references %r" % (uid_ref or "(none)"))
+        if not reason:
+            continue
+        panel_ids = list(ds.get("panel_ids") or [])
+        for entry in widget_report or []:
+            if entry.get("missing_datasource") == family:
+                pid = entry.get("panel_id")
+                if pid is not None and pid not in panel_ids:
+                    panel_ids.append(pid)
+        panel_ids.sort(key=lambda p: (isinstance(p, str), p))
+        plugin_id = ds.get("plugin_id") or _FAMILY_PLUGIN.get(family, family)
+        tpl = add_datasource_template(family, plugin_id)
+        fix = ("Add a %s datasource (%s), then bind %s to it at import "
+               "time or re-export with --bind-datasources"
+               % (family, tpl["cli"], uid_ref or "the panels"))
+        if status is not None and status.get(family) and \
+                status[family].get("fix"):
+            fix = str(status[family]["fix"])
+        out.append({
+            "family": family,
+            "plugin_id": plugin_id,
+            "core": bool(ds.get("core", plugin_id in _CORE_PLUGINS)),
+            "uid_ref": uid_ref,
+            "reason": reason,
+            "detail": detail,
+            "panel_ids": panel_ids,
+            "purpose": ds.get("purpose") or _FAMILY_PURPOSE.get(family,
+                                                                family),
+            "fix": fix,
+            "add_datasource": tpl,
+        })
     return out
 
 
 def _import_section(dash: Dict[str, Any],
                     datasources: List[Dict[str, Any]],
-                    plugins: List[Dict[str, Any]]) -> Dict[str, Any]:
+                    plugins: List[Dict[str, Any]],
+                    missing: Optional[List[Dict[str, Any]]] = None) \
+        -> Dict[str, Any]:
     steps: List[str] = []
     if plugins:
         steps.append("Install plugin(s): %s; then restart Grafana."
                      % "; ".join(p["grafana_cli"] for p in plugins))
+    if missing:
+        steps.append("Add missing datasource(s): %s." % "; ".join(
+            "%s (type %s, %s): %s"
+            % (m["family"], m["plugin_id"], m["reason"],
+               m["add_datasource"]["cli"]) for m in missing))
     if datasources:
         steps.append("Create/verify datasources: %s." % ", ".join(
             "%s (type %s, referenced as %s)"
@@ -616,16 +959,23 @@ def _import_section(dash: Dict[str, Any],
 
 def analyze_dashboard(nr: Optional[NRDashboard], dash: Dict[str, Any],
                       widget_report: List[Dict[str, Any]],
-                      cfg: Dict[str, Any]) -> Dict[str, Any]:
+                      cfg: Dict[str, Any],
+                      check_rows: Optional[List[Dict[str, Any]]] = None) \
+        -> Dict[str, Any]:
     """Analyze one converted dashboard.
 
     nr may be None when only converted output is available; the widget
-    report carries the original NRQL either way. Returns the
-    requirements dict (schema nr2grafana/requirements/v1).
+    report carries the original NRQL either way. ``check_rows`` is an
+    optional GrafanaLive.check_requirements result for the target
+    instance; with it ``missing_datasources`` reflects what that
+    instance actually lacks instead of what the JSON leaves unbound.
+    Returns the requirements dict (schema nr2grafana/requirements/v1).
     """
     cfg = cfg or {}
-    datasources = _collect_datasources(dash, cfg)
+    widget_report = widget_report or []
+    datasources = _collect_datasources(dash, cfg, widget_report)
     plugins = _collect_plugins(datasources)
+    missing = _collect_missing(datasources, widget_report, check_rows)
     return {
         "schema": SCHEMA,
         "dashboard": dash.get("title", "") or
@@ -633,12 +983,28 @@ def analyze_dashboard(nr: Optional[NRDashboard], dash: Dict[str, Any],
         "uid": dash.get("uid", ""),
         "generated_by": GENERATED_BY,
         "datasources": datasources,
+        "missing_datasources": missing,
         "plugins": plugins,
         "domains": _collect_domains(widget_report, nr, cfg),
         "nr_native": _collect_nr_native(widget_report, cfg),
+        "manual_panels": _collect_manual_panels(widget_report),
         "data_expectations": _collect_expectations(dash, cfg),
-        "import": _import_section(dash, datasources, plugins),
+        "import": _import_section(dash, datasources, plugins, missing),
     }
+
+
+def missing_datasources(requirements: Dict[str, Any],
+                        check_rows: Optional[List[Dict[str, Any]]] = None) \
+        -> List[Dict[str, Any]]:
+    """``missing_datasources`` for an existing requirements dict,
+    recomputed against ``check_rows`` when given (so the API/MCP layer
+    can refresh the summary after an instance check without
+    re-analyzing the dashboard)."""
+    if check_rows is None and "missing_datasources" in requirements:
+        return list(requirements.get("missing_datasources") or [])
+    return _collect_missing(requirements.get("datasources") or [],
+                            requirements.get("manual_panels") or [],
+                            check_rows)
 
 
 def summarize(requirements: Dict[str, Any]) -> str:
@@ -658,11 +1024,24 @@ def summarize(requirements: Dict[str, Any]) -> str:
     if domains:
         parts.append("data domains: %s" % ", ".join(
             d["domain"] for d in domains))
+    missing = requirements.get("missing_datasources") or []
+    if missing:
+        parts.append("missing datasource%s: %s" % (
+            "" if len(missing) == 1 else "s",
+            ", ".join("%s (%s)" % (m.get("family", "?"),
+                                   m.get("reason", "unbound"))
+                      for m in missing)))
     native = requirements.get("nr_native") or []
     if native:
         parts.append("%d NR-native panel%s need%s manual attention" % (
             len(native), "" if len(native) == 1 else "s",
             "s" if len(native) == 1 else ""))
+    manual = requirements.get("manual_panels") or []
+    extra_manual = [m for m in manual if m.get("confidence")
+                    != "untranslatable"]
+    if extra_manual:
+        parts.append("%d other [MANUAL] panel%s" % (
+            len(extra_manual), "" if len(extra_manual) == 1 else "s"))
     if not parts:
         return "no datasource requirements detected"
     return "; ".join(parts)

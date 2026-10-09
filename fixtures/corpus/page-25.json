@@ -1,0 +1,91 @@
+{
+ "schema": 1,
+ "page": "Deployment Trackers",
+ "widgets": [
+  {
+   "id": "p25-w001",
+   "title": "(untitled)",
+   "visualization": "viz.table",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT timestamp, user as 'changed by', version as 'feature flag', description FROM Deployment WHERE entity.name=concat('acme-backend (',{{env}},')') limit MAX"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "SELECT of raw attributes (no aggregation) has no metrics equivalent"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p25-w002",
+   "title": "Web transactions time",
+   "visualization": "viz.area",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT\n  filter(average(apm.service.overview.web * 1000), WHERE segmentName LIKE 'Python') AS 'Python',\n  filter(average(apm.service.overview.web * 1000), WHERE segmentName LIKE 'Postgres') AS 'Postgres',\n  filter(average(apm.service.overview.web * 1000), WHERE segmentName LIKE 'ODBC') AS 'ODBC',\n  filter(average(apm.service.overview.web * 1000), WHERE segmentName LIKE 'Web external') AS 'Web external'\nFROM Metric\nWHERE (\n  ({{env}} = 'prod' AND entity.guid = '<REDACTED_BLOB>')\n  OR ({{env}} = 'staging' AND entity.guid = '<REDACTED_BLOB>')\n  OR ({{env}} = 'dev' AND entity.guid = '<REDACTED_BLOB>')\n)\nLIMIT MAX\nSINCE 1800 seconds AGO\nTIMESERIES",
+    "SELECT average(apm.service.transaction.duration * 1000) AS 'Response time' FROM Metric WHERE (entity.guid = '<REDACTED_BLOB>') AND (transactionType = 'Web') LIMIT MAX SINCE 1800 seconds AGO TIMESERIES "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg(avg_over_time(apm_service_overview_web{segmentName=~\"(?i)Python\"}[$__rate_interval]))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg(avg_over_time(apm_service_overview_web{segmentName=~\"(?i)Postgres\"}[$__rate_interval]))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg(avg_over_time(apm_service_overview_web{segmentName=~\"(?i)ODBC\"}[$__rate_interval]))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg(avg_over_time(apm_service_overview_web{segmentName=~\"(?i)Web external\"}[$__rate_interval]))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(rate(apm_service_transaction_duration_sum{entity_guid=\"<REDACTED_BLOB>\",transactionType=\"Web\"}[$__rate_interval])) / sum(rate(apm_service_transaction_duration_count{entity_guid=\"<REDACTED_BLOB>\",transactionType=\"Web\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "an OR clause in WHERE could not be merged into a single label matcher (different attributes, variables, or mixed predicate shapes); that clause was DROPPED \u2014 verify filter logic",
+     "attribute 'segmentName' not in label_map; used 'segmentName' \u2014 verify the label exists in your stack",
+     "assumed gauge 'apm_service_overview_web'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "timefrom:now-1800s",
+     "attribute 'entity.guid' not in label_map; used 'entity_guid' \u2014 verify the label exists in your stack",
+     "attribute 'transactionType' not in label_map; used 'transactionType' \u2014 verify the label exists in your stack",
+     "name suggests a duration histogram; verify 'apm_service_transaction_duration' type in Mimir",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p25-w003",
+   "title": "Deployment Changes",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT count(*) FROM Deployment FACET user, version TIMESERIES where entity.name=concat('acme-backend (',{{env}},')')"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "no metric mapping for FROM Deployment"
+    ]
+   },
+   "expected": []
+  }
+ ]
+}

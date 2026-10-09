@@ -1,0 +1,847 @@
+{
+ "schema": 1,
+ "page": "Overview",
+ "widgets": [
+  {
+   "id": "p07-w001",
+   "title": "(untitled)",
+   "visualization": "viz.markdown",
+   "grafana_type": "text",
+   "nrql": [],
+   "before": {
+    "confidence": "exact",
+    "queries": [],
+    "notes": []
+   },
+   "expected": []
+  },
+  {
+   "id": "p07-w002",
+   "title": "Most time consuming web transactions ",
+   "visualization": "viz.area",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT rate(sum(apm.service.transaction.duration), 1 second) * 100\nFROM Metric\nWHERE (\n  ({{env}} = 'prod' AND entity.guid = '<REDACTED_BLOB>')\n  OR ({{env}} = 'staging' AND entity.guid = '<REDACTED_BLOB>')\n  OR ({{env}} = 'dev' AND entity.guid = '<REDACTED_BLOB>')\n)\nAND transactionType = 'Web'\nAND name NOT LIKE '%HealthCheck%'\nAND name NOT LIKE '%middleware%'\nFACET transactionName\nLIMIT 5\nSINCE 1800 seconds AGO\nTIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "(topk(5, sum by (span_name)(rate(apm_service_transaction_duration_total{transactionType=\"Web\",span_name!~\"(?i).*HealthCheck.*\",span_name!~\"(?i).*middleware.*\"}[$__rate_interval])))) * 100"
+     }
+    ],
+    "notes": [
+     "an OR clause in WHERE could not be merged into a single label matcher (different attributes, variables, or mixed predicate shapes); that clause was DROPPED \u2014 verify filter logic",
+     "attribute 'transactionType' not in label_map; used 'transactionType' \u2014 verify the label exists in your stack",
+     "assumed counter 'apm_service_transaction_duration_total'; verify name/type in Mimir (/api/v1/metadata)",
+     "FACET LIMIT 5 became topk(5, ...); on range queries topk is evaluated per step so series may flicker",
+     "SELECT arithmetic '* 100' preserved; the derived panel unit no longer applies \u2014 set it manually",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "(topk(5, sum by (http_route)((rate(acme_backend_http_request_duration_mean_sum{$env=\"prod\",service_name_instance=\"<REDACTED_ENTITY>\",http_route!~\"(?i).*HealthCheck.*\",http_route!~\"(?i).*middleware.*\"}[$__rate_interval]) or rate(acme_backend_http_request_duration_mean_sum{$env=\"staging\",service_name_instance=\"<REDACTED_ENTITY>\",http_route!~\"(?i).*HealthCheck.*\",http_route!~\"(?i).*middleware.*\"}[$__rate_interval]) or rate(acme_backend_http_request_duration_mean_sum{$env=\"dev\",service_name_instance=\"<REDACTED_ENTITY>\",http_route!~\"(?i).*HealthCheck.*\",http_route!~\"(?i).*middleware.*\"}[$__rate_interval]))))) * 100"
+    }
+   ]
+  },
+  {
+   "id": "p07-w003",
+   "title": "Most time consuming Celery transactions",
+   "visualization": "viz.area",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT rate(sum(apm.service.transaction.duration), 1 second) * 100\nFROM Metric\nWHERE (\n  ({{env}} = 'prod' AND entity.guid = '<REDACTED_BLOB>')\n  OR ({{env}} = 'staging' AND entity.guid = '<REDACTED_BLOB>')\n  OR ({{env}} = 'dev' AND entity.guid = '<REDACTED_BLOB>')\n)\nAND transactionType = 'Other'\nAND subtype = 'Celery'\nFACET transactionName\nLIMIT 5\nSINCE 1800 seconds AGO\nTIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "(topk(5, sum by (span_name)(rate(apm_service_transaction_duration_total{transactionType=\"Other\",subtype=\"Celery\"}[$__rate_interval])))) * 100"
+     }
+    ],
+    "notes": [
+     "an OR clause in WHERE could not be merged into a single label matcher (different attributes, variables, or mixed predicate shapes); that clause was DROPPED \u2014 verify filter logic",
+     "attribute 'transactionType' not in label_map; used 'transactionType' \u2014 verify the label exists in your stack",
+     "attribute 'subtype' not in label_map; used 'subtype' \u2014 verify the label exists in your stack",
+     "assumed counter 'apm_service_transaction_duration_total'; verify name/type in Mimir (/api/v1/metadata)",
+     "FACET LIMIT 5 became topk(5, ...); on range queries topk is evaluated per step so series may flicker",
+     "SELECT arithmetic '* 100' preserved; the derived panel unit no longer applies \u2014 set it manually",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p07-w004",
+   "title": "Most time consuming backend message handler transactions",
+   "visualization": "viz.area",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT rate(sum(apm.service.transaction.duration), 1 second) * 100\nFROM Metric\nWHERE (\n  ({{env}} = 'prod' AND entity.guid = '<REDACTED_BLOB>')\n  OR ({{env}} = 'staging' AND entity.guid = '<REDACTED_BLOB>')\n  OR ({{env}} = 'dev' AND entity.guid = '<REDACTED_BLOB>')\n)\nAND transactionType = 'Other'\nAND subtype = 'backend_message_handlers'\nFACET transactionName\nLIMIT 5\nSINCE 1800 seconds AGO\nTIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "(topk(5, sum by (span_name)(rate(apm_service_transaction_duration_total{transactionType=\"Other\",subtype=\"backend_message_handlers\"}[$__rate_interval])))) * 100"
+     }
+    ],
+    "notes": [
+     "an OR clause in WHERE could not be merged into a single label matcher (different attributes, variables, or mixed predicate shapes); that clause was DROPPED \u2014 verify filter logic",
+     "attribute 'transactionType' not in label_map; used 'transactionType' \u2014 verify the label exists in your stack",
+     "attribute 'subtype' not in label_map; used 'subtype' \u2014 verify the label exists in your stack",
+     "assumed counter 'apm_service_transaction_duration_total'; verify name/type in Mimir (/api/v1/metadata)",
+     "FACET LIMIT 5 became topk(5, ...); on range queries topk is evaluated per step so series may flicker",
+     "SELECT arithmetic '* 100' preserved; the derived panel unit no longer applies \u2014 set it manually",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p07-w005",
+   "title": "Most time consuming switch message handler transactions",
+   "visualization": "viz.area",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT rate(sum(apm.service.transaction.duration), 1 second) * 100\nFROM Metric\nWHERE (\n  ({{env}} = 'prod' AND entity.guid = '<REDACTED_BLOB>')\n  OR ({{env}} = 'staging' AND entity.guid = '<REDACTED_BLOB>')\n  OR ({{env}} = 'dev' AND entity.guid = '<REDACTED_BLOB>')\n)\nAND transactionType = 'Other'\nAND subtype = 'switch_message_handlers'\nFACET transactionName\nLIMIT 5\nSINCE 1800 seconds AGO\nTIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "(topk(5, sum by (span_name)(rate(apm_service_transaction_duration_total{transactionType=\"Other\",subtype=\"switch_message_handlers\"}[$__rate_interval])))) * 100"
+     }
+    ],
+    "notes": [
+     "an OR clause in WHERE could not be merged into a single label matcher (different attributes, variables, or mixed predicate shapes); that clause was DROPPED \u2014 verify filter logic",
+     "attribute 'transactionType' not in label_map; used 'transactionType' \u2014 verify the label exists in your stack",
+     "attribute 'subtype' not in label_map; used 'subtype' \u2014 verify the label exists in your stack",
+     "assumed counter 'apm_service_transaction_duration_total'; verify name/type in Mimir (/api/v1/metadata)",
+     "FACET LIMIT 5 became topk(5, ...); on range queries topk is evaluated per step so series may flicker",
+     "SELECT arithmetic '* 100' preserved; the derived panel unit no longer applies \u2014 set it manually",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p07-w006",
+   "title": "Top 5 database operations",
+   "visualization": "viz.area",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(apm.service.datastore.operation.duration) * 1000\nFROM Metric\nWHERE (\n  ({{env}} = 'prod' AND entity.guid = '<REDACTED_BLOB>')\n  OR ({{env}} = 'staging' AND entity.guid = '<REDACTED_BLOB>')\n  OR ({{env}} = 'dev' AND entity.guid = '<REDACTED_BLOB>')\n)\nFACET datastoreType, table, operation\nLIMIT 5\nSINCE 1800 seconds AGO\nTIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "(topk(5, sum by (datastoreType, table, operation)(avg_over_time(apm_service_datastore_operation_duration[$__rate_interval])))) * 1000"
+     }
+    ],
+    "notes": [
+     "an OR clause in WHERE could not be merged into a single label matcher (different attributes, variables, or mixed predicate shapes); that clause was DROPPED \u2014 verify filter logic",
+     "FACET attribute 'datastoreType' not in label_map; used 'datastoreType'",
+     "FACET attribute 'table' not in label_map; used 'table'",
+     "FACET attribute 'operation' not in label_map; used 'operation'",
+     "assumed gauge 'apm_service_datastore_operation_duration'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET LIMIT 5 became topk(5, ...); on range queries topk is evaluated per step so series may flicker",
+     "SELECT arithmetic '* 1000' preserved; the derived panel unit no longer applies \u2014 set it manually",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "(topk(5, sum by (db_system, table, operation)((rate(db_client_operation_duration_seconds_sum{$env=\"prod\",service_name_instance=\"<REDACTED_ENTITY>\"}[$__rate_interval]) or rate(db_client_operation_duration_seconds_sum{$env=\"staging\",service_name_instance=\"<REDACTED_ENTITY>\"}[$__rate_interval]) or rate(db_client_operation_duration_seconds_sum{$env=\"dev\",service_name_instance=\"<REDACTED_ENTITY>\"}[$__rate_interval]))) * $__interval_ms / 1000)) * 1000"
+    }
+   ]
+  },
+  {
+   "id": "p07-w007",
+   "title": "Backend Query Latency (s)",
+   "visualization": "viz.bar",
+   "grafana_type": "bargauge",
+   "nrql": [
+    "select average(databaseDuration) FROM Transaction where (appName = concat('acme-backend (',{{env}},')')) AND (transactionType = 'Web') facet name order by databaseDuration desc"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum by (http_route)(rate(http_server_request_duration_seconds_sum{service_name=\"Func(name='concat', args=[Lit(value='acme-backend ('), Attr(name='{{env}}'), Lit(value=')')], where=None, cases=[])\",transactionType=\"Web\"}[$__range])) / sum by (http_route)(rate(http_server_request_duration_seconds_count{service_name=\"Func(name='concat', args=[Lit(value='acme-backend ('), Attr(name='{{env}}'), Lit(value=')')], where=None, cases=[])\",transactionType=\"Web\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "attribute 'transactionType' not in label_map; used 'transactionType' \u2014 verify the label exists in your stack",
+     "FACET on transaction name grouped by http_route on semconv HTTP metrics",
+     "FROM Transaction mapped to OTel HTTP server metrics (http_server_request_duration_seconds); requires the service to be OTel-instrumented",
+     "OTel semconv HTTP server duration histogram",
+     "unit:s",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high",
+     "ORDER BY is not preserved in the query; topk() sorts by value \u2014 use panel sorting for other orderings"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (http_route)(rate(db_client_operation_duration_seconds_sum[$__range])) / sum by (http_route)(rate(db_client_operation_duration_seconds_count[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p07-w008",
+   "title": "(untitled)",
+   "visualization": "viz.markdown",
+   "grafana_type": "text",
+   "nrql": [],
+   "before": {
+    "confidence": "exact",
+    "queries": [],
+    "notes": []
+   },
+   "expected": []
+  },
+  {
+   "id": "p07-w009",
+   "title": "HTTP Request duration over time",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT average(acme_backend.http.request.duration.mean) FROM Metric FACET view_name WHERE clusterName = concat('acme-cluster-', {{env}}) and view_name not like '%admin:%' timeseries"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (view_name)(rate(acme_backend_http_request_duration_mean_sum{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",view_name!~\"(?i).*admin:.*\"}[$__rate_interval])) / sum by (view_name)(rate(acme_backend_http_request_duration_mean_count{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",view_name!~\"(?i).*admin:.*\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'view_name' not in label_map; used 'view_name' \u2014 verify the label exists in your stack",
+     "FACET attribute 'view_name' not in label_map; used 'view_name'",
+     "name suggests a duration histogram; verify 'acme_backend_http_request_duration_mean' type in Mimir",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (view_name)(rate(acme_backend_http_request_duration_mean_sum{view_name!~\"(?i).*admin:.*\"}[$__rate_interval])) / sum by (view_name)(rate(acme_backend_http_request_duration_mean_count{view_name!~\"(?i).*admin:.*\"}[$__rate_interval]))"
+    }
+   ]
+  },
+  {
+   "id": "p07-w010",
+   "title": "HTTP Request duration",
+   "visualization": "viz.bar",
+   "grafana_type": "bargauge",
+   "nrql": [
+    "SELECT average(acme_backend.http.request.duration.mean) FROM Metric FACET view_name WHERE clusterName = concat('acme-cluster-', {{env}}) and view_name not like '%admin:%'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum by (view_name)(rate(acme_backend_http_request_duration_mean_sum{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",view_name!~\"(?i).*admin:.*\"}[$__range])) / sum by (view_name)(rate(acme_backend_http_request_duration_mean_count{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",view_name!~\"(?i).*admin:.*\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "attribute 'view_name' not in label_map; used 'view_name' \u2014 verify the label exists in your stack",
+     "FACET attribute 'view_name' not in label_map; used 'view_name'",
+     "name suggests a duration histogram; verify 'acme_backend_http_request_duration_mean' type in Mimir",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (view_name)(rate(acme_backend_http_request_duration_mean_sum{view_name!~\"(?i).*admin:.*\"}[$__range])) / sum by (view_name)(rate(acme_backend_http_request_duration_mean_count{view_name!~\"(?i).*admin:.*\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p07-w011",
+   "title": "Overall Transaction Time",
+   "visualization": "viz.area",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT rate(sum(apm.service.transaction.duration), 1 second) * 100\nFROM Metric\nWHERE (\n  ({{env}} = 'prod' AND entity.guid = '<REDACTED_BLOB>')\n  OR ({{env}} = 'staging' AND entity.guid = '<REDACTED_BLOB>')\n  OR ({{env}} = 'dev' AND entity.guid = '<REDACTED_BLOB>')\n)\nAND transactionType = 'Web'\nAND transactionName LIKE '%retrieve%'\nFACET transactionName\nLIMIT 20\nSINCE 1800 seconds AGO\nTIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "(topk(20, sum by (span_name)(rate(apm_service_transaction_duration_total{transactionType=\"Web\",span_name=~\"(?i).*retrieve.*\"}[$__rate_interval])))) * 100"
+     }
+    ],
+    "notes": [
+     "an OR clause in WHERE could not be merged into a single label matcher (different attributes, variables, or mixed predicate shapes); that clause was DROPPED \u2014 verify filter logic",
+     "attribute 'transactionType' not in label_map; used 'transactionType' \u2014 verify the label exists in your stack",
+     "assumed counter 'apm_service_transaction_duration_total'; verify name/type in Mimir (/api/v1/metadata)",
+     "FACET LIMIT 20 became topk(20, ...); on range queries topk is evaluated per step so series may flicker",
+     "SELECT arithmetic '* 100' preserved; the derived panel unit no longer applies \u2014 set it manually",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "(topk(20, sum by (http_route)((rate(acme_backend_http_request_duration_mean_sum{$env=\"prod\",service_name_instance=\"<REDACTED_ENTITY>\",http_route=~\"(?i).*retrieve.*\"}[$__rate_interval]) or rate(acme_backend_http_request_duration_mean_sum{$env=\"staging\",service_name_instance=\"<REDACTED_ENTITY>\",http_route=~\"(?i).*retrieve.*\"}[$__rate_interval]) or rate(acme_backend_http_request_duration_mean_sum{$env=\"dev\",service_name_instance=\"<REDACTED_ENTITY>\",http_route=~\"(?i).*retrieve.*\"}[$__rate_interval]))))) * 100"
+    }
+   ]
+  },
+  {
+   "id": "p07-w012",
+   "title": "Web Transactions Throughput",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT rate(count(apm.service.transaction.duration), 1 minute) AS 'Web'\nFROM Metric\nWHERE (\n  ({{env}} = 'prod' AND entity.guid = '<REDACTED_BLOB>')\n  OR ({{env}} = 'staging' AND entity.guid = '<REDACTED_BLOB>')\n  OR ({{env}} = 'dev' AND entity.guid = '<REDACTED_BLOB>')\n)\nAND transactionType = 'Web'\nFACET transactionName\nLIMIT 5\nSINCE 1800 seconds AGO\nTIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "topk(5, sum by (span_name)(rate(apm_service_transaction_duration_total{transactionType=\"Web\"}[$__rate_interval])) * 60)"
+     }
+    ],
+    "notes": [
+     "an OR clause in WHERE could not be merged into a single label matcher (different attributes, variables, or mixed predicate shapes); that clause was DROPPED \u2014 verify filter logic",
+     "attribute 'transactionType' not in label_map; used 'transactionType' \u2014 verify the label exists in your stack",
+     "assumed counter 'apm_service_transaction_duration_total'; verify name/type in Mimir (/api/v1/metadata)",
+     "unit:short",
+     "FACET LIMIT 5 became topk(5, ...); on range queries topk is evaluated per step so series may flicker",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "topk(5, sum by (http_route)((rate(acme_backend_http_request_duration_mean_count{$env=\"prod\",service_name_instance=\"<REDACTED_ENTITY>\"}[$__rate_interval]) or rate(acme_backend_http_request_duration_mean_count{$env=\"staging\",service_name_instance=\"<REDACTED_ENTITY>\"}[$__rate_interval]) or rate(acme_backend_http_request_duration_mean_count{$env=\"dev\",service_name_instance=\"<REDACTED_ENTITY>\"}[$__rate_interval]))) * 60)"
+    }
+   ]
+  },
+  {
+   "id": "p07-w013",
+   "title": "Non-web Transactions Throughput",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT rate(count(apm.service.transaction.duration), 1 minute) AS 'Non-web'\nFROM Metric\nWHERE (\n  ({{env}} = 'prod' AND entity.guid = '<REDACTED_BLOB>')\n  OR ({{env}} = 'staging' AND entity.guid = '<REDACTED_BLOB>')\n  OR ({{env}} = 'dev' AND entity.guid = '<REDACTED_BLOB>')\n)\nAND transactionType = 'Other'\nFACET transactionName\nLIMIT 5\nSINCE 1800 seconds AGO\nTIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "topk(5, sum by (span_name)(rate(apm_service_transaction_duration_total{transactionType=\"Other\"}[$__rate_interval])) * 60)"
+     }
+    ],
+    "notes": [
+     "an OR clause in WHERE could not be merged into a single label matcher (different attributes, variables, or mixed predicate shapes); that clause was DROPPED \u2014 verify filter logic",
+     "attribute 'transactionType' not in label_map; used 'transactionType' \u2014 verify the label exists in your stack",
+     "assumed counter 'apm_service_transaction_duration_total'; verify name/type in Mimir (/api/v1/metadata)",
+     "unit:short",
+     "FACET LIMIT 5 became topk(5, ...); on range queries topk is evaluated per step so series may flicker",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p07-w014",
+   "title": "Querie Count (Transactions)",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "select count(newrelic.timeslice.value) as 'Transactions' FROM Metric where appName = concat('acme-backend (',{{env}},')') with METRIC_FORMAT 'Datastore/statement/Postgres/{q}/{p}' facet q, p TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (q, p)(increase(newrelic_timeslice_value_total{service_name=\"Func(name='concat', args=[Lit(value='acme-backend ('), Attr(name='{{env}}'), Lit(value=')')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'q' not in label_map; used 'q'",
+     "FACET attribute 'p' not in label_map; used 'p'",
+     "assumed counter 'newrelic_timeslice_value_total'; verify name/type in Mimir (/api/v1/metadata)",
+     "unit:short",
+     "count() on a Metric counter emitted as the summed increase (event count); NRQL count() strictly counts datapoints \u2014 use sum() in NR to compare like for like",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p07-w015",
+   "title": "Transactions Per Second",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "select rate(count(apm.service.transaction.duration), 1 second)  as '' FROM Metric  where (appName = concat('acme-backend (',{{env}},')')) AND (transactionType = 'Web')  since 5 minutes ago TIMESERIES 1 minute "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(rate(apm_service_transaction_duration_total{service_name=\"Func(name='concat', args=[Lit(value='acme-backend ('), Attr(name='{{env}}'), Lit(value=')')], where=None, cases=[])\",transactionType=\"Web\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'transactionType' not in label_map; used 'transactionType' \u2014 verify the label exists in your stack",
+     "assumed counter 'apm_service_transaction_duration_total'; verify name/type in Mimir (/api/v1/metadata)",
+     "unit:short",
+     "TIMESERIES 1m: Grafana buckets by the query interval; set the panel's 'Min interval' to 1m to mirror NR bucketing",
+     "timefrom:now-5m"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(rate(acme_backend_http_request_duration_mean_count[$__rate_interval]))"
+    }
+   ]
+  },
+  {
+   "id": "p07-w016",
+   "title": "Transactions Per Second (by deployment)",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "select rate(count(apm.service.transaction.duration), 1 second) as '' FROM Metric where (appName = concat('acme-backend (',{{env}},')')) AND (transactionType = 'Web') since 5 minutes ago TIMESERIES 1 minute facet k8s.deploymentName"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (k8s_deploymentName)(rate(apm_service_transaction_duration_total{service_name=\"Func(name='concat', args=[Lit(value='acme-backend ('), Attr(name='{{env}}'), Lit(value=')')], where=None, cases=[])\",transactionType=\"Web\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'transactionType' not in label_map; used 'transactionType' \u2014 verify the label exists in your stack",
+     "FACET attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName'",
+     "assumed counter 'apm_service_transaction_duration_total'; verify name/type in Mimir (/api/v1/metadata)",
+     "unit:short",
+     "TIMESERIES 1m: Grafana buckets by the query interval; set the panel's 'Min interval' to 1m to mirror NR bucketing",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high",
+     "timefrom:now-5m"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (deployment)(rate(acme_backend_http_request_duration_mean_count[$__rate_interval]))"
+    }
+   ]
+  },
+  {
+   "id": "p07-w017",
+   "title": "Order Queue (seconds)",
+   "visualization": "viz.area",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT\n  filter(\n    rate(sum(apm.service.transaction.duration), 1 second),\n    WHERE transactionName IN (\n      'WebTransaction/Function/api.v2.views.order_views:OrderViewSet.queue'\n    )\n  ) AS 'WebTransaction/Function/api.v2.views.order_views:OrderViewSet.queue',\n  filter(\n    rate(sum(apm.service.transaction.duration), 1 second),\n    WHERE transactionName IN (\n      'WebTransaction/Function/pot.views:WebHookView.post'\n    )\n  ) AS 'pot.views:WebHookView.post'\nFROM Metric\nWHERE (\n  ({{env}} = 'prod' AND entity.guid = '<REDACTED_BLOB>')\n  OR ({{env}} = 'staging' AND entity.guid = '<REDACTED_BLOB>')\n  OR ({{env}} = 'dev' AND entity.guid = '<REDACTED_BLOB>')\n)\nAND transactionType = 'Web'\nLIMIT 5\nSINCE 604800 seconds AGO\nTIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(rate(apm_service_transaction_duration_total{transactionType=\"Web\",span_name=~\"WebTransaction/Function/api\\\\.v2\\\\.views\\\\.order_views:OrderViewSet\\\\.queue\"}[$__rate_interval]))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(rate(apm_service_transaction_duration_total{transactionType=\"Web\",span_name=~\"WebTransaction/Function/pot\\\\.views:WebHookView\\\\.post\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "an OR clause in WHERE could not be merged into a single label matcher (different attributes, variables, or mixed predicate shapes); that clause was DROPPED \u2014 verify filter logic",
+     "attribute 'transactionType' not in label_map; used 'transactionType' \u2014 verify the label exists in your stack",
+     "assumed counter 'apm_service_transaction_duration_total'; verify name/type in Mimir (/api/v1/metadata)",
+     "unit:short",
+     "timefrom:now-604800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum((rate(acme_backend_http_request_duration_mean_sum{$env=\"prod\",service_name_instance=\"<REDACTED_ENTITY>\",http_route=~\"api\\\\.v2\\\\.views\\\\.order_views:OrderViewSet\\\\.queue\"}[$__rate_interval]) or rate(acme_backend_http_request_duration_mean_sum{$env=\"staging\",service_name_instance=\"<REDACTED_ENTITY>\",http_route=~\"api\\\\.v2\\\\.views\\\\.order_views:OrderViewSet\\\\.queue\"}[$__rate_interval]) or rate(acme_backend_http_request_duration_mean_sum{$env=\"dev\",service_name_instance=\"<REDACTED_ENTITY>\",http_route=~\"api\\\\.v2\\\\.views\\\\.order_views:OrderViewSet\\\\.queue\"}[$__rate_interval])))"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "sum((rate(acme_backend_http_request_duration_mean_sum{$env=\"prod\",service_name_instance=\"<REDACTED_ENTITY>\",http_route=~\"pot\\\\.views:WebHookView\\\\.post\"}[$__rate_interval]) or rate(acme_backend_http_request_duration_mean_sum{$env=\"staging\",service_name_instance=\"<REDACTED_ENTITY>\",http_route=~\"pot\\\\.views:WebHookView\\\\.post\"}[$__rate_interval]) or rate(acme_backend_http_request_duration_mean_sum{$env=\"dev\",service_name_instance=\"<REDACTED_ENTITY>\",http_route=~\"pot\\\\.views:WebHookView\\\\.post\"}[$__rate_interval])))"
+    }
+   ]
+  },
+  {
+   "id": "p07-w018",
+   "title": "(untitled)",
+   "visualization": "viz.markdown",
+   "grafana_type": "text",
+   "nrql": [],
+   "before": {
+    "confidence": "exact",
+    "queries": [],
+    "notes": []
+   },
+   "expected": []
+  },
+  {
+   "id": "p07-w019",
+   "title": "HTTP 500 Errors",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(`acme_backend.http.request.status.500`) FROM Metric TIMESERIES FACET `view_name` WHERE clusterName = concat('acme-cluster-',{{env}}) LIMIT max"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (view_name)(avg_over_time(acme_backend_http_request_status_500{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'view_name' not in label_map; used 'view_name'",
+     "assumed gauge 'acme_backend_http_request_status_500'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (view_name)(rate(acme_backend_http_request_status_500_total[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p07-w020",
+   "title": "HTTP 500 Errors",
+   "visualization": "viz.bar",
+   "grafana_type": "bargauge",
+   "nrql": [
+    "SELECT sum(acme_backend.http.request.status.500) FROM Metric FACET `view_name` WHERE clusterName = concat('acme-cluster-', {{env}}) LIMIT max"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum by (view_name)(avg_over_time(acme_backend_http_request_status_500{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'view_name' not in label_map; used 'view_name'",
+     "assumed gauge 'acme_backend_http_request_status_500'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (view_name)(increase(acme_backend_http_request_status_500_total[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p07-w021",
+   "title": "HTTP 400 Errors",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(`acme_backend.http.request.status.400`) FROM Metric TIMESERIES FACET `view_name` WHERE clusterName = concat('acme-cluster-', {{env}}) LIMIT max"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (view_name)(avg_over_time(acme_backend_http_request_status_400{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'view_name' not in label_map; used 'view_name'",
+     "assumed gauge 'acme_backend_http_request_status_400'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (view_name)(rate(acme_backend_http_request_status_400_total[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p07-w022",
+   "title": "HTTP 400 Errors",
+   "visualization": "viz.bar",
+   "grafana_type": "bargauge",
+   "nrql": [
+    " SELECT sum(acme_backend.http.request.status.400) FROM Metric FACET view_name WHERE clusterName = concat('acme-cluster-', {{env}})"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum by (view_name)(avg_over_time(acme_backend_http_request_status_400{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'view_name' not in label_map; used 'view_name'",
+     "assumed gauge 'acme_backend_http_request_status_400'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (view_name)(increase(acme_backend_http_request_status_400_total[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p07-w023",
+   "title": "(untitled)",
+   "visualization": "viz.markdown",
+   "grafana_type": "text",
+   "nrql": [],
+   "before": {
+    "confidence": "exact",
+    "queries": [],
+    "notes": []
+   },
+   "expected": []
+  },
+  {
+   "id": "p07-w024",
+   "title": "Metric Usage",
+   "visualization": "viz.line",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT 0.5 * bytecountestimate() / 10e8 FROM Metric WHERE service IN ('acme_backend') FACET metricName WHERE clusterName = concat('acme-cluster-', {{env}}) TIMESERIES 1 hour LIMIT 25"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "NRQL could not be parsed: unexpected character '1' near: ...() / 10e8 FROM Metric WHERE se"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p07-w025",
+   "title": "Metric Usage",
+   "visualization": "viz.line",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT 0.5 * bytecountestimate() / 10e8 FROM Metric WHERE service IN ('acme_backend') FACET clusterName WHERE clusterName = concat('acme-cluster-', {{env}}) TIMESERIES 1 hour LIMIT MAX"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "NRQL could not be parsed: unexpected character '1' near: ...() / 10e8 FROM Metric WHERE se"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p07-w026",
+   "title": "Pageview Duration",
+   "visualization": "viz.area",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT average(duration) from PageView WHERE appName='acme-frontend (production)' FACET asnOrganization SINCE 7 days ago TIMESERIES 60 minute "
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "no metric mapping for FROM PageView (browser RUM data; Grafana Faro (frontend observability) is the LGTM equivalent)"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p07-w027",
+   "title": "Health Check",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT count(*) from Transaction WHERE name like '%healthcheck%' and response.status = '200' and clusterName = concat('acme-cluster-', {{env}}) and appName = concat('acme-backend (',{{env}},')') TIMESERIES 1 hour SINCE  1 week ago "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(increase(http_server_request_duration_seconds_count{http_route=~\"(?i).*healthcheck.*\",http_response_status_code=\"200\",cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",service_name=\"Func(name='concat', args=[Lit(value='acme-backend ('), Attr(name='{{env}}'), Lit(value=')')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "NR transaction `name` mapped to the http_route label; NR names (WebTransaction/...) differ from route patterns \u2014 verify the matcher value",
+     "FROM Transaction mapped to OTel HTTP server metrics (http_server_request_duration_seconds); requires the service to be OTel-instrumented",
+     "OTel semconv HTTP server duration histogram",
+     "unit:short",
+     "TIMESERIES 1h: Grafana buckets by the query interval; set the panel's 'Min interval' to 1h to mirror NR bucketing",
+     "timefrom:now-1w"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(rate(acme_backend_http_request_duration_mean_count{http_route=~\"(?i).*healthcheck.*\",http_response_status_code=\"200\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p07-w028",
+   "title": "Log Usage",
+   "visualization": "viz.line",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT bytecountestimate() / 10e8 FROM `Log`, `LogExtendedRecord` WHERE instrumentation.provider != 'kentik' WHERE namespace_name = 'acme-backend' AND cluster_name = concat('acme-cluster-', {{env}}) TIMESERIES MAX"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "NRQL could not be parsed: unexpected character '1' near: ...() / 10e8 FROM `Log`, `LogExte"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p07-w029",
+   "title": "POT introduction select",
+   "visualization": "viz.area",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(apm.service.datastore.operation.duration) * 1000\nFROM Metric\nWHERE (\n  ({{env}} = 'prod' AND entity.guid = '<REDACTED_BLOB>')\n  OR ({{env}} = 'staging' AND entity.guid = '<REDACTED_BLOB>')\n  OR ({{env}} = 'dev' AND entity.guid = '<REDACTED_BLOB>')\n)\nAND table = 'pot_introduction'\nAND operation = 'select'\nSINCE 1800 seconds AGO\nTIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "(sum(avg_over_time(apm_service_datastore_operation_duration{table=\"pot_introduction\",operation=\"select\"}[$__rate_interval]))) * 1000"
+     }
+    ],
+    "notes": [
+     "an OR clause in WHERE could not be merged into a single label matcher (different attributes, variables, or mixed predicate shapes); that clause was DROPPED \u2014 verify filter logic",
+     "attribute 'table' not in label_map; used 'table' \u2014 verify the label exists in your stack",
+     "attribute 'operation' not in label_map; used 'operation' \u2014 verify the label exists in your stack",
+     "assumed gauge 'apm_service_datastore_operation_duration'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "SELECT arithmetic '* 1000' preserved; the derived panel unit no longer applies \u2014 set it manually",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "(sum((rate(db_client_operation_duration_seconds_sum{$env=\"prod\",service_name_instance=\"<REDACTED_ENTITY>\",table=\"pot_introduction\",operation=\"select\"}[$__rate_interval]) or rate(db_client_operation_duration_seconds_sum{$env=\"staging\",service_name_instance=\"<REDACTED_ENTITY>\",table=\"pot_introduction\",operation=\"select\"}[$__rate_interval]) or rate(db_client_operation_duration_seconds_sum{$env=\"dev\",service_name_instance=\"<REDACTED_ENTITY>\",table=\"pot_introduction\",operation=\"select\"}[$__rate_interval]))) * $__interval_ms / 1000) * 1000"
+    }
+   ]
+  },
+  {
+   "id": "p07-w030",
+   "title": "ETL Failure",
+   "visualization": "viz.area",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(`acme_backend.etl.failure`) FROM Metric FACET type TIMESERIES WHERE clusterName = concat('acme-cluster-', {{env}}) LIMIT max"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (type)(avg_over_time(acme_backend_etl_failure{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'type' not in label_map; used 'type'",
+     "assumed gauge 'acme_backend_etl_failure'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (type)(rate(acme_backend_etl_failure_total[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  }
+ ]
+}

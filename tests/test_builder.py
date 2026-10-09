@@ -30,9 +30,37 @@ def iter_panels(dash):
 
 def panel_by_title(dash, prefix):
     for p in iter_panels(dash):
-        if (p.get("title") or "").startswith(prefix):
+        title = p.get("title") or ""
+        if title.startswith(prefix) or \
+                title.startswith("[MANUAL] " + prefix):
             return p
     raise AssertionError("no panel with title starting %r" % prefix)
+
+
+def build_one(widgets, cfg=None, name="Builder Test"):
+    """Build a single-page dashboard from raw NR widget dicts."""
+    data = {"name": name, "pages": [{"name": "Only", "widgets": widgets}]}
+    return build_dashboards(parse_nr_dashboard(data), cfg or load_config())[0]
+
+
+def widget(title, nrql, viz="viz.line", col=1, row=1):
+    return {
+        "title": title,
+        "layout": {"column": col, "row": row, "width": 4, "height": 3},
+        "visualization": {"id": viz},
+        "rawConfiguration": {"nrqlQueries": [
+            {"accountId": 1, "query": nrql}]},
+    }
+
+
+RDS_NRQL = ("SELECT average(aws.rds.CPUUtilization) FROM Metric WHERE "
+            "aws.rds.DBClusterIdentifier = concat('acme-cluster-', {{env}}) "
+            "FACET aws.rds.DBInstanceIdentifier TIMESERIES")
+SQS_SUM_NRQL = ("SELECT sum(aws.sqs.NumberOfMessagesSent) FROM Metric WHERE "
+                "aws.sqs.QueueName IN ('acme-queue-a', 'acme-queue-b') "
+                "SINCE 1 day ago")
+FINANCE_NRQL = ("SELECT sum(unblendedCost) FROM FinanceSample "
+                "FACET serviceName TIMESERIES")
 
 
 class RowsStrategyTests(unittest.TestCase):
@@ -162,7 +190,8 @@ class RowsStrategyTests(unittest.TestCase):
         dash = self.outputs[0][1]
         p = panel_by_title(dash, "Checkout funnel")
         self.assertEqual(p["type"], "text")
-        self.assertTrue(p["title"].endswith("[MANUAL]"))
+        # 1.11: "[MANUAL] <title>" prefix (was a " [MANUAL]" suffix)
+        self.assertEqual(p["title"], "[MANUAL] Checkout funnel")
         self.assertIn("funnel(", p["options"]["content"])
         self.assertNotIn("targets", p)
 
@@ -350,11 +379,261 @@ class PassthroughFallbackTests(unittest.TestCase):
         dash = build_dashboards(load_fixture(), cfg)[0][1]
         p = panel_by_title(dash, "Checkout funnel")
         self.assertEqual(p["type"], "text")
+        self.assertTrue(p["title"].startswith("[MANUAL] "))
         self.assertIn("Not automatically translatable",
                       p["options"]["content"])
         names = [v["name"] for v in dash["templating"]["list"]
                  if v["type"] == "datasource"]
         self.assertNotIn("newrelic_datasource", names)
+
+
+def _validate_ignoring_cw_expr(dash):
+    """validate_dashboard() predates CloudWatch targets and wants an
+    expr/query on every target; builder-mode CloudWatch targets have
+    namespace/metricName instead. Ignore only that message class."""
+    return [e for e in validate_dashboard(dash)
+            if "has no expr/query" not in e]
+
+
+class CloudWatchBuilderTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.fname, cls.dash, cls.report = build_one([
+            widget("RDS CPU", RDS_NRQL),
+            widget("Queue total", SQS_SUM_NRQL, viz="viz.billboard",
+                   col=5),
+            widget("Throughput", "SELECT count(*) FROM Transaction "
+                   "WHERE appName = 'acme-backend' TIMESERIES", col=9),
+        ])
+
+    def test_builder_mode_target_shape(self):
+        p = panel_by_title(self.dash, "RDS CPU")
+        self.assertEqual(p["type"], "timeseries")
+        self.assertEqual(len(p["targets"]), 1)
+        tgt = p["targets"][0]
+        self.assertEqual(tgt["refId"], "A")
+        self.assertEqual(tgt["datasource"],
+                         {"type": "cloudwatch",
+                          "uid": "${cloudwatch_datasource}"})
+        self.assertEqual(p["datasource"], tgt["datasource"])
+        self.assertEqual(tgt["queryMode"], "Metrics")
+        self.assertEqual(tgt["metricQueryType"], 0)
+        self.assertEqual(tgt["metricEditorMode"], 0)
+        self.assertEqual(tgt["namespace"], "AWS/RDS")
+        self.assertEqual(tgt["metricName"], "CPUUtilization")
+        self.assertEqual(tgt["statistic"], "Average")
+        self.assertEqual(tgt["region"], "default")
+        self.assertEqual(tgt["dimensions"],
+                         {"DBClusterIdentifier": ["acme-cluster-$env"],
+                          "DBInstanceIdentifier": ["*"]})
+        self.assertEqual(tgt["dimension_keys"], ["DBInstanceIdentifier"])
+        self.assertEqual(tgt["expression"], "")
+        self.assertTrue(tgt["matchExact"])
+        # FACET legend -> CloudWatch dynamic label
+        self.assertEqual(tgt["label"], "${PROP('Dim.DBInstanceIdentifier')}")
+        # no Python reprs anywhere in the target (F1)
+        blob = json.dumps(tgt)
+        for marker in ("Func(", "Lit(", "Attr("):
+            self.assertNotIn(marker, blob)
+        self.assertEqual(p["fieldConfig"]["defaults"]["unit"], "percent")
+
+    def test_search_expression_target_and_stat_total(self):
+        p = panel_by_title(self.dash, "Queue total")
+        self.assertEqual(p["type"], "stat")
+        tgt = p["targets"][0]
+        self.assertEqual(tgt["metricEditorMode"], 1)
+        self.assertEqual(tgt["namespace"], "AWS/SQS")
+        self.assertEqual(tgt["statistic"], "Sum")
+        self.assertEqual(
+            tgt["expression"],
+            "SUM(SEARCH('{AWS/SQS,QueueName} "
+            "MetricName=\"NumberOfMessagesSent\" "
+            "(QueueName=\"acme-queue-a\" OR QueueName=\"acme-queue-b\")', "
+            "'Sum', 300))")
+        # NR sum over the window -> stat panel adds the periods up
+        self.assertEqual(p["options"]["reduceOptions"]["calcs"], ["sum"])
+        self.assertEqual(p.get("timeFrom"), None)
+        self.assertEqual(self.dash["time"], {"from": "now-1d", "to": "now"})
+
+    def test_cloudwatch_datasource_variable_added_alongside_others(self):
+        ds_vars = {v["name"]: v for v in self.dash["templating"]["list"]
+                   if v["type"] == "datasource"}
+        self.assertEqual(set(ds_vars), {"cloudwatch_datasource",
+                                        "datasource"})
+        self.assertEqual(ds_vars["cloudwatch_datasource"]["query"],
+                         "cloudwatch")
+        self.assertEqual(ds_vars["cloudwatch_datasource"]["label"],
+                         "AWS (CloudWatch)")
+        # prometheus panel untouched by the CloudWatch family
+        p = panel_by_title(self.dash, "Throughput")
+        self.assertEqual(p["targets"][0]["datasource"]["type"],
+                         "prometheus")
+
+    def test_concrete_cloudwatch_uid_skips_variable(self):
+        cfg = load_config()
+        cfg["datasources"]["cloudwatch"]["uid"] = "aws-prod"
+        _, dash, report = build_one([widget("RDS CPU", RDS_NRQL)], cfg)
+        tgt = dash["panels"][0]["targets"][0]
+        self.assertEqual(tgt["datasource"],
+                         {"type": "cloudwatch", "uid": "aws-prod"})
+        names = [v["name"] for v in dash["templating"]["list"]]
+        self.assertNotIn("cloudwatch_datasource", names)
+        self.assertIsNone(report[0]["missing_datasource"])
+
+    def test_validates_apart_from_legacy_expr_check(self):
+        self.assertEqual(_validate_ignoring_cw_expr(self.dash), [])
+
+    def test_report_fields_for_cloudwatch_widget(self):
+        r = [r for r in self.report if r["widget"] == "RDS CPU"][0]
+        self.assertEqual(r["confidence"], "approximate")
+        self.assertTrue(r["cloudwatch"])
+        self.assertFalse(r["manual"])
+        self.assertFalse(r["k8s_mapped"])
+        self.assertEqual(r["metric_kind"],
+                         {"aws.rds.CPUUtilization": "cloudwatch"})
+        self.assertEqual(r["missing_datasource"], "cloudwatch")
+        self.assertEqual(r["render_vars"], ["env"])
+        self.assertIsNone(r["closest_equivalent"])
+        q = r["queries"][0]
+        self.assertEqual(q["datasource"], "cloudwatch")
+        self.assertEqual(q["cw"]["namespace"], "AWS/RDS")
+        self.assertEqual(q["cw"]["metricName"], "CPUUtilization")
+
+    def test_report_fields_for_prometheus_widget(self):
+        r = [r for r in self.report if r["widget"] == "Throughput"][0]
+        self.assertFalse(r["cloudwatch"])
+        self.assertEqual(r["metric_kind"], {})
+        self.assertEqual(r["missing_datasource"], "prometheus")
+        self.assertEqual(r["render_vars"], [])
+        self.assertFalse(r["manual"])
+
+
+class ManualPlaceholderTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.fname, cls.dash, cls.report = build_one([
+            widget("Spend", FINANCE_NRQL),
+            widget("Deploys", "SELECT count(*) FROM Deployment "
+                   "TIMESERIES", col=5),
+            widget("Errors", "SELECT count(*) FROM Log WHERE "
+                   "service_name = 'acme-backend' AND "
+                   "level = 'ERROR' FACET funnel(x)", col=9),
+            {"title": "Service map",
+             "layout": {"column": 1, "row": 2, "width": 4, "height": 3},
+             "visualization": {"id": "topology.service-map"},
+             "rawConfiguration": {}},
+        ])
+
+    def test_title_prefix_and_body_sections(self):
+        p = panel_by_title(self.dash, "Spend")
+        self.assertEqual(p["type"], "text")
+        self.assertEqual(p["title"], "[MANUAL] Spend")
+        self.assertNotIn("targets", p)
+        body = p["options"]["content"]
+        self.assertIn("**Why:**", body)
+        self.assertIn("FinanceSample", body)
+        self.assertIn("**Closest equivalent (datasource: cloudwatch):**",
+                      body)
+        self.assertIn('"namespace": "AWS/Billing"', body)
+        self.assertIn('"metricName": "EstimatedCharges"', body)
+        self.assertIn("**Original NRQL:**", body)
+        self.assertIn(FINANCE_NRQL, body)
+
+    def test_finance_sample_closest_equivalent_is_cw_target(self):
+        r = [r for r in self.report if r["widget"] == "Spend"][0]
+        self.assertEqual(r["confidence"], "untranslatable")
+        self.assertEqual(r["fallback"], "text-placeholder")
+        self.assertTrue(r["manual"])
+        ce = r["closest_equivalent"]
+        self.assertEqual(ce["datasource"], "cloudwatch")
+        self.assertEqual(ce["cw_target"]["namespace"], "AWS/Billing")
+        self.assertEqual(ce["cw_target"]["metricName"], "EstimatedCharges")
+        self.assertIn("Cost Explorer", ce["note"])
+        self.assertEqual(r["missing_datasource"], "cloudwatch")
+        self.assertFalse(r["cloudwatch"])
+
+    def test_deployment_points_at_annotations(self):
+        r = [r for r in self.report if r["widget"] == "Deploys"][0]
+        ce = r["closest_equivalent"]
+        self.assertEqual(ce["datasource"], "grafana")
+        self.assertIn("annotation", ce["note"])
+        body = panel_by_title(self.dash, "Deploys")["options"]["content"]
+        self.assertIn("annotation", body)
+
+    def test_service_map_without_queries(self):
+        p = panel_by_title(self.dash, "Service map")
+        self.assertEqual(p["title"], "[MANUAL] Service map")
+        self.assertIn("no NRQL", p["options"]["content"])
+        r = [r for r in self.report if r["widget"] == "Service map"][0]
+        self.assertEqual(r["closest_equivalent"]["datasource"], "tempo")
+        self.assertIn("service graph", r["closest_equivalent"]["note"])
+
+    def test_every_entry_has_seam_report_keys(self):
+        for r in self.report:
+            for key in ("metric_kind", "missing_datasource",
+                        "closest_equivalent", "manual", "render_vars",
+                        "k8s_mapped", "cloudwatch"):
+                self.assertIn(key, r, key)
+        # a translated (non-manual) widget gets closest_equivalent only
+        # when it needs review
+        r = [r for r in self.report if r["widget"] == "Errors"][0]
+        self.assertFalse(r["manual"])
+        if r["confidence"] == "needs-review":
+            self.assertEqual(r["closest_equivalent"]["datasource"],
+                             "loki")
+            self.assertTrue(r["closest_equivalent"]["example_query"])
+
+    def test_output_validates(self):
+        self.assertEqual(validate_dashboard(self.dash), [])
+
+
+class ReportFlagTests(unittest.TestCase):
+    def test_k8s_mapped_and_render_vars(self):
+        cfg = load_config()
+        cfg["metric_map"]["k8s.container.cpuRequestedCores"] = {
+            "name": "kube_pod_container_resource_requests",
+            "type": "gauge"}
+        _, dash, report = build_one([widget(
+            "K8s CPU",
+            "SELECT latest(k8s.container.cpuRequestedCores) FROM Metric "
+            "WHERE k8s.clusterName = concat('acme-cluster-', {{env}}) "
+            "FACET k8s.deploymentName TIMESERIES")], cfg)
+        r = report[0]
+        self.assertTrue(r["k8s_mapped"])
+        self.assertFalse(r["cloudwatch"])
+        self.assertEqual(r["render_vars"], ["env"])
+        self.assertEqual(r["metric_kind"],
+                         {"k8s.container.cpuRequestedCores": "gauge"})
+        expr = dash["panels"][0]["targets"][0]["expr"]
+        self.assertIn("kube_pod_container_resource_requests", expr)
+        for marker in ("Func(", "Lit(", "Attr("):
+            self.assertNotIn(marker, expr)
+
+    def test_needs_review_gets_closest_equivalent(self):
+        _, dash, report = build_one([widget(
+            "Unknown gauge",
+            "SELECT percentile(acme_backend.queue.depth, 95) FROM Metric "
+            "WHERE host = 'web.example.com' TIMESERIES")])
+        r = report[0]
+        self.assertEqual(r["confidence"], "needs-review")
+        ce = r["closest_equivalent"]
+        self.assertEqual(ce["datasource"], "prometheus")
+        self.assertEqual(ce["example_query"],
+                         dash["panels"][0]["targets"][0]["expr"])
+        self.assertTrue(ce["note"])
+        self.assertIn("acme_backend.queue.depth", r["metric_kind"])
+
+    def test_passthrough_entry_is_not_manual(self):
+        cfg = load_config()
+        cfg["passthrough_fallback"] = True
+        _, dash, report = build_one([widget("Spend", FINANCE_NRQL)], cfg)
+        r = report[0]
+        self.assertEqual(r["fallback"], "nrql-passthrough")
+        self.assertFalse(r["manual"])
+        self.assertEqual(r["closest_equivalent"]["datasource"],
+                         "cloudwatch")
+        self.assertTrue(dash["panels"][0]["title"].endswith(
+            "[NRQL PASSTHROUGH]"))
 
 
 if __name__ == "__main__":

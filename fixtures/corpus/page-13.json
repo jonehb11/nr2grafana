@@ -1,0 +1,465 @@
+{
+ "schema": 1,
+ "page": "Celery/MQ",
+ "widgets": [
+  {
+   "id": "p13-w001",
+   "title": "Failed Celery Tasks",
+   "visualization": "viz.bar",
+   "grafana_type": "bargauge",
+   "nrql": [
+    "SELECT sum(acme_backend.celery.signals)\nFROM Metric\nWHERE task_name != 'backend.tasks.run_reconciliation_tests'\n  AND clusterName = concat('acme-cluster-', {{env}})\n  AND status = 'failure'\nFACET task_name\nLIMIT 10\nSINCE 1800 seconds ago"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "topk(10, sum by (task_name)(avg_over_time(acme_backend_celery_signals{task_name!=\"backend.tasks.run_reconciliation_tests\",cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",status=\"failure\"}[$__range])))"
+     }
+    ],
+    "notes": [
+     "attribute 'task_name' not in label_map; used 'task_name' \u2014 verify the label exists in your stack",
+     "attribute 'status' not in label_map; used 'status' \u2014 verify the label exists in your stack",
+     "FACET attribute 'task_name' not in label_map; used 'task_name'",
+     "assumed gauge 'acme_backend_celery_signals'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "topk(10, sum by (task_name)(increase(acme_backend_celery_signals_total{task_name!=\"backend.tasks.run_reconciliation_tests\",status=\"failure\"}[$__range])))"
+    }
+   ]
+  },
+  {
+   "id": "p13-w002",
+   "title": "Failed Celery Tasks",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.celery.signals) FROM Metric TIMESERIES FACET `task_name` LIMIT 10 SINCE 1800 seconds ago  WHERE clusterName = concat('acme-cluster-', {{env}}) AND status = 'failure'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "topk(10, sum by (task_name)(avg_over_time(acme_backend_celery_signals{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",status=\"failure\"}[$__rate_interval])))"
+     }
+    ],
+    "notes": [
+     "attribute 'status' not in label_map; used 'status' \u2014 verify the label exists in your stack",
+     "FACET attribute 'task_name' not in label_map; used 'task_name'",
+     "assumed gauge 'acme_backend_celery_signals'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET LIMIT 10 became topk(10, ...); on range queries topk is evaluated per step so series may flicker",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "topk(10, sum by (task_name)(rate(acme_backend_celery_signals_total{status=\"failure\"}[$__rate_interval])) * $__interval_ms / 1000)"
+    }
+   ]
+  },
+  {
+   "id": "p13-w003",
+   "title": "Celery Failure duration (s)",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT average(acme_backend.celery.task.duration.mean) FROM Metric WHERE clusterName = concat('acme-cluster-', {{env}}) AND status = 'failure' TIMESERIES FACET `task_name` LIMIT 15 SINCE 1800 seconds ago  "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "topk(15, sum by (task_name)(rate(acme_backend_celery_task_duration_mean_sum{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",status=\"failure\"}[$__rate_interval])) / sum by (task_name)(rate(acme_backend_celery_task_duration_mean_count{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",status=\"failure\"}[$__rate_interval])))"
+     }
+    ],
+    "notes": [
+     "attribute 'status' not in label_map; used 'status' \u2014 verify the label exists in your stack",
+     "FACET attribute 'task_name' not in label_map; used 'task_name'",
+     "name suggests a duration histogram; verify 'acme_backend_celery_task_duration_mean' type in Mimir",
+     "FACET LIMIT 15 became topk(15, ...); on range queries topk is evaluated per step so series may flicker",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "topk(15, sum by (task_name)(rate(acme_backend_celery_task_duration_mean_sum{status=\"failure\"}[$__rate_interval])) / sum by (task_name)(rate(acme_backend_celery_task_duration_mean_count{status=\"failure\"}[$__rate_interval])))"
+    }
+   ]
+  },
+  {
+   "id": "p13-w004",
+   "title": "Queue Size",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    " \nSELECT max(acme_backend.celery.queue_count) from Metric where clusterName=concat('acme-cluster-', {{env}}) FACET name TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "max by (span_name)(max_over_time(acme_backend_celery_queue_count{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_celery_queue_count'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "max by (span_name)(max_over_time(acme_backend_celery_queue_count[$__rate_interval]))"
+    }
+   ]
+  },
+  {
+   "id": "p13-w005",
+   "title": "Total Celery Tasks",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.celery.signals) FROM Metric TIMESERIES FACET `task_name`  SINCE 1800 seconds ago  WHERE clusterName = concat('acme-cluster-', {{env}}) and prerun='true'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (task_name)(avg_over_time(acme_backend_celery_signals{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",prerun=\"true\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'prerun' not in label_map; used 'prerun' \u2014 verify the label exists in your stack",
+     "FACET attribute 'task_name' not in label_map; used 'task_name'",
+     "assumed gauge 'acme_backend_celery_signals'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (task_name)(rate(acme_backend_celery_signals_total{prerun=\"true\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p13-w006",
+   "title": "Celery Success Duration",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT average(acme_backend.celery.task.duration.mean) FROM Metric WHERE clusterName = concat('acme-cluster-', {{env}}) AND status = 'success' TIMESERIES FACET `task_name` LIMIT 15 SINCE 1800 seconds ago"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "topk(15, sum by (task_name)(rate(acme_backend_celery_task_duration_mean_sum{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",status=\"success\"}[$__rate_interval])) / sum by (task_name)(rate(acme_backend_celery_task_duration_mean_count{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",status=\"success\"}[$__rate_interval])))"
+     }
+    ],
+    "notes": [
+     "attribute 'status' not in label_map; used 'status' \u2014 verify the label exists in your stack",
+     "FACET attribute 'task_name' not in label_map; used 'task_name'",
+     "name suggests a duration histogram; verify 'acme_backend_celery_task_duration_mean' type in Mimir",
+     "FACET LIMIT 15 became topk(15, ...); on range queries topk is evaluated per step so series may flicker",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "topk(15, sum by (task_name)(rate(acme_backend_celery_task_duration_mean_sum{status=\"success\"}[$__rate_interval])) / sum by (task_name)(rate(acme_backend_celery_task_duration_mean_count{status=\"success\"}[$__rate_interval])))"
+    }
+   ]
+  },
+  {
+   "id": "p13-w007",
+   "title": "Successful Celery Tasks",
+   "visualization": "viz.bar",
+   "grafana_type": "bargauge",
+   "nrql": [
+    "SELECT sum(acme_backend.celery.signals) FROM Metric FACET `task_name` LIMIT 10 SINCE 1800 seconds ago  WHERE clusterName = concat('acme-cluster-', {{env}}) AND status='success'  "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "topk(10, sum by (task_name)(avg_over_time(acme_backend_celery_signals{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",status=\"success\"}[$__range])))"
+     }
+    ],
+    "notes": [
+     "attribute 'status' not in label_map; used 'status' \u2014 verify the label exists in your stack",
+     "FACET attribute 'task_name' not in label_map; used 'task_name'",
+     "assumed gauge 'acme_backend_celery_signals'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "topk(10, sum by (task_name)(increase(acme_backend_celery_signals_total{status=\"success\"}[$__range])))"
+    }
+   ]
+  },
+  {
+   "id": "p13-w008",
+   "title": "Slowest Celery Tasks",
+   "visualization": "viz.bar",
+   "grafana_type": "bargauge",
+   "nrql": [
+    "SELECT average(acme_backend.celery.task.duration.mean) FROM Metric WHERE clusterName = concat('acme-cluster-', {{env}}) FACET task_name LIMIT 25"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "topk(25, sum by (task_name)(rate(acme_backend_celery_task_duration_mean_sum{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__range])) / sum by (task_name)(rate(acme_backend_celery_task_duration_mean_count{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__range])))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'task_name' not in label_map; used 'task_name'",
+     "name suggests a duration histogram; verify 'acme_backend_celery_task_duration_mean' type in Mimir"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "topk(25, sum by (task_name)(rate(acme_backend_celery_task_duration_mean_sum[$__range])) / sum by (task_name)(rate(acme_backend_celery_task_duration_mean_count[$__range])))"
+    }
+   ]
+  },
+  {
+   "id": "p13-w009",
+   "title": "Celery Total Duration",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.celery.task.duration.summary) FROM Metric WHERE clusterName = concat('acme-cluster-', {{env}}) AND status = 'success' facet task_name TIMESERIES SINCE 1800 seconds ago"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (task_name)(avg_over_time(acme_backend_celery_task_duration_summary{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",status=\"success\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'status' not in label_map; used 'status' \u2014 verify the label exists in your stack",
+     "FACET attribute 'task_name' not in label_map; used 'task_name'",
+     "assumed gauge 'acme_backend_celery_task_duration_summary'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (task_name)(rate(acme_backend_celery_task_duration_summary_sum{status=\"success\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p13-w010",
+   "title": "Recurring Tasks Duration",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "select average(event_tags.duration_seconds) AS 'Order Summary Duration' FROM Log where cluster_name = concat('acme-cluster-', {{env}}) and event_name = 'recurring_task.success' FACET event_tags.task_name TIMESERIES "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "loki",
+      "type": "range",
+      "expr": "avg_over_time({cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"} | json | event_name=\"recurring_task.success\" | unwrap event_tags_duration_seconds | __error__=\"\" [$__auto]) by (event_tags_task_name)"
+     }
+    ],
+    "notes": [
+     "attribute 'event_name' not in label_map; used 'event_name' \u2014 verify the label exists in your stack",
+     "FACET attribute 'event_tags.task_name' not in label_map; used 'event_tags_task_name'",
+     "FACET on non-stream-label attribute(s) requires the parser stage; verify field names after parsing",
+     "unwrap of 'event_tags_duration_seconds' assumes it is a numeric field after parsing",
+     "filter on 'event_name' assumes it is a parsed json field in Loki",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "loki",
+     "refId": "A",
+     "expr": "avg_over_time({service_name=~\".+\"} | json | event_name=\"recurring_task.success\" | unwrap event_tags_duration_seconds | __error__=\"\" [$__auto]) by (event_tags_task_name)"
+    }
+   ]
+  },
+  {
+   "id": "p13-w011",
+   "title": "Recurring Tasks Ran Long",
+   "visualization": "viz.line",
+   "grafana_type": "text",
+   "nrql": [
+    "--this is usually due to a previous instance still running when the next scheduled instance tries to start, and signals that the task is taking longer than expected\nSELECT sum(acme_backend.recurring_task.ran_long) FROM Metric WHERE clusterName = concat('acme-cluster-', {{env}})  TIMESERIES FACET task_name"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "NRQL could not be parsed: unexpected character '-' near: ...--this is usually due to "
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (task_name)(rate(acme_backend_recurring_task_ran_long_total[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p13-w012",
+   "title": "Recurring Tasks Skipped",
+   "visualization": "viz.line",
+   "grafana_type": "text",
+   "nrql": [
+    "--this is usually due to a previous instance still running when the next scheduled instance tries to start, and signals that the task is taking longer than expected\nSELECT sum(acme_backend.recurring_task.skipped) FROM Metric WHERE clusterName = concat('acme-cluster-', {{env}})  TIMESERIES FACET task_name"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "NRQL could not be parsed: unexpected character '-' near: ...--this is usually due to "
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (task_name)(rate(acme_backend_recurring_task_skipped_total[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p13-w013",
+   "title": "Model Change",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.model_db_change) FROM Metric WHERE clusterName = concat('acme-cluster-', {{env}})  TIMESERIES FACET `model` "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (model)(avg_over_time(acme_backend_model_db_change{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'model' not in label_map; used 'model'",
+     "assumed gauge 'acme_backend_model_db_change'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (model)(rate(acme_backend_model_db_change_total[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p13-w014",
+   "title": "RabbitMQ Consumers",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT max(aws.amazonmq.ConsumerCount.byQueue)\nFROM Metric\nWHERE (\n  ({{env}} = 'prod' AND aws.mq.broker LIKE 'acme-name-3-%prod')\n  OR\n  ({{env}} = 'staging' AND aws.mq.broker LIKE 'acme-name-3-%stag%')\n  OR\n  ({{env}} = 'dev' AND aws.mq.broker LIKE 'acme-name-3-%dev')\n)\nFACET aws.mq.broker\nTIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "max by (aws_mq_broker)(max_over_time(aws_amazonmq_ConsumerCount_byQueue[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "an OR clause in WHERE could not be merged into a single label matcher (different attributes, variables, or mixed predicate shapes); that clause was DROPPED \u2014 verify filter logic",
+     "FACET attribute 'aws.mq.broker' not in label_map; used 'aws_mq_broker'",
+     "assumed gauge 'aws_amazonmq_ConsumerCount_byQueue'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "cloudwatch",
+     "refId": "A",
+     "expression": "SEARCH('{AWS/AmazonMQ,Broker,Queue} MetricName=\"ConsumerCount\" Broker=\"*acme-name-3*${env}*\"', 'Maximum', 300)",
+     "queryMode": "Metrics",
+     "region": "default",
+     "metricEditorMode": 1
+    }
+   ]
+  },
+  {
+   "id": "p13-w015",
+   "title": "Message Durations",
+   "visualization": "viz.table",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT rate(count(*), 1 second) AS '\u03bb (tasks/sec)', average(duration) as 'Avg (s)', percentile(duration,95) as 'Handler Latency (s)', count(duration) as total, average(duration) * count(duration) as 'Total Work'\nFROM Transaction \nwhere appName = concat('acme-backend (',{{env}},')') \nand name in (\n SELECT uniques(metricTimesliceName) FROM Metric WHERE \n   ({{env}} = 'staging' AND entity.guid = '<REDACTED_BLOB>')\n   OR ({{env}} = 'prod' AND entity.guid = '<REDACTED_BLOB>')\n   OR ({{env}} = 'dev' AND entity.guid = '<REDACTED_BLOB>')\n and transactionType in ('Other')\n and (k8s.podName like 'acme-backend-worker%')\n LIMIT MAX\n)\nAND transactionType = 'Other'\nFACET capture(name, r'OtherTransaction/Celery/?(?P<name>.*)')\nLIMIT 100"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "NRQL could not be parsed: bad IN list near: ...LECT uniques(metricTimesliceNa"
+    ]
+   },
+   "expected": []
+  }
+ ]
+}

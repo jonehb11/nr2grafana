@@ -8,14 +8,18 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..model import NRDashboard, NRPage, NRVariable, NRWidget
-from ..nrql.parser import Attr, Func, NrqlParseError, parse_nrql
+from ..nrql.parser import Attr, Func, Lit, NrqlParseError, parse_nrql
+from ..translate import cloudwatch as _cw
+from ..translate import metrics as _metrics
 from ..translate.common import (
-    APPROXIMATE, EXACT, NEEDS_REVIEW, UNTRANSLATABLE, Translation, map_attr,
-    worst, _VAR_RE,
+    APPROXIMATE, EXACT, NEEDS_REVIEW, UNTRANSLATABLE, Translation,
+    cond_to_matchers, map_attr, render_selector, route_event_type, worst,
+    _VAR_RE,
 )
 from ..translate.router import translate_query
 
@@ -62,7 +66,13 @@ def slugify(text: str, max_len: int = 40) -> str:
 
 _DS_VAR_NAMES = {"prometheus": "datasource", "loki": "loki_datasource",
                  "tempo": "tempo_datasource",
+                 "cloudwatch": "cloudwatch_datasource",
                  "newrelic": "newrelic_datasource"}
+
+_DS_VAR_LABELS = {"prometheus": "Metrics (Mimir)", "loki": "Logs (Loki)",
+                  "tempo": "Traces (Tempo)",
+                  "cloudwatch": "AWS (CloudWatch)",
+                  "newrelic": "New Relic"}
 
 
 class _Build:
@@ -233,6 +243,9 @@ def _make_targets(trans: List[Translation], b: _Build) -> List[Dict[str, Any]]:
             targets.append({"refId": ref, "datasource": b.ds_ref("newrelic"),
                             "queryText": t.expr, "useGrafanaTime": True})
             continue
+        if t.datasource == "cloudwatch":
+            targets.append(_cloudwatch_target(ref, t, b))
+            continue
         tgt = {"refId": ref, "datasource": b.ds_ref("prometheus"),
                "expr": t.expr, "legendFormat": t.legend or "__auto",
                "editorMode": "code", "range": t.query_type == "range",
@@ -240,6 +253,43 @@ def _make_targets(trans: List[Translation], b: _Build) -> List[Dict[str, Any]]:
                "format": "time_series"}
         targets.append(tgt)
     return targets
+
+
+_LEGEND_LABEL_RE = re.compile(r"\{\{\s*([A-Za-z0-9_ .:-]+?)\s*\}\}")
+
+
+def _cloudwatch_label(legend: str) -> str:
+    """{{QueueName}} legend -> CloudWatch dynamic label
+    ${PROP('Dim.QueueName')}."""
+    return _LEGEND_LABEL_RE.sub(lambda m: "${PROP('Dim.%s')}" % m.group(1),
+                                legend or "")
+
+
+def _cloudwatch_target(ref: str, t: Translation, b: _Build) -> Dict[str, Any]:
+    """Real Grafana CloudWatch metrics target from a Translation's ``cw``
+    payload (SEAM-CW). Builder mode (metricEditorMode 0) carries
+    namespace/metricName/statistic/dimensions; code mode (1) carries a
+    SEARCH(...) ``expression``. ``dimension_keys`` (the FACET dimensions)
+    is an nr2grafana extension Grafana ignores."""
+    cw = dict(getattr(t, "cw", None) or {})
+    mode = int(cw.get("metricEditorMode", 0) or 0)
+    return {
+        "refId": ref, "datasource": b.ds_ref("cloudwatch"),
+        "queryMode": "Metrics", "metricQueryType": 0,
+        "metricEditorMode": mode,
+        "region": cw.get("region") or "default",
+        "namespace": cw.get("namespace", ""),
+        "metricName": cw.get("metricName", ""),
+        "statistic": cw.get("statistic", "Average"),
+        "dimensions": copy.deepcopy(cw.get("dimensions") or {}),
+        "dimension_keys": list(cw.get("dimension_keys") or []),
+        "period": "", "matchExact": True, "id": cw.get("id") or "",
+        "alias": "",
+        "label": _cloudwatch_label(t.legend),
+        "expression": cw.get("expression", "") if mode == 1 else "",
+        "sqlExpression": "",
+        "hide": bool(cw.get("hide")),
+    }
 
 
 def _panel_options(ptype: str, widget: NRWidget,
@@ -493,6 +543,16 @@ def _convert_widget(widget: NRWidget, b: _Build,
              "options": {"excludeByName": {"Time": True},
                          "renameByName": {}}}]
 
+    # NR sum()/count() without TIMESERIES is a total over the window;
+    # CloudWatch returns one value per period, so a stat panel must add
+    # them up instead of showing the last one.
+    if ptype == "stat" and panel["targets"] and all(
+            tgt.get("namespace") is not None
+            and tgt.get("statistic") in ("Sum", "SampleCount")
+            for tgt in panel["targets"]) and all(
+            t.query_type == "instant" for t in trans):
+        panel["options"]["reduceOptions"]["calcs"] = ["sum"]
+
     # Panel-level datasource: first target's datasource (mixed if several).
     ds_set = {(t["datasource"]["type"], t["datasource"]["uid"])
               for t in panel["targets"] if "datasource" in t}
@@ -530,30 +590,300 @@ def _fallback_panel(panel: Dict[str, Any], widget: NRWidget, b: _Build,
             "plugin (install nrgrafanaplugin-newrelic-datasource).\n"
             + "\n".join("- " + r for r in reasons))
         _report(b, page_name, widget, panel, UNTRANSLATABLE, [],
-                fallback="nrql-passthrough", extra_notes=reasons)
+                fallback="nrql-passthrough", extra_notes=reasons,
+                closest=_closest_equivalent(widget, queries, reasons, cfg))
         return panel
 
-    body = ["### Not automatically translatable", ""]
+    ce = _closest_equivalent(widget, queries, reasons, cfg)
+    panel["type"] = "text"
+    panel["options"] = {"mode": "markdown",
+                        "content": _manual_body(queries, reasons, ce)}
+    panel["fieldConfig"] = {"defaults": {}, "overrides": []}
+    panel.pop("targets", None)
+    panel["title"] = ("[MANUAL] " + panel["title"]).strip()
+    _report(b, page_name, widget, panel, UNTRANSLATABLE, [],
+            fallback="text-placeholder", extra_notes=reasons,
+            closest=ce, manual=True)
+    return panel
+
+
+def _manual_body(queries: List[str], reasons: List[str],
+                 ce: Dict[str, Any]) -> str:
+    """Markdown body of a [MANUAL] placeholder: WHY the widget could not
+    be translated, the closest equivalent on the target stack, and the
+    original NRQL (so nothing is silently lost)."""
+    body = ["### Not automatically translatable", "", "**Why:**", ""]
+    body.extend("- " + r for r in (reasons or ["query could not be "
+                                               "translated"]))
+    body.append("")
+    ds = ce.get("datasource") or ""
+    body.append("**Closest equivalent%s:**"
+                % (" (datasource: %s)" % ds if ds else ""))
+    body.append("")
+    if ce.get("example_query"):
+        body.append("```\n%s\n```" % ce["example_query"])
+    elif ce.get("cw_target"):
+        body.append("```json\n%s\n```" % json.dumps(ce["cw_target"],
+                                                     indent=2,
+                                                     sort_keys=True))
+    if ce.get("note"):
+        body.append(ce["note"])
+    body.append("")
+    body.append("**Original NRQL:**")
+    body.append("")
     for qt in queries:
         body.append("```\n%s\n```" % qt)
-    body.append("")
-    body.extend("- " + r for r in reasons)
+    if not queries:
+        body.append("_(no NRQL: this widget type has no query)_")
     body.append("")
     body.append("_Recreate this widget manually or enable "
                 "`passthrough_fallback` in the converter config._")
-    panel["type"] = "text"
-    panel["options"] = {"mode": "markdown", "content": "\n".join(body)}
-    panel["fieldConfig"] = {"defaults": {}, "overrides": []}
-    panel.pop("targets", None)
-    panel["title"] = (panel["title"] + " [MANUAL]").strip()
-    _report(b, page_name, widget, panel, UNTRANSLATABLE, [],
-            fallback="text-placeholder", extra_notes=reasons)
-    return panel
+    return "\n".join(body)
+
+
+# ---------------------------------------------------------------------------
+# SEAM-REPORT helpers
+# ---------------------------------------------------------------------------
+
+_NO_QUERY_EQUIVALENTS = {
+    "topology.service-map": {
+        "datasource": "tempo", "example_query": "",
+        "note": "Tempo service graph (metrics-generator service_graph_* "
+                "metrics) replaces the NR service map; add a Node Graph "
+                "panel on the Tempo datasource"},
+    "infra.inventory": {
+        "datasource": "prometheus",
+        "example_query": "count by (instance) (up)",
+        "note": "node_exporter / kube-state-metrics inventory via "
+                "label_values()/table panels replaces NR infra inventory"},
+}
+
+_EVENT_EQUIVALENTS = {
+    "financesample": {
+        "datasource": "cloudwatch",
+        "cw_target": {"namespace": "AWS/Billing",
+                      "metricName": "EstimatedCharges",
+                      "statistic": "Maximum",
+                      "dimensions": {"Currency": ["USD"]},
+                      "region": "us-east-1"},
+        "note": "NR FinanceSample is AWS billing data; AWS/Billing "
+                "EstimatedCharges (us-east-1) or AWS Cost Explorer (see "
+                "`nr2grafana tco` / awscost) is the equivalent"},
+    "deployment": {
+        "datasource": "grafana", "example_query": "",
+        "note": "NR deployment markers map to Grafana annotations: add an "
+                "annotation query (Grafana annotations API, or a Loki "
+                "query such as {job=\"deploys\"}) instead of a panel"},
+    "nrconsumption": {
+        "datasource": "newrelic", "example_query": "",
+        "note": "New Relic consumption/usage data exists only in New "
+                "Relic; keep it on the New Relic datasource plugin "
+                "(passthrough_fallback) or drop it"},
+    "nrusage": {
+        "datasource": "newrelic", "example_query": "",
+        "note": "New Relic usage data exists only in New Relic; keep it "
+                "on the New Relic datasource plugin (passthrough_fallback)"},
+    "nrauditevent": {
+        "datasource": "newrelic", "example_query": "",
+        "note": "New Relic audit events exist only in New Relic; keep "
+                "them on the New Relic datasource plugin"},
+}
+_EVENT_EQUIVALENTS["nrdailyusage"] = _EVENT_EQUIVALENTS["nrusage"]
+_EVENT_EQUIVALENTS["nrmtdconsumption"] = _EVENT_EQUIVALENTS["nrconsumption"]
+
+
+def _innermost_attr(node: Any) -> str:
+    hops = 0
+    while isinstance(node, Func) and node.args and hops < 8:
+        node = node.args[0]
+        hops += 1
+    if isinstance(node, Attr):
+        return node.name
+    if isinstance(node, Lit) and isinstance(node.value, str):
+        return node.value
+    return ""
+
+
+def _first_func(q: Any) -> Optional[Func]:
+    for item in q.select:
+        if isinstance(item.expr, Func):
+            return item.expr
+    return None
+
+
+def _closest_equivalent(widget: NRWidget, queries: List[str],
+                        reasons: List[str],
+                        cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """{datasource, example_query | cw_target, note} for a widget the
+    converter could not translate: the nearest thing on the LGTM stack
+    that an operator (or an AI agent) can start from."""
+    if not queries:
+        hit = _NO_QUERY_EQUIVALENTS.get(widget.viz_id or "")
+        if hit:
+            return dict(hit)
+        return {"datasource": None, "example_query": "",
+                "note": "widget type %r has no query; recreate it by hand"
+                        % (widget.viz_id or "unknown")}
+    nrql = queries[0]
+    try:
+        q = parse_nrql(nrql)
+    except NrqlParseError:
+        return {"datasource": None, "example_query": "",
+                "note": "NRQL could not be parsed; fix the query (see "
+                        "why) and re-run the conversion"}
+    et = (q.from_[0] if q.from_ else "Metric")
+    etl = et.lower()
+    hit = _EVENT_EQUIVALENTS.get(etl)
+    if hit:
+        return copy.deepcopy(hit)
+    t = Translation()
+    sel = render_selector("", cond_to_matchers(q.where, cfg, t))
+    family = route_event_type(q.from_)
+    if family == "logs":
+        parser = cfg.get("loki_parser") or "json"
+        return {"datasource": "loki",
+                "example_query": "%s | %s" % (
+                    sel if sel != "{}" else "{service_name=\"<svc>\"}",
+                    parser),
+                "note": "LogQL stream selector derived from WHERE; add "
+                        "line filters (|= \"text\") and an aggregation "
+                        "(sum by (label) (count_over_time(...[$__auto])))"}
+    if family == "traces":
+        return {"datasource": "tempo",
+                "example_query": "{resource.service.name=\"<svc>\"}",
+                "note": "TraceQL search; span-metrics "
+                        "(traces_span_metrics_*) in Mimir cover the "
+                        "aggregated shapes"}
+    fn = _first_func(q)
+    name = _innermost_attr(fn) if fn else ""
+    if etl == "metric" and name.lower().startswith("aws."):
+        parts = name.split(".")
+        ns, _ = _cw.namespace_for(parts[1], cfg)
+        return {"datasource": "cloudwatch",
+                "cw_target": {"namespace": ns,
+                              "metricName": ".".join(parts[2:]),
+                              "statistic": _cw.STATISTICS.get(
+                                  fn.name if fn else "", "Average"),
+                              "dimensions": {
+                                  _cw.PRIMARY_DIMENSION.get(ns, "Name"):
+                                      ["*"]},
+                              "region": cfg.get("cloudwatch_region")
+                              or "default"},
+                "note": "CloudWatch datasource target (NR aws.* metrics "
+                        "are not in Mimir)"}
+    hint = getattr(_metrics, "_EVENT_EQUIVALENTS", {}).get(etl, "")
+    if etl == "metric" and name:
+        base = _metrics.normalize_metric_name(name)
+        agg = fn.name if fn else ""
+        if agg in ("sum", "count", "rate"):
+            example = "sum(rate(%s_total%s[$__rate_interval]))" % (base, sel)
+        elif agg in ("percentile", "median"):
+            example = ("histogram_quantile(0.95, sum by (le) (rate("
+                       "%s_bucket%s[$__rate_interval])))" % (base, sel))
+        else:
+            example = "avg_over_time(%s%s[$__interval])" % (base, sel)
+        return {"datasource": "prometheus", "example_query": example,
+                "note": "metric name normalized (dots -> underscores); "
+                        "verify the name/type in Mimir "
+                        "(/api/v1/metadata)"}
+    if hint:
+        return {"datasource": None, "example_query": "", "note": hint}
+    return {"datasource": "prometheus",
+            "example_query": "sum(rate(<metric>_total%s[$__rate_interval]))"
+            % sel,
+            "note": "no metric mapping for FROM %s; pick the OTel/"
+                    "Prometheus metric that carries this signal" % et}
+
+
+def _metric_kinds(nrqls: List[str], cfg: Dict[str, Any]) -> Dict[str, str]:
+    """{nr_metric_name: counter|gauge|histogram|summary|cloudwatch} for
+    every FROM Metric aggregation in the widget (SEAM-KIND via
+    metrics.infer_metric_kind when present, else resolve_metric)."""
+    out: Dict[str, str] = {}
+    infer = getattr(_metrics, "infer_metric_kind", None)
+    hints = cfg.get("live_hints") or None
+    for nrql in nrqls:
+        try:
+            q = parse_nrql(nrql)
+        except NrqlParseError:
+            continue
+        et = (q.from_[0] if q.from_ else "Metric").lower()
+        if et != "metric":
+            continue
+        for item in q.select:
+            if not isinstance(item.expr, Func):
+                continue
+            name = _innermost_attr(item.expr)
+            if not name or name in out:
+                continue
+            if name.lower().startswith("aws."):
+                out[name] = "cloudwatch"
+                continue
+            agg = item.expr.name
+            kind = ""
+            try:
+                if infer is not None:
+                    src = infer(name, agg, cfg, hints)
+                else:
+                    src = _metrics.resolve_metric(name, agg, cfg,
+                                                  Translation())
+                kind = getattr(src, "mtype", "") or ""
+            except Exception:  # noqa: BLE001 - best effort metadata
+                kind = ""
+            out[name] = kind or "unknown"
+    return out
+
+
+_DOLLAR_VAR_RE = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _render_vars(nrqls: List[str], exprs: List[str],
+                 cfg: Dict[str, Any]) -> List[str]:
+    """Grafana variables the panel depends on (NR {{var}} placeholders in
+    the NRQL plus $var references in the emitted queries), renamed."""
+    renames = cfg.get("var_renames") or {}
+    reserved = set(_DS_VAR_NAMES.values())
+    names: List[str] = []
+    for text in nrqls:
+        for v in _VAR_RE.findall(text or ""):
+            v = renames.get(v, v)
+            if v not in names:
+                names.append(v)
+    for expr in exprs:
+        for v in _DOLLAR_VAR_RE.findall(expr or ""):
+            if v.startswith("__") or v in reserved:
+                continue
+            if v not in names:
+                names.append(v)
+    return names
+
+
+_K8S_NRQL_RE = re.compile(r"(?i)\bk8s[.A-Za-z]")
+_K8S_PROM_RE = re.compile(r"\b(kube_|container_|node_)")
+
+
+def _missing_datasource(families: List[str],
+                        cfg: Dict[str, Any]) -> Optional[str]:
+    """First datasource family the panel needs whose configured uid is
+    still a ${variable} placeholder (nothing bound yet), else None."""
+    for fam in families:
+        uid = str((cfg.get("datasources") or {}).get(fam, {}).get("uid", ""))
+        if not uid or uid.startswith("${"):
+            return fam
+    return None
 
 
 def _report(b: _Build, page: str, widget: NRWidget, panel: Dict[str, Any],
             conf: str, trans: List[Translation], fallback: str = "",
-            extra_notes: Optional[List[str]] = None) -> None:
+            extra_notes: Optional[List[str]] = None,
+            closest: Optional[Dict[str, Any]] = None,
+            manual: bool = False) -> None:
+    """One widget-report entry. Besides the historical keys it carries the
+    SEAM-REPORT fields: metric_kind {nr_metric: kind}, missing_datasource
+    (family with no bound uid, or None), closest_equivalent {datasource,
+    example_query|cw_target, note} for needs-review/untranslatable
+    widgets, manual (text placeholder), render_vars (Grafana variables the
+    panel uses), k8s_mapped and cloudwatch flags."""
     entry = {
         "page": page,
         "widget": widget.title or "(untitled)",
@@ -579,16 +909,56 @@ def _report(b: _Build, page: str, widget: NRWidget, panel: Dict[str, Any],
                 account_ids.append(iv)
     if account_ids:
         entry["account_ids"] = account_ids
+    families: List[str] = []
+    exprs: List[str] = []
     for t in trans:
         for x in [t] + t.extra:
-            entry["queries"].append(
-                {"datasource": x.datasource, "expr": x.expr,
-                 "type": x.query_type})
+            qe: Dict[str, Any] = {"datasource": x.datasource,
+                                  "expr": x.expr, "type": x.query_type}
+            cw = getattr(x, "cw", None)
+            if cw:
+                qe["cw"] = copy.deepcopy(cw)
+                if cw.get("expression"):
+                    exprs.append(cw["expression"])
+                for vals in (cw.get("dimensions") or {}).values():
+                    exprs.extend(str(v) for v in vals)
+            entry["queries"].append(qe)
+            exprs.append(x.expr or "")
+            if x.datasource not in families:
+                families.append(x.datasource)
         entry["notes"].extend(t.notes)
     if extra_notes:
         entry["notes"].extend(extra_notes)
     if fallback:
         entry["fallback"] = fallback
+    if fallback == "nrql-passthrough":
+        families.append("newrelic")
+    nrqls = [x for x in entry["nrql"] if x]
+    cfg = b.cfg
+    entry["metric_kind"] = _metric_kinds(nrqls, cfg)
+    entry["cloudwatch"] = "cloudwatch" in families
+    entry["k8s_mapped"] = bool(
+        any(_K8S_NRQL_RE.search(x) for x in nrqls)
+        and any(_K8S_PROM_RE.search(x) for x in exprs if x))
+    entry["manual"] = bool(manual)
+    entry["render_vars"] = _render_vars(nrqls, exprs, cfg)
+    ce: Optional[Dict[str, Any]] = closest
+    if ce is None and conf == NEEDS_REVIEW and trans:
+        first = trans[0]
+        why = next((n for n in entry["notes"]
+                    if not re.match(r"^(unit|timefrom|maxlines|limit|"
+                                    r"panel-hint):", n)), "")
+        ce = {"datasource": first.datasource, "note": why}
+        cw = getattr(first, "cw", None)
+        if cw:
+            ce["cw_target"] = copy.deepcopy(cw)
+        else:
+            ce["example_query"] = first.expr
+    entry["closest_equivalent"] = ce
+    if ce and ce.get("datasource") and ce["datasource"] not in families \
+            and ce["datasource"] in (cfg.get("datasources") or {}):
+        families.append(ce["datasource"])
+    entry["missing_datasource"] = _missing_datasource(families, cfg)
     b.report.append(entry)
 
 
@@ -671,10 +1041,7 @@ def _datasource_variables(b: _Build) -> List[Dict[str, Any]]:
         if uid == "${%s}" % var_name:
             out.append({
                 "type": "datasource", "name": var_name,
-                "label": {"prometheus": "Metrics (Mimir)",
-                          "loki": "Logs (Loki)",
-                          "tempo": "Traces (Tempo)",
-                          "newrelic": "New Relic"}.get(family, family),
+                "label": _DS_VAR_LABELS.get(family, family),
                 "query": ds.get("type", family),
                 "regex": "", "refresh": 1, "multi": False,
                 "includeAll": False, "current": {}, "options": [],

@@ -1,0 +1,357 @@
+{
+ "schema": 1,
+ "page": "Patient Insurance",
+ "widgets": [
+  {
+   "id": "p19-w001",
+   "title": "Marked Active",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT sum(acme_backend.backend.patient_insurance.marked_active) FROM Metric WHERE clusterName = 'acme-cluster-prod'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum(avg_over_time(acme_backend_backend_patient_insurance_marked_active{cluster=\"acme-cluster-prod\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_backend_patient_insurance_marked_active'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(increase(acme_backend_backend_patient_insurance_marked_active_total{cluster=\"acme-cluster-test\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p19-w002",
+   "title": "Marked Inactive",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT sum(acme_backend.backend.patient_insurance.marked_inactive) FROM Metric WHERE clusterName = 'acme-cluster-prod'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum(avg_over_time(acme_backend_backend_patient_insurance_marked_inactive{cluster=\"acme-cluster-prod\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_backend_patient_insurance_marked_inactive'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(increase(acme_backend_backend_patient_insurance_marked_inactive_total{cluster=\"acme-cluster-test\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p19-w003",
+   "title": "Eligibility Checks",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.eligibility) FROM Metric WHERE clusterName = 'acme-cluster-prod' FACET  status TIMESERIES "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (status)(avg_over_time(acme_backend_eligibility{cluster=\"acme-cluster-prod\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'status' not in label_map; used 'status'",
+     "assumed gauge 'acme_backend_eligibility'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (status)(rate(acme_backend_eligibility_total{cluster=\"acme-cluster-test\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p19-w004",
+   "title": "Set as Primary",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT sum(acme_backend.backend.patient_insurance.set_primary) FROM Metric WHERE clusterName = 'acme-cluster-prod'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum(avg_over_time(acme_backend_backend_patient_insurance_set_primary{cluster=\"acme-cluster-prod\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_backend_patient_insurance_set_primary'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(increase(acme_backend_backend_patient_insurance_set_primary_total{cluster=\"acme-cluster-test\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p19-w005",
+   "title": "Eligibility Check Async Latency",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "Select percentile(acme_backend.eligibility.async.total_latency.mean, 95) as 'Insurance Service (async., total latency)'  from Metric FACET submission_processor  TIMESERIES "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "histogram_quantile(0.95, sum by (le, submission_processor)(rate(acme_backend_eligibility_async_total_latency_mean_bucket[$__rate_interval])))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'submission_processor' not in label_map; used 'submission_processor'",
+     "assumed 'acme_backend.eligibility.async.total_latency.mean' is a histogram (required by percentile()); add it to metric_map with the exact Prometheus name/type",
+     "histogram_quantile interpolates within buckets; NR percentiles are computed from event data",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "histogram_quantile(0.95, sum by (le, submission_processor)(rate(acme_backend_eligibility_async_total_latency_mean_bucket[$__rate_interval])))"
+    }
+   ]
+  },
+  {
+   "id": "p19-w006",
+   "title": "Federal Coverage Checks",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "Select sum(acme_backend.federal_coverage_check) from Metric WHERE clusterName = 'acme-cluster-prod' TIMESERIES "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(avg_over_time(acme_backend_federal_coverage_check{cluster=\"acme-cluster-prod\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_federal_coverage_check'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(rate(acme_backend_federal_coverage_check_total{cluster=\"acme-cluster-test\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p19-w007",
+   "title": "(untitled)",
+   "visualization": "viz.markdown",
+   "grafana_type": "text",
+   "nrql": [],
+   "before": {
+    "confidence": "exact",
+    "queries": [],
+    "notes": []
+   },
+   "expected": []
+  },
+  {
+   "id": "p19-w008",
+   "title": "Federal Coverage Eligibility Check Mismatch",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT sum(acme_backend.federal_coverage_check.eligibility_check.mismatch) FROM Metric WHERE clusterName = 'acme-cluster-prod'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum(avg_over_time(acme_backend_federal_coverage_check_eligibility_check_mismatch{cluster=\"acme-cluster-prod\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_federal_coverage_check_eligibility_check_mismatch'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(increase(acme_backend_federal_coverage_check_eligibility_check_mismatch_total{cluster=\"acme-cluster-test\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p19-w009",
+   "title": "Federal Coverage Eligibility Check Insurance Auto-verified",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT sum(acme_backend.federal_coverage_check.eligibility_check.insurance_auto_verified) FROM Metric WHERE clusterName = 'acme-cluster-prod'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum(avg_over_time(acme_backend_federal_coverage_check_eligibility_check_insurance_auto_verified{cluster=\"acme-cluster-prod\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_federal_coverage_check_eligibility_check_insurance_auto_verified'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(increase(acme_backend_federal_coverage_check_eligibility_check_insurance_auto_verified_total{cluster=\"acme-cluster-test\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p19-w010",
+   "title": "Unreconciled and Price Published",
+   "visualization": "viz.table",
+   "grafana_type": "table",
+   "nrql": [
+    "SELECT sum(acme_backend.govt.recon.order.price.published) FROM Metric FACET offer_type LIMIT 10 SINCE 1 hour ago"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "topk(10, sum by (offer_type)(avg_over_time(acme_backend_govt_recon_order_price_published[$__range])))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'offer_type' not in label_map; used 'offer_type'",
+     "assumed gauge 'acme_backend_govt_recon_order_price_published'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "timefrom:now-1h"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "topk(10, sum by (offer_type)(increase(acme_backend_govt_recon_order_price_published_total[$__range])))"
+    }
+   ]
+  },
+  {
+   "id": "p19-w011",
+   "title": "Federal Coverage Eligibility Check Completed",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT sum(acme_backend.federal_coverage_check.eligibility_check.completed) FROM Metric WHERE clusterName = 'acme-cluster-prod'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum(avg_over_time(acme_backend_federal_coverage_check_eligibility_check_completed{cluster=\"acme-cluster-prod\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_federal_coverage_check_eligibility_check_completed'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(increase(acme_backend_federal_coverage_check_eligibility_check_completed_total{cluster=\"acme-cluster-test\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p19-w012",
+   "title": "Unreconciled and patient is enrolled in auto-refill",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT sum(acme_backend.govt.recon.order.price.published) FROM Metric where is_auto_refill='True' SINCE 1 hour ago"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum(avg_over_time(acme_backend_govt_recon_order_price_published{is_auto_refill=\"True\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "attribute 'is_auto_refill' not in label_map; used 'is_auto_refill' \u2014 verify the label exists in your stack",
+     "assumed gauge 'acme_backend_govt_recon_order_price_published'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "timefrom:now-1h"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(increase(acme_backend_govt_recon_order_price_published_total{is_auto_refill=\"True\"}[$__range]))"
+    }
+   ]
+  }
+ ]
+}

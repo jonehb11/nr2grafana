@@ -1,0 +1,460 @@
+{
+ "schema": 1,
+ "page": "January Transition",
+ "widgets": [
+  {
+   "id": "p12-w001",
+   "title": "(untitled)",
+   "visualization": "viz.markdown",
+   "grafana_type": "text",
+   "nrql": [],
+   "before": {
+    "confidence": "exact",
+    "queries": [],
+    "notes": []
+   },
+   "expected": []
+  },
+  {
+   "id": "p12-w002",
+   "title": "Camunda Task Queue Size",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT average(acme_backend.camunda.external_task.in_queue) FROM Metric WHERE clusterName = 'acme-cluster-prod' FACET camunda_instance TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg by (camunda_instance)(avg_over_time(acme_backend_camunda_external_task_in_queue{cluster=\"acme-cluster-prod\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'camunda_instance' not in label_map; used 'camunda_instance'",
+     "assumed gauge 'acme_backend_camunda_external_task_in_queue'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "avg by (camunda_instance)(avg_over_time(acme_backend_camunda_external_task_in_queue{cluster=\"acme-cluster-test\"}[$__rate_interval]))"
+    }
+   ]
+  },
+  {
+   "id": "p12-w003",
+   "title": "Successful External Tasks",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "FROM Metric select count(acme_backend.handle_task_with_worker) where success='true' and clusterName='acme-cluster-prod' AND camunda_instance in ({{camundaInstance}}) facet task TIMESERIES auto"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (task)(increase(acme_backend_handle_task_with_worker_total{success=\"true\",cluster=\"acme-cluster-prod\",camunda_instance=~\"${camundaInstance:regex}\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'success' not in label_map; used 'success' \u2014 verify the label exists in your stack",
+     "attribute 'camunda_instance' not in label_map; used 'camunda_instance' \u2014 verify the label exists in your stack",
+     "FACET attribute 'task' not in label_map; used 'task'",
+     "assumed counter 'acme_backend_handle_task_with_worker_total'; verify name/type in Mimir (/api/v1/metadata)",
+     "unit:short",
+     "count() on a Metric counter emitted as the summed increase (event count); NRQL count() strictly counts datapoints \u2014 use sum() in NR to compare like for like",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (task)(rate(acme_backend_handle_task_with_worker_total{success=\"true\",cluster=\"acme-cluster-test\",camunda_instance=~\"${camundaInstance:regex}\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p12-w004",
+   "title": "Automated Claims",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.claims.automated_run) FROM Metric FACET status WHERE clusterName = 'acme-cluster-prod' TIMESERIES "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (status)(avg_over_time(acme_backend_claims_automated_run{cluster=\"acme-cluster-prod\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'status' not in label_map; used 'status'",
+     "assumed gauge 'acme_backend_claims_automated_run'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (status)(rate(acme_backend_claims_automated_run_total{cluster=\"acme-cluster-test\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p12-w005",
+   "title": "Orders Created",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.order.created) FROM Metric TIMESERIES FACET `classification` LIMIT 10 SINCE 1800 seconds ago WHERE clusterName = 'acme-cluster-prod'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "topk(10, sum by (classification)(avg_over_time(acme_backend_order_created{cluster=\"acme-cluster-prod\"}[$__rate_interval])))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'classification' not in label_map; used 'classification'",
+     "assumed gauge 'acme_backend_order_created'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET LIMIT 10 became topk(10, ...); on range queries topk is evaluated per step so series may flicker",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "topk(10, sum by (classification)(rate(acme_backend_order_created_total{cluster=\"acme-cluster-test\"}[$__rate_interval])) * $__interval_ms / 1000)"
+    }
+   ]
+  },
+  {
+   "id": "p12-w006",
+   "title": "Refill Orders Created",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.order.created) FROM Metric TIMESERIES FACET `classification` LIMIT 10 SINCE 1800 seconds ago WHERE refill='True' AND  clusterName = 'acme-cluster-prod'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "topk(10, sum by (classification)(avg_over_time(acme_backend_order_created{refill=\"True\",cluster=\"acme-cluster-prod\"}[$__rate_interval])))"
+     }
+    ],
+    "notes": [
+     "attribute 'refill' not in label_map; used 'refill' \u2014 verify the label exists in your stack",
+     "FACET attribute 'classification' not in label_map; used 'classification'",
+     "assumed gauge 'acme_backend_order_created'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET LIMIT 10 became topk(10, ...); on range queries topk is evaluated per step so series may flicker",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "topk(10, sum by (classification)(rate(acme_backend_order_created_total{refill=\"True\",cluster=\"acme-cluster-test\"}[$__rate_interval])) * $__interval_ms / 1000)"
+    }
+   ]
+  },
+  {
+   "id": "p12-w007",
+   "title": "Automated Tasks Executed",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "FROM Metric select sum(acme_backend.scheduled.automation.task.executed) WHERE clusterName='acme-cluster-prod' facet task_type TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (task_type)(avg_over_time(acme_backend_scheduled_automation_task_executed{cluster=\"acme-cluster-prod\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'task_type' not in label_map; used 'task_type'",
+     "assumed gauge 'acme_backend_scheduled_automation_task_executed'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (task_type)(rate(acme_backend_scheduled_automation_task_executed_total{cluster=\"acme-cluster-test\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p12-w008",
+   "title": "Automated Tasks Scheduled",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "FROM Metric select sum(acme_backend.scheduled.automation.task.scheduled) WHERE clusterName='acme-cluster-prod' facet task_type TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (task_type)(avg_over_time(acme_backend_scheduled_automation_task_scheduled{cluster=\"acme-cluster-prod\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'task_type' not in label_map; used 'task_type'",
+     "assumed gauge 'acme_backend_scheduled_automation_task_scheduled'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (task_type)(rate(acme_backend_scheduled_automation_task_scheduled_total{cluster=\"acme-cluster-test\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p12-w009",
+   "title": "(untitled)",
+   "visualization": "viz.markdown",
+   "grafana_type": "text",
+   "nrql": [],
+   "before": {
+    "confidence": "exact",
+    "queries": [],
+    "notes": []
+   },
+   "expected": []
+  },
+  {
+   "id": "p12-w010",
+   "title": "Automated Tasks Scheduled",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "FROM Metric select sum(acme_backend.scheduled.automation.task.scheduled) WHERE clusterName='acme-cluster-prod' AND task_type = 'unpublish_price' TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(avg_over_time(acme_backend_scheduled_automation_task_scheduled{cluster=\"acme-cluster-prod\",task_type=\"unpublish_price\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'task_type' not in label_map; used 'task_type' \u2014 verify the label exists in your stack",
+     "assumed gauge 'acme_backend_scheduled_automation_task_scheduled'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(rate(acme_backend_scheduled_automation_task_scheduled_total{cluster=\"acme-cluster-test\",task_type=\"unpublish_price\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p12-w011",
+   "title": "Automated Tasks Executed",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "FROM Metric select sum(acme_backend.scheduled.automation.task.executed) WHERE clusterName='acme-cluster-prod' AND task_type = 'unpublish_price' TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(avg_over_time(acme_backend_scheduled_automation_task_executed{cluster=\"acme-cluster-prod\",task_type=\"unpublish_price\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'task_type' not in label_map; used 'task_type' \u2014 verify the label exists in your stack",
+     "assumed gauge 'acme_backend_scheduled_automation_task_executed'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(rate(acme_backend_scheduled_automation_task_executed_total{cluster=\"acme-cluster-test\",task_type=\"unpublish_price\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p12-w012",
+   "title": "Queue Size",
+   "visualization": "viz.area",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "FROM Metric select latest(acme_backend.january_transition.queue_size_by_priority) WHERE clusterName='acme-cluster-prod' AND queue = 'unpublish_price' FACET priority_bucket TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "max by (priority_bucket)(last_over_time(acme_backend_january_transition_queue_size_by_priority{cluster=\"acme-cluster-prod\",queue=\"unpublish_price\"}[$__interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'priority_bucket' not in label_map; used 'priority_bucket'",
+     "assumed gauge 'acme_backend_january_transition_queue_size_by_priority'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "max by (priority_bucket)(last_over_time(acme_backend_january_transition_queue_size_by_priority{cluster=\"acme-cluster-test\",queue=\"unpublish_price\"}[$__interval]))"
+    }
+   ]
+  },
+  {
+   "id": "p12-w013",
+   "title": "(untitled)",
+   "visualization": "viz.markdown",
+   "grafana_type": "text",
+   "nrql": [],
+   "before": {
+    "confidence": "exact",
+    "queries": [],
+    "notes": []
+   },
+   "expected": []
+  },
+  {
+   "id": "p12-w014",
+   "title": "Automated Tasks Scheduled",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "FROM Metric select sum(acme_backend.scheduled.automation.task.scheduled) WHERE clusterName='acme-cluster-prod' AND task_type = 'restart_discovery' TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(avg_over_time(acme_backend_scheduled_automation_task_scheduled{cluster=\"acme-cluster-prod\",task_type=\"restart_discovery\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'task_type' not in label_map; used 'task_type' \u2014 verify the label exists in your stack",
+     "assumed gauge 'acme_backend_scheduled_automation_task_scheduled'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(rate(acme_backend_scheduled_automation_task_scheduled_total{cluster=\"acme-cluster-test\",task_type=\"restart_discovery\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p12-w015",
+   "title": "Automated Tasks Executed",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "FROM Metric select sum(acme_backend.scheduled.automation.task.executed) WHERE clusterName='acme-cluster-prod' AND task_type = 'restart_discovery' TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(avg_over_time(acme_backend_scheduled_automation_task_executed{cluster=\"acme-cluster-prod\",task_type=\"restart_discovery\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'task_type' not in label_map; used 'task_type' \u2014 verify the label exists in your stack",
+     "assumed gauge 'acme_backend_scheduled_automation_task_executed'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(rate(acme_backend_scheduled_automation_task_executed_total{cluster=\"acme-cluster-test\",task_type=\"restart_discovery\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p12-w016",
+   "title": "Queue Size",
+   "visualization": "viz.area",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "FROM Metric select latest(acme_backend.january_transition.queue_size_by_priority) WHERE clusterName='acme-cluster-prod' AND queue = 'restart_discovery' FACET priority_bucket TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "max by (priority_bucket)(last_over_time(acme_backend_january_transition_queue_size_by_priority{cluster=\"acme-cluster-prod\",queue=\"restart_discovery\"}[$__interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'priority_bucket' not in label_map; used 'priority_bucket'",
+     "assumed gauge 'acme_backend_january_transition_queue_size_by_priority'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "max by (priority_bucket)(last_over_time(acme_backend_january_transition_queue_size_by_priority{cluster=\"acme-cluster-test\",queue=\"restart_discovery\"}[$__interval]))"
+    }
+   ]
+  }
+ ]
+}

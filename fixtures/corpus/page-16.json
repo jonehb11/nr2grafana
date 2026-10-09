@@ -1,0 +1,327 @@
+{
+ "schema": 1,
+ "page": "Service Costs",
+ "widgets": [
+  {
+   "id": "p16-w001",
+   "title": "Memory Reservation (Acme Backend)",
+   "visualization": "viz.billboard",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT 24 * 7 * max(opencost_namespace_ram_hourly_cost) FROM Metric WHERE instrumentation.source IN ('acme-cluster-staging-us-east-1', 'acme-cluster-test-us-east-1', 'acme-cluster-test-us-east-2', 'acme-cluster-dev-us-east-1', 'acme-cluster-prod-us-east-1', 'acme-cluster2-dev-us-east-1') AND namespace IN ('acme-backend') facet instrumentation.source compare with 1 week ago limit MAX"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "SELECT of raw attributes (no aggregation) has no metrics equivalent"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "(max by (instrumentation_source)(max_over_time(opencost_namespace_ram_hourly_cost{instrumentation_source=~\"acme-cluster-staging-us-east-1|acme-cluster-test-us-east-1|acme-cluster-test-us-east-2|acme-cluster-dev-us-east-1|acme-cluster-test-us-east-1|acme-cluster2-dev-us-east-1\",namespace=~\"acme-backend\"}[$__range]))) * 168"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "(max by (instrumentation_source)(max_over_time(opencost_namespace_ram_hourly_cost{instrumentation_source=~\"acme-cluster-staging-us-east-1|acme-cluster-test-us-east-1|acme-cluster-test-us-east-2|acme-cluster-dev-us-east-1|acme-cluster-test-us-east-1|acme-cluster2-dev-us-east-1\",namespace=~\"acme-backend\"}[$__range] offset 1w))) * 168"
+    }
+   ]
+  },
+  {
+   "id": "p16-w002",
+   "title": "CPU Reservation Costs (Acme Backend)",
+   "visualization": "viz.billboard",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT 24 * 7 * max(opencost_namespace_cpu_hourly_cost) FROM Metric WHERE instrumentation.source IN ('acme-cluster-staging-us-east-1', 'acme-cluster-test-us-east-1', 'acme-cluster-test-us-east-2', 'acme-cluster-dev-us-east-1', 'acme-cluster-prod-us-east-1', 'acme-cluster2-dev-us-east-1') AND namespace IN ('acme-backend') facet instrumentation.source limit MAX compare with 1 week ago"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "SELECT of raw attributes (no aggregation) has no metrics equivalent"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "(max by (instrumentation_source)(max_over_time(opencost_namespace_cpu_hourly_cost{instrumentation_source=~\"acme-cluster-staging-us-east-1|acme-cluster-test-us-east-1|acme-cluster-test-us-east-2|acme-cluster-dev-us-east-1|acme-cluster-test-us-east-1|acme-cluster2-dev-us-east-1\",namespace=~\"acme-backend\"}[$__range]))) * 168"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "(max by (instrumentation_source)(max_over_time(opencost_namespace_cpu_hourly_cost{instrumentation_source=~\"acme-cluster-staging-us-east-1|acme-cluster-test-us-east-1|acme-cluster-test-us-east-2|acme-cluster-dev-us-east-1|acme-cluster-test-us-east-1|acme-cluster2-dev-us-east-1\",namespace=~\"acme-backend\"}[$__range] offset 1w))) * 168"
+    }
+   ]
+  },
+  {
+   "id": "p16-w003",
+   "title": "NR Log Costs (Acme Backend)",
+   "visualization": "viz.billboard",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT 24 * 0.5 * bytecountestimate() / 10e8 FROM `Log`, `LogExtendedRecord` WHERE instrumentation.provider != 'kentik' AND namespace_name in ('acme-backend') AND cluster_name IN ('acme-cluster-staging-us-east-1', 'acme-cluster-test-us-east-1', 'acme-cluster-test-us-east-2', 'acme-cluster-dev-us-east-1', 'acme-cluster-prod-us-east-1', 'acme-cluster2-dev-us-east-1', 'acme-cluster-prod', 'acme-cluster3', 'acme-cluster-data', 'acme-cluster5-test-us-east-1', 'acme-cluster2-dev', 'acme-cluster-staging') FACET cluster_name LIMIT MAX compare with 1 week ago"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "NRQL could not be parsed: unexpected character '1' near: ...() / 10e8 FROM `Log`, `LogExte"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p16-w004",
+   "title": "NR Metric Costs (Acme Backend)",
+   "visualization": "viz.billboard",
+   "grafana_type": "text",
+   "nrql": [
+    "\nSELECT 24 * 0.5 * bytecountestimate() / 10e8 FROM Metric WHERE service = 'acme_backend' FACET capture(metricName, r'(?P<service>[^.]+)\\..*') LIMIT MAX compare with 1 week ago"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "NRQL could not be parsed: unexpected character '1' near: ...() / 10e8 FROM Metric WHERE se"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p16-w005",
+   "title": "Redis Costs (Acme Backend)",
+   "visualization": "viz.billboard",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT max(provider.actualAmount) FROM FinanceSample WHERE provider = 'BillingBudget' AND providerAccountName IN ('acme-account-3-dev', 'acme-account-3-prod', 'acme-account-3-staging', 'acme-account-2', 'acme-account-1', 'acme-account-3-pharmacy', 'acme-account-3-ops') AND provider.budgetName != 'acme-name-7' AND provider.budgetName LIKE '%-acme-name-10' AND capture(provider.budgetName, r'(?P<repo>.+)-acme-name-10') IN ('acme-backend') FACET providerAccountName LIMIT MAX compare with 1 week ago"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "no metric mapping for FROM FinanceSample"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p16-w006",
+   "title": "RDS Costs (Acme Backend)",
+   "visualization": "viz.billboard",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT max(provider.actualAmount) as 'RDS Costs' FROM FinanceSample WHERE provider = 'BillingBudget' AND providerAccountName IN ('acme-account-3-dev', 'acme-account-3-prod', 'acme-account-3-staging', 'acme-account-2', 'acme-account-1', 'acme-account-3-pharmacy', 'acme-account-3-ops') AND provider.budgetName != 'acme-name-6' AND provider.budgetName LIKE '%-acme-name-9' AND capture(provider.budgetName, r'(?P<repo>.+)-acme-name-9') IN ('acme-backend') FACET providerAccountName LIMIT MAX compare with 1 week ago"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "no metric mapping for FROM FinanceSample"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p16-w007",
+   "title": "Memory Reservation (PA Workflow)",
+   "visualization": "viz.billboard",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT 24 * 7 * max(opencost_namespace_ram_hourly_cost) FROM Metric WHERE instrumentation.source IN ('acme-cluster-staging-us-east-1', 'acme-cluster-test-us-east-1', 'acme-cluster-test-us-east-2', 'acme-cluster-dev-us-east-1', 'acme-cluster-prod-us-east-1', 'acme-cluster2-dev-us-east-1') AND namespace IN ('acme-name-2') facet instrumentation.source compare with 1 week ago limit MAX"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "SELECT of raw attributes (no aggregation) has no metrics equivalent"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "(max by (instrumentation_source)(max_over_time(opencost_namespace_ram_hourly_cost{instrumentation_source=~\"acme-cluster-staging-us-east-1|acme-cluster-test-us-east-1|acme-cluster-test-us-east-2|acme-cluster-dev-us-east-1|acme-cluster-test-us-east-1|acme-cluster2-dev-us-east-1\",namespace=~\"acme-name-2\"}[$__range]))) * 168"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "(max by (instrumentation_source)(max_over_time(opencost_namespace_ram_hourly_cost{instrumentation_source=~\"acme-cluster-staging-us-east-1|acme-cluster-test-us-east-1|acme-cluster-test-us-east-2|acme-cluster-dev-us-east-1|acme-cluster-test-us-east-1|acme-cluster2-dev-us-east-1\",namespace=~\"acme-name-2\"}[$__range] offset 1w))) * 168"
+    }
+   ]
+  },
+  {
+   "id": "p16-w008",
+   "title": "CPU Reservation Costs (PA Workflow)",
+   "visualization": "viz.billboard",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT 24 * 7 * max(opencost_namespace_cpu_hourly_cost) FROM Metric WHERE instrumentation.source IN ('acme-cluster-staging-us-east-1', 'acme-cluster-test-us-east-1', 'acme-cluster-test-us-east-2', 'acme-cluster-dev-us-east-1', 'acme-cluster-prod-us-east-1', 'acme-cluster2-dev-us-east-1') AND namespace IN ('acme-name-2') facet instrumentation.source limit MAX compare with 1 week ago"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "SELECT of raw attributes (no aggregation) has no metrics equivalent"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "(max by (instrumentation_source)(max_over_time(opencost_namespace_cpu_hourly_cost{instrumentation_source=~\"acme-cluster-staging-us-east-1|acme-cluster-test-us-east-1|acme-cluster-test-us-east-2|acme-cluster-dev-us-east-1|acme-cluster-test-us-east-1|acme-cluster2-dev-us-east-1\",namespace=~\"acme-name-2\"}[$__range]))) * 168"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "(max by (instrumentation_source)(max_over_time(opencost_namespace_cpu_hourly_cost{instrumentation_source=~\"acme-cluster-staging-us-east-1|acme-cluster-test-us-east-1|acme-cluster-test-us-east-2|acme-cluster-dev-us-east-1|acme-cluster-test-us-east-1|acme-cluster2-dev-us-east-1\",namespace=~\"acme-name-2\"}[$__range] offset 1w))) * 168"
+    }
+   ]
+  },
+  {
+   "id": "p16-w009",
+   "title": "NR Log Costs (PA Workflow)",
+   "visualization": "viz.billboard",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT 24 * 0.5 * bytecountestimate() / 10e8 FROM `Log`, `LogExtendedRecord` WHERE instrumentation.provider != 'kentik' AND namespace_name in ('acme-name-2') AND cluster_name IN ('acme-cluster-staging-us-east-1', 'acme-cluster-test-us-east-1', 'acme-cluster-test-us-east-2', 'acme-cluster-dev-us-east-1', 'acme-cluster-prod-us-east-1', 'acme-cluster2-dev-us-east-1', 'acme-cluster-prod', 'acme-cluster3', 'acme-cluster-data', 'acme-cluster5-test-us-east-1', 'acme-cluster2-dev', 'acme-cluster-staging') FACET cluster_name LIMIT MAX compare with 1 week ago"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "NRQL could not be parsed: unexpected character '1' near: ...() / 10e8 FROM `Log`, `LogExte"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p16-w010",
+   "title": "NR Metric Costs (PA Workflow)",
+   "visualization": "viz.billboard",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT 24 * 0.5 * bytecountestimate() / 10e8 FROM Metric WHERE service = 'prior_authorization_workflow' FACET capture(metricName, r'(?P<service>[^.]+)\\..*') LIMIT MAX compare with 1 week ago"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "NRQL could not be parsed: unexpected character '1' near: ...() / 10e8 FROM Metric WHERE se"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p16-w011",
+   "title": "Redis Costs (PA Workflow)",
+   "visualization": "viz.billboard",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT max(provider.actualAmount) FROM FinanceSample WHERE provider = 'BillingBudget' AND providerAccountName IN ('acme-account-3-dev', 'acme-account-3-prod', 'acme-account-3-staging', 'acme-account-2', 'acme-account-1', 'acme-account-3-pharmacy', 'acme-account-3-ops') AND provider.budgetName != 'acme-name-7' AND provider.budgetName LIKE '%-acme-name-10' AND capture(provider.budgetName, r'(?P<repo>.+)-acme-name-10') IN ('acme-name-2') FACET providerAccountName LIMIT MAX compare with 1 week ago"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "no metric mapping for FROM FinanceSample"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p16-w012",
+   "title": "RDS Costs (PA Workflow)",
+   "visualization": "viz.billboard",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT max(provider.actualAmount) as 'RDS Costs' FROM FinanceSample WHERE provider = 'BillingBudget' AND providerAccountName IN ('acme-account-3-dev', 'acme-account-3-prod', 'acme-account-3-staging', 'acme-account-2', 'acme-account-1', 'acme-account-3-pharmacy', 'acme-account-3-ops') AND provider.budgetName != 'acme-name-6' AND provider.budgetName LIKE '%-acme-name-9' AND capture(provider.budgetName, r'(?P<repo>.+)-acme-name-9') IN ('acme-name-2') FACET providerAccountName LIMIT MAX compare with 1 week ago"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "no metric mapping for FROM FinanceSample"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p16-w013",
+   "title": "Memory Reservation (Acme Frontend)",
+   "visualization": "viz.billboard",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT 24 * 7 * max(opencost_namespace_ram_hourly_cost) FROM Metric WHERE instrumentation.source IN ('acme-cluster-staging-us-east-1', 'acme-cluster-test-us-east-1', 'acme-cluster-test-us-east-2', 'acme-cluster-dev-us-east-1', 'acme-cluster-prod-us-east-1', 'acme-cluster2-dev-us-east-1') AND namespace IN ('acme-frontend') facet instrumentation.source compare with 1 week ago limit MAX"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "SELECT of raw attributes (no aggregation) has no metrics equivalent"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "(max by (instrumentation_source)(max_over_time(opencost_namespace_ram_hourly_cost{instrumentation_source=~\"acme-cluster-staging-us-east-1|acme-cluster-test-us-east-1|acme-cluster-test-us-east-2|acme-cluster-dev-us-east-1|acme-cluster-test-us-east-1|acme-cluster2-dev-us-east-1\",namespace=~\"acme-frontend\"}[$__range]))) * 168"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "(max by (instrumentation_source)(max_over_time(opencost_namespace_ram_hourly_cost{instrumentation_source=~\"acme-cluster-staging-us-east-1|acme-cluster-test-us-east-1|acme-cluster-test-us-east-2|acme-cluster-dev-us-east-1|acme-cluster-test-us-east-1|acme-cluster2-dev-us-east-1\",namespace=~\"acme-frontend\"}[$__range] offset 1w))) * 168"
+    }
+   ]
+  },
+  {
+   "id": "p16-w014",
+   "title": "CPU Reservation Costs (Acme Frontend)",
+   "visualization": "viz.billboard",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT 24 * 7 * max(opencost_namespace_cpu_hourly_cost) FROM Metric WHERE instrumentation.source IN ('acme-cluster-staging-us-east-1', 'acme-cluster-test-us-east-1', 'acme-cluster-test-us-east-2', 'acme-cluster-dev-us-east-1', 'acme-cluster-prod-us-east-1', 'acme-cluster2-dev-us-east-1') AND namespace IN ('acme-frontend') facet instrumentation.source limit MAX compare with 1 week ago"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "SELECT of raw attributes (no aggregation) has no metrics equivalent"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "(max by (instrumentation_source)(max_over_time(opencost_namespace_cpu_hourly_cost{instrumentation_source=~\"acme-cluster-staging-us-east-1|acme-cluster-test-us-east-1|acme-cluster-test-us-east-2|acme-cluster-dev-us-east-1|acme-cluster-test-us-east-1|acme-cluster2-dev-us-east-1\",namespace=~\"acme-frontend\"}[$__range]))) * 168"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "(max by (instrumentation_source)(max_over_time(opencost_namespace_cpu_hourly_cost{instrumentation_source=~\"acme-cluster-staging-us-east-1|acme-cluster-test-us-east-1|acme-cluster-test-us-east-2|acme-cluster-dev-us-east-1|acme-cluster-test-us-east-1|acme-cluster2-dev-us-east-1\",namespace=~\"acme-frontend\"}[$__range] offset 1w))) * 168"
+    }
+   ]
+  },
+  {
+   "id": "p16-w015",
+   "title": "NR Log Costs (Acme Frontend)",
+   "visualization": "viz.billboard",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT 24 * 0.5 * bytecountestimate() / 10e8 FROM `Log`, `LogExtendedRecord` WHERE instrumentation.provider != 'kentik' AND namespace_name in ('acme-frontend') AND cluster_name IN ('acme-cluster-staging-us-east-1', 'acme-cluster-test-us-east-1', 'acme-cluster-test-us-east-2', 'acme-cluster-dev-us-east-1', 'acme-cluster-prod-us-east-1', 'acme-cluster2-dev-us-east-1', 'acme-cluster-prod', 'acme-cluster3', 'acme-cluster-data', 'acme-cluster5-test-us-east-1', 'acme-cluster2-dev', 'acme-cluster-staging') FACET cluster_name LIMIT MAX compare with 1 week ago"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "NRQL could not be parsed: unexpected character '1' near: ...() / 10e8 FROM `Log`, `LogExte"
+    ]
+   },
+   "expected": []
+  }
+ ]
+}

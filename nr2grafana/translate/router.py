@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from ..nrql.parser import Func, NrqlParseError, Star, parse_nrql
 from .common import (
     APPROXIMATE, NEEDS_REVIEW, UNTRANSLATABLE, Translation, Untranslatable,
     route_event_type,
 )
+from .cloudwatch import is_cloudwatch_query, translate_to_cloudwatch
 from .logs import translate_to_logql
 from .metrics import (
     nr_duration_to_grafana_range, translate_to_promql,
@@ -52,6 +53,23 @@ def _timing_notes(q, t) -> None:
             "value — use panel sorting for other orderings")
 
 
+def closest_equivalent_for(nrql_text: str,
+                           cfg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """SEAM-REPORT: the nearest LGTM-stack starting point for a query the
+    translators rejected, so every untranslatable carries one even
+    before the builder runs. Never raises."""
+    try:
+        from ..grafana.builder import _closest_equivalent
+        widget = _StubWidget()
+        return _closest_equivalent(widget, [nrql_text], [], cfg)
+    except Exception:  # pragma: no cover - defensive
+        return None
+
+
+class _StubWidget:
+    viz_id = ""
+
+
 def translate_query(nrql_text: str, cfg: Dict[str, Any]) -> Translation:
     """Translate one NRQL string. Never raises: untranslatable/broken
     queries come back as Translation(confidence='untranslatable')."""
@@ -60,6 +78,7 @@ def translate_query(nrql_text: str, cfg: Dict[str, Any]) -> Translation:
     except NrqlParseError as e:
         t = Translation(confidence=UNTRANSLATABLE)
         t.notes.append("NRQL could not be parsed: %s" % e)
+        t.closest_equivalent = closest_equivalent_for(nrql_text, cfg)
         return t
 
     family = route_event_type(q.from_)
@@ -72,11 +91,18 @@ def translate_query(nrql_text: str, cfg: Dict[str, Any]) -> Translation:
                 t = translate_to_promql(q, cfg)  # span metrics in Mimir
             else:
                 t = translate_to_traceql(q, cfg)
+        elif is_cloudwatch_query(q):
+            # FROM Metric aws.* (CloudWatch Metric Streams) and the AWS
+            # polling-integration samples never land in Mimir: emit a
+            # CloudWatch datasource target instead of a dead PromQL one.
+            t = translate_to_cloudwatch(q, cfg)
         else:
             t = translate_to_promql(q, cfg)
     except Untranslatable as e:
         t = Translation(confidence=UNTRANSLATABLE)
         t.notes.append(str(e))
+        t.closest_equivalent = getattr(e, "closest_equivalent", None) \
+            or closest_equivalent_for(nrql_text, cfg)
         return t
 
     if q.extras:

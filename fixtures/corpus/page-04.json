@@ -1,0 +1,1090 @@
+{
+ "schema": 1,
+ "page": "Post-Run Claim",
+ "widgets": [
+  {
+   "id": "p04-w001",
+   "title": "(untitled)",
+   "visualization": "viz.markdown",
+   "grafana_type": "text",
+   "nrql": [],
+   "before": {
+    "confidence": "exact",
+    "queries": [],
+    "notes": []
+   },
+   "expected": []
+  },
+  {
+   "id": "p04-w002",
+   "title": "PA Reject",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT sum(acme_backend.hub_workflow_service.camunda_integration_service.post_run_claim_trigger_result) AS 'PA Reject' FROM Metric WHERE clusterName = 'acme-cluster-prod' AND post_run_claim_trigger_reason = 'pa_reject'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum(avg_over_time(acme_backend_hub_workflow_service_camunda_integration_service_post_run_claim_trigger_result{cluster=\"acme-cluster-prod\",post_run_claim_trigger_reason=\"pa_reject\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "attribute 'post_run_claim_trigger_reason' not in label_map; used 'post_run_claim_trigger_reason' \u2014 verify the label exists in your stack",
+     "assumed gauge 'acme_backend_hub_workflow_service_camunda_integration_service_post_run_claim_trigger_result'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(increase(acme_backend_hub_workflow_service_camunda_integration_service_post_run_claim_trigger_result_total{cluster=\"acme-cluster-test\",post_run_claim_trigger_reason=\"pa_reject\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p04-w003",
+   "title": "PA Reject",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT sum(acme_backend.hub_workflow_service.camunda_integration_service.post_run_claim_trigger_result) FROM Metric WHERE clusterName = 'acme-cluster-prod' AND post_run_claim_trigger_reason = 'pa_reject' FACET program"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum by (program)(avg_over_time(acme_backend_hub_workflow_service_camunda_integration_service_post_run_claim_trigger_result{cluster=\"acme-cluster-prod\",post_run_claim_trigger_reason=\"pa_reject\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "attribute 'post_run_claim_trigger_reason' not in label_map; used 'post_run_claim_trigger_reason' \u2014 verify the label exists in your stack",
+     "FACET attribute 'program' not in label_map; used 'program'",
+     "assumed gauge 'acme_backend_hub_workflow_service_camunda_integration_service_post_run_claim_trigger_result'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (program)(increase(acme_backend_hub_workflow_service_camunda_integration_service_post_run_claim_trigger_result_total{cluster=\"acme-cluster-test\",post_run_claim_trigger_reason=\"pa_reject\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p04-w004",
+   "title": "Expired Insurance",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT sum(acme_backend.hub_workflow_service.camunda_integration_service.post_run_claim_trigger_result) AS 'Expired Insurance' FROM Metric WHERE clusterName = 'acme-cluster-prod' AND post_run_claim_trigger_reason = 'insurance_expired'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum(avg_over_time(acme_backend_hub_workflow_service_camunda_integration_service_post_run_claim_trigger_result{cluster=\"acme-cluster-prod\",post_run_claim_trigger_reason=\"insurance_expired\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "attribute 'post_run_claim_trigger_reason' not in label_map; used 'post_run_claim_trigger_reason' \u2014 verify the label exists in your stack",
+     "assumed gauge 'acme_backend_hub_workflow_service_camunda_integration_service_post_run_claim_trigger_result'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(increase(acme_backend_hub_workflow_service_camunda_integration_service_post_run_claim_trigger_result_total{cluster=\"acme-cluster-test\",post_run_claim_trigger_reason=\"insurance_expired\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p04-w005",
+   "title": "IRA Max",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT sum(acme_backend.hub_workflow_service.camunda_integration_service.post_run_claim_trigger_result) AS 'IRA Max' FROM Metric WHERE clusterName = 'acme-cluster-prod' AND post_run_claim_trigger_reason = 'participating_in_mppp'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum(avg_over_time(acme_backend_hub_workflow_service_camunda_integration_service_post_run_claim_trigger_result{cluster=\"acme-cluster-prod\",post_run_claim_trigger_reason=\"participating_in_mppp\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "attribute 'post_run_claim_trigger_reason' not in label_map; used 'post_run_claim_trigger_reason' \u2014 verify the label exists in your stack",
+     "assumed gauge 'acme_backend_hub_workflow_service_camunda_integration_service_post_run_claim_trigger_result'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(increase(acme_backend_hub_workflow_service_camunda_integration_service_post_run_claim_trigger_result_total{cluster=\"acme-cluster-test\",post_run_claim_trigger_reason=\"participating_in_mppp\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p04-w006",
+   "title": "Post Run Claim",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.hub_workflow_service.camunda_integration_service.post_run_claim_trigger_result) FROM Metric WHERE clusterName = 'acme-cluster-prod' WHERE post_run_claim_trigger_reason != '' and post_run_claim_trigger_reason != 'None' FACET post_run_claim_trigger_reason, post_run_claim_next_task TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (post_run_claim_trigger_reason, post_run_claim_next_task)(avg_over_time(acme_backend_hub_workflow_service_camunda_integration_service_post_run_claim_trigger_result{post_run_claim_trigger_reason!=\"\",post_run_claim_trigger_reason!=\"None\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'post_run_claim_trigger_reason' not in label_map; used 'post_run_claim_trigger_reason' \u2014 verify the label exists in your stack",
+     "FACET attribute 'post_run_claim_trigger_reason' not in label_map; used 'post_run_claim_trigger_reason'",
+     "FACET attribute 'post_run_claim_next_task' not in label_map; used 'post_run_claim_next_task'",
+     "assumed gauge 'acme_backend_hub_workflow_service_camunda_integration_service_post_run_claim_trigger_result'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (post_run_claim_trigger_reason, post_run_claim_next_task)(rate(acme_backend_hub_workflow_service_camunda_integration_service_post_run_claim_trigger_result_total{post_run_claim_trigger_reason!=\"\",post_run_claim_trigger_reason!=\"None\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p04-w007",
+   "title": "Post Run Claim",
+   "visualization": "logger.log-table-widget",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT `fill_id`,`post_run_claim_trigger_reason`,`post_run_claim_next_task`, `program` FROM Log WHERE `cluster_name` = 'acme-cluster-prod' AND allColumnSearch('Processing post run claim trigger', insensitive: true) AND post_run_claim_trigger_reason != '' AND post_run_claim_trigger_reason != 'None'"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "NRQL could not be parsed: expected comparison operator, got 'AND' near: ...rue) AND post_run_claim_trigge"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p04-w008",
+   "title": "Post Run Claim - PA Reject",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.hub_workflow_service.camunda_integration_service.post_run_claim_trigger_result) FROM Metric WHERE clusterName = 'acme-cluster-prod' AND post_run_claim_trigger_reason = 'pa_reject' FACET program, post_run_claim_next_task TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (program, post_run_claim_next_task)(avg_over_time(acme_backend_hub_workflow_service_camunda_integration_service_post_run_claim_trigger_result{cluster=\"acme-cluster-prod\",post_run_claim_trigger_reason=\"pa_reject\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'post_run_claim_trigger_reason' not in label_map; used 'post_run_claim_trigger_reason' \u2014 verify the label exists in your stack",
+     "FACET attribute 'program' not in label_map; used 'program'",
+     "FACET attribute 'post_run_claim_next_task' not in label_map; used 'post_run_claim_next_task'",
+     "assumed gauge 'acme_backend_hub_workflow_service_camunda_integration_service_post_run_claim_trigger_result'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (program, post_run_claim_next_task)(rate(acme_backend_hub_workflow_service_camunda_integration_service_post_run_claim_trigger_result_total{cluster=\"acme-cluster-test\",post_run_claim_trigger_reason=\"pa_reject\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p04-w009",
+   "title": "Post Run Claim - PA Reject",
+   "visualization": "logger.log-table-widget",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT `fill_id`,`post_run_claim_trigger_reason`,`post_run_claim_next_task`, `program` FROM Log WHERE `cluster_name` = 'acme-cluster-prod' AND allColumnSearch('Processing post run claim trigger', insensitive: true) AND `post_run_claim_trigger_reason` = 'pa_reject'"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "NRQL could not be parsed: expected comparison operator, got 'AND' near: ...rue) AND `post_run_claim_trigg"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p04-w010",
+   "title": "Post Run Claim - Expired Insurance",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.hub_workflow_service.camunda_integration_service.post_run_claim_trigger_result) FROM Metric WHERE clusterName = 'acme-cluster-prod' AND post_run_claim_trigger_reason = 'insurance_expired' FACET post_run_claim_next_task TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (post_run_claim_next_task)(avg_over_time(acme_backend_hub_workflow_service_camunda_integration_service_post_run_claim_trigger_result{cluster=\"acme-cluster-prod\",post_run_claim_trigger_reason=\"insurance_expired\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'post_run_claim_trigger_reason' not in label_map; used 'post_run_claim_trigger_reason' \u2014 verify the label exists in your stack",
+     "FACET attribute 'post_run_claim_next_task' not in label_map; used 'post_run_claim_next_task'",
+     "assumed gauge 'acme_backend_hub_workflow_service_camunda_integration_service_post_run_claim_trigger_result'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (post_run_claim_next_task)(rate(acme_backend_hub_workflow_service_camunda_integration_service_post_run_claim_trigger_result_total{cluster=\"acme-cluster-test\",post_run_claim_trigger_reason=\"insurance_expired\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p04-w011",
+   "title": "Post Run Claim - Expired Insurance",
+   "visualization": "logger.log-table-widget",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT `fill_id`,`post_run_claim_trigger_reason`,`post_run_claim_next_task`, `program` FROM Log WHERE `cluster_name` = 'acme-cluster-prod' AND allColumnSearch('Processing post run claim trigger', insensitive: true) AND `post_run_claim_trigger_reason` = 'insurance_expired'"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "NRQL could not be parsed: expected comparison operator, got 'AND' near: ...rue) AND `post_run_claim_trigg"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p04-w012",
+   "title": "Post Run Claim - IRA Max",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.hub_workflow_service.camunda_integration_service.post_run_claim_trigger_result) FROM Metric WHERE clusterName = 'acme-cluster-prod' AND post_run_claim_trigger_reason = 'participating_in_mppp' FACET post_run_claim_next_task TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (post_run_claim_next_task)(avg_over_time(acme_backend_hub_workflow_service_camunda_integration_service_post_run_claim_trigger_result{cluster=\"acme-cluster-prod\",post_run_claim_trigger_reason=\"participating_in_mppp\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'post_run_claim_trigger_reason' not in label_map; used 'post_run_claim_trigger_reason' \u2014 verify the label exists in your stack",
+     "FACET attribute 'post_run_claim_next_task' not in label_map; used 'post_run_claim_next_task'",
+     "assumed gauge 'acme_backend_hub_workflow_service_camunda_integration_service_post_run_claim_trigger_result'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (post_run_claim_next_task)(rate(acme_backend_hub_workflow_service_camunda_integration_service_post_run_claim_trigger_result_total{cluster=\"acme-cluster-test\",post_run_claim_trigger_reason=\"participating_in_mppp\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p04-w013",
+   "title": "Post Run Claim - IRA Max",
+   "visualization": "logger.log-table-widget",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT `fill_id`,`post_run_claim_trigger_reason`,`post_run_claim_next_task`, `program` FROM Log WHERE `cluster_name` = 'acme-cluster-prod' AND allColumnSearch('Processing post run claim trigger', insensitive: true) AND `post_run_claim_trigger_reason` = 'participating_in_mppp'"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "NRQL could not be parsed: expected comparison operator, got 'AND' near: ...rue) AND `post_run_claim_trigg"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p04-w014",
+   "title": "Post Run Claim - Out of Network",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.hub_workflow_service.camunda_integration_service.post_run_claim_trigger_result) FROM Metric WHERE clusterName = 'acme-cluster-prod' AND post_run_claim_trigger_reason = 'out_of_network' FACET post_run_claim_next_task TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (post_run_claim_next_task)(avg_over_time(acme_backend_hub_workflow_service_camunda_integration_service_post_run_claim_trigger_result{cluster=\"acme-cluster-prod\",post_run_claim_trigger_reason=\"out_of_network\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'post_run_claim_trigger_reason' not in label_map; used 'post_run_claim_trigger_reason' \u2014 verify the label exists in your stack",
+     "FACET attribute 'post_run_claim_next_task' not in label_map; used 'post_run_claim_next_task'",
+     "assumed gauge 'acme_backend_hub_workflow_service_camunda_integration_service_post_run_claim_trigger_result'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (post_run_claim_next_task)(rate(acme_backend_hub_workflow_service_camunda_integration_service_post_run_claim_trigger_result_total{cluster=\"acme-cluster-test\",post_run_claim_trigger_reason=\"out_of_network\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p04-w015",
+   "title": "Post Run Claim - Out of Network",
+   "visualization": "logger.log-table-widget",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT `fill_id`,`post_run_claim_trigger_reason`,`post_run_claim_next_task`, `program` FROM Log WHERE `cluster_name` = 'acme-cluster-prod' AND allColumnSearch('Processing post run claim trigger', insensitive: true) AND `post_run_claim_trigger_reason` = 'out_of_network'"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "NRQL could not be parsed: expected comparison operator, got 'AND' near: ...rue) AND `post_run_claim_trigg"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p04-w016",
+   "title": "Claim Rejection Codes",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.switch.claim.reject_code) FROM Metric TIMESERIES WHERE clusterName = 'acme-cluster-prod' FACET code LIMIT Max"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (code)(avg_over_time(acme_backend_switch_claim_reject_code{cluster=\"acme-cluster-prod\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'code' not in label_map; used 'code'",
+     "assumed gauge 'acme_backend_switch_claim_reject_code'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (code)(rate(acme_backend_switch_claim_reject_code_total{cluster=\"acme-cluster-test\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p04-w017",
+   "title": "Claim Rejection Codes (External)",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.switch.save.external.claim.reject_code) FROM Metric TIMESERIES WHERE clusterName = 'acme-cluster-prod' FACET code LIMIT Max"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (code)(avg_over_time(acme_backend_switch_save_external_claim_reject_code{cluster=\"acme-cluster-prod\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'code' not in label_map; used 'code'",
+     "assumed gauge 'acme_backend_switch_save_external_claim_reject_code'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (code)(rate(acme_backend_switch_save_external_claim_reject_code_total{cluster=\"acme-cluster-test\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p04-w018",
+   "title": "Claim Approval Codes",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.switch.claim.approval_code) FROM Metric TIMESERIES WHERE clusterName = 'acme-cluster-prod' FACET code LIMIT Max"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (code)(avg_over_time(acme_backend_switch_claim_approval_code{cluster=\"acme-cluster-prod\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'code' not in label_map; used 'code'",
+     "assumed gauge 'acme_backend_switch_claim_approval_code'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (code)(rate(acme_backend_switch_claim_approval_code_total{cluster=\"acme-cluster-test\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p04-w019",
+   "title": "Claim Approval Codes (External)",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.switch.save.external.claim.approval_code) FROM Metric TIMESERIES WHERE clusterName = 'acme-cluster-prod' FACET code LIMIT Max"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (code)(avg_over_time(acme_backend_switch_save_external_claim_approval_code{cluster=\"acme-cluster-prod\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'code' not in label_map; used 'code'",
+     "assumed gauge 'acme_backend_switch_save_external_claim_approval_code'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (code)(rate(acme_backend_switch_save_external_claim_approval_code_total{cluster=\"acme-cluster-test\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p04-w020",
+   "title": "(untitled)",
+   "visualization": "viz.markdown",
+   "grafana_type": "text",
+   "nrql": [],
+   "before": {
+    "confidence": "exact",
+    "queries": [],
+    "notes": []
+   },
+   "expected": []
+  },
+  {
+   "id": "p04-w021",
+   "title": "(untitled)",
+   "visualization": "viz.markdown",
+   "grafana_type": "text",
+   "nrql": [],
+   "before": {
+    "confidence": "exact",
+    "queries": [],
+    "notes": []
+   },
+   "expected": []
+  },
+  {
+   "id": "p04-w022",
+   "title": "Price Unpublished Success",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.jan.transition.unpublish_price) FROM Metric TIMESERIES FACET `reason` LIMIT 10 SINCE 1800 seconds ago WHERE clusterName = 'acme-cluster-prod' AND status='success'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "topk(10, sum by (reason)(avg_over_time(acme_backend_jan_transition_unpublish_price{cluster=\"acme-cluster-prod\",status=\"success\"}[$__rate_interval])))"
+     }
+    ],
+    "notes": [
+     "attribute 'status' not in label_map; used 'status' \u2014 verify the label exists in your stack",
+     "FACET attribute 'reason' not in label_map; used 'reason'",
+     "assumed gauge 'acme_backend_jan_transition_unpublish_price'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET LIMIT 10 became topk(10, ...); on range queries topk is evaluated per step so series may flicker",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "topk(10, sum by (reason)(rate(acme_backend_jan_transition_unpublish_price_total{cluster=\"acme-cluster-test\",status=\"success\"}[$__rate_interval])) * $__interval_ms / 1000)"
+    }
+   ]
+  },
+  {
+   "id": "p04-w023",
+   "title": "Price Unpublish Status",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.jan.transition.unpublish_price) FROM Metric where clusterName = 'acme-cluster-prod' TIMESERIES FACET `status` LIMIT 10 SINCE 1800 seconds ago "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "topk(10, sum by (status)(avg_over_time(acme_backend_jan_transition_unpublish_price{cluster=\"acme-cluster-prod\"}[$__rate_interval])))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'status' not in label_map; used 'status'",
+     "assumed gauge 'acme_backend_jan_transition_unpublish_price'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET LIMIT 10 became topk(10, ...); on range queries topk is evaluated per step so series may flicker",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "topk(10, sum by (status)(rate(acme_backend_jan_transition_unpublish_price_total{cluster=\"acme-cluster-test\"}[$__rate_interval])) * $__interval_ms / 1000)"
+    }
+   ]
+  },
+  {
+   "id": "p04-w024",
+   "title": "Unpublished Count",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT sum(acme_backend.jan.transition.unpublish_price) as `Orders Unpublished` FROM Metric where status = 'success' and clusterName = 'acme-cluster-prod' SINCE 1800 seconds ago"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum(avg_over_time(acme_backend_jan_transition_unpublish_price{status=\"success\",cluster=\"acme-cluster-prod\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "attribute 'status' not in label_map; used 'status' \u2014 verify the label exists in your stack",
+     "assumed gauge 'acme_backend_jan_transition_unpublish_price'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(increase(acme_backend_jan_transition_unpublish_price_total{status=\"success\",cluster=\"acme-cluster-test\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p04-w025",
+   "title": "Unpublish Recurring Task",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.recurring_task.success) as `Unpublish Recurring Task: Success` FROM Metric TIMESERIES WHERE task_name='unpublish_prices_for_jan_transition' and clusterName = 'acme-cluster-prod'",
+    "SELECT sum(acme_backend.recurring_task.failure) as `Unpublish Recurring Task: Failure` FROM Metric TIMESERIES WHERE task_name='unpublish_prices_for_jan_transition' and clusterName = 'acme-cluster-prod'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(avg_over_time(acme_backend_recurring_task_success{task_name=\"unpublish_prices_for_jan_transition\",cluster=\"acme-cluster-prod\"}[$__rate_interval]))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(avg_over_time(acme_backend_recurring_task_failure{task_name=\"unpublish_prices_for_jan_transition\",cluster=\"acme-cluster-prod\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'task_name' not in label_map; used 'task_name' \u2014 verify the label exists in your stack",
+     "assumed gauge 'acme_backend_recurring_task_success'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "attribute 'task_name' not in label_map; used 'task_name' \u2014 verify the label exists in your stack",
+     "assumed gauge 'acme_backend_recurring_task_failure'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(rate(acme_backend_recurring_task_success_total{task_name=\"unpublish_prices_for_jan_transition\",cluster=\"acme-cluster-test\"}[$__rate_interval])) * $__interval_ms / 1000"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "sum(rate(acme_backend_recurring_task_failure_total{task_name=\"unpublish_prices_for_jan_transition\",cluster=\"acme-cluster-test\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p04-w026",
+   "title": "Restart Discovery Scheduled",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.jan.transition.restart_discovery.scheduled) AS 'Restart Discovery Scheduled' FROM Metric where clusterName = 'acme-cluster-prod' TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(avg_over_time(acme_backend_jan_transition_restart_discovery_scheduled{cluster=\"acme-cluster-prod\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_jan_transition_restart_discovery_scheduled'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(rate(acme_backend_jan_transition_restart_discovery_scheduled_total{cluster=\"acme-cluster-test\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p04-w027",
+   "title": "Restart Discovery Scheduled Count",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT sum(acme_backend.jan.transition.restart_discovery.scheduled) as `Restart Discovery Scheduled` FROM Metric where clusterName = 'acme-cluster-prod'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum(avg_over_time(acme_backend_jan_transition_restart_discovery_scheduled{cluster=\"acme-cluster-prod\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_jan_transition_restart_discovery_scheduled'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(increase(acme_backend_jan_transition_restart_discovery_scheduled_total{cluster=\"acme-cluster-test\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p04-w028",
+   "title": "(untitled)",
+   "visualization": "viz.markdown",
+   "grafana_type": "text",
+   "nrql": [],
+   "before": {
+    "confidence": "exact",
+    "queries": [],
+    "notes": []
+   },
+   "expected": []
+  },
+  {
+   "id": "p04-w029",
+   "title": "Scheduled Automation Success",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.scheduled.automation.task.executed) FROM Metric TIMESERIES FACET `task_type` WHERE status='success' and clusterName = 'acme-cluster-prod'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (task_type)(avg_over_time(acme_backend_scheduled_automation_task_executed{status=\"success\",cluster=\"acme-cluster-prod\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'status' not in label_map; used 'status' \u2014 verify the label exists in your stack",
+     "FACET attribute 'task_type' not in label_map; used 'task_type'",
+     "assumed gauge 'acme_backend_scheduled_automation_task_executed'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (task_type)(rate(acme_backend_scheduled_automation_task_executed_total{status=\"success\",cluster=\"acme-cluster-test\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p04-w030",
+   "title": "Scheduled Automation Status",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.scheduled.automation.task.executed) FROM Metric where clusterName = 'acme-cluster-prod' TIMESERIES FACET `status`"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (status)(avg_over_time(acme_backend_scheduled_automation_task_executed{cluster=\"acme-cluster-prod\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'status' not in label_map; used 'status'",
+     "assumed gauge 'acme_backend_scheduled_automation_task_executed'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (status)(rate(acme_backend_scheduled_automation_task_executed_total{cluster=\"acme-cluster-test\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p04-w031",
+   "title": "Scheduled Automation Executed Count",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT sum(acme_backend.scheduled.automation.task.executed) as `Scheduled Automation Executed` FROM Metric where clusterName = 'acme-cluster-prod'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum(avg_over_time(acme_backend_scheduled_automation_task_executed{cluster=\"acme-cluster-prod\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_scheduled_automation_task_executed'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(increase(acme_backend_scheduled_automation_task_executed_total{cluster=\"acme-cluster-test\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p04-w032",
+   "title": "Scheduled Automation Recurring Task",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.recurring_task.success) as `Scheduled Automation Recurring Task: Success` FROM Metric TIMESERIES WHERE task_name='run_scheduled_automation' and clusterName = 'acme-cluster-prod'",
+    "SELECT sum(acme_backend.recurring_task.failure) as `Scheduled Automation Recurring Task: Failure` FROM Metric TIMESERIES WHERE task_name='run_scheduled_automation' and clusterName = 'acme-cluster-prod'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(avg_over_time(acme_backend_recurring_task_success{task_name=\"run_scheduled_automation\",cluster=\"acme-cluster-prod\"}[$__rate_interval]))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(avg_over_time(acme_backend_recurring_task_failure{task_name=\"run_scheduled_automation\",cluster=\"acme-cluster-prod\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'task_name' not in label_map; used 'task_name' \u2014 verify the label exists in your stack",
+     "assumed gauge 'acme_backend_recurring_task_success'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "attribute 'task_name' not in label_map; used 'task_name' \u2014 verify the label exists in your stack",
+     "assumed gauge 'acme_backend_recurring_task_failure'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(rate(acme_backend_recurring_task_success_total{task_name=\"run_scheduled_automation\",cluster=\"acme-cluster-test\"}[$__rate_interval])) * $__interval_ms / 1000"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "sum(rate(acme_backend_recurring_task_failure_total{task_name=\"run_scheduled_automation\",cluster=\"acme-cluster-test\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p04-w033",
+   "title": "Scheduled Automation Count By Status",
+   "visualization": "viz.table",
+   "grafana_type": "table",
+   "nrql": [
+    "SELECT sum(acme_backend.scheduled.automation.task.executed) as `Scheduled Automation Count` FROM Metric FACET status where clusterName = 'acme-cluster-prod'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum by (status)(avg_over_time(acme_backend_scheduled_automation_task_executed{cluster=\"acme-cluster-prod\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'status' not in label_map; used 'status'",
+     "assumed gauge 'acme_backend_scheduled_automation_task_executed'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (status)(increase(acme_backend_scheduled_automation_task_executed_total{cluster=\"acme-cluster-test\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p04-w034",
+   "title": "Post Run Claim - IRA MAX with reject codes",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.hub_workflow_service.camunda_integration_service.post_run_claim_trigger_result) FROM Metric WHERE clusterName = 'acme-cluster-prod' AND post_run_claim_trigger_reason = 'mppp_rejected_claim' FACET post_run_claim_next_task TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (post_run_claim_next_task)(avg_over_time(acme_backend_hub_workflow_service_camunda_integration_service_post_run_claim_trigger_result{cluster=\"acme-cluster-prod\",post_run_claim_trigger_reason=\"mppp_rejected_claim\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'post_run_claim_trigger_reason' not in label_map; used 'post_run_claim_trigger_reason' \u2014 verify the label exists in your stack",
+     "FACET attribute 'post_run_claim_next_task' not in label_map; used 'post_run_claim_next_task'",
+     "assumed gauge 'acme_backend_hub_workflow_service_camunda_integration_service_post_run_claim_trigger_result'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (post_run_claim_next_task)(rate(acme_backend_hub_workflow_service_camunda_integration_service_post_run_claim_trigger_result_total{cluster=\"acme-cluster-test\",post_run_claim_trigger_reason=\"mppp_rejected_claim\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p04-w035",
+   "title": "Post Run Claim : IRA Max with Reject codes",
+   "visualization": "logger.log-table-widget",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT `fill_id`,`post_run_claim_trigger_reason`,`post_run_claim_next_task`, `program` FROM Log WHERE `cluster_name` = 'acme-cluster-prod' AND allColumnSearch('Processing post run claim trigger', insensitive: true) AND `post_run_claim_trigger_reason` = 'mppp_rejected_claim'"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "NRQL could not be parsed: expected comparison operator, got 'AND' near: ...rue) AND `post_run_claim_trigg"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p04-w036",
+   "title": "Post Run Claim - Non Participating Pharmacy",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.hub_workflow_service.camunda_integration_service.post_run_claim_trigger_result) FROM Metric WHERE clusterName = 'acme-cluster-prod' AND post_run_claim_trigger_reason = 'non_participating_pharmacy' FACET post_run_claim_next_task TIMESERIES "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (post_run_claim_next_task)(avg_over_time(acme_backend_hub_workflow_service_camunda_integration_service_post_run_claim_trigger_result{cluster=\"acme-cluster-prod\",post_run_claim_trigger_reason=\"non_participating_pharmacy\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'post_run_claim_trigger_reason' not in label_map; used 'post_run_claim_trigger_reason' \u2014 verify the label exists in your stack",
+     "FACET attribute 'post_run_claim_next_task' not in label_map; used 'post_run_claim_next_task'",
+     "assumed gauge 'acme_backend_hub_workflow_service_camunda_integration_service_post_run_claim_trigger_result'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (post_run_claim_next_task)(rate(acme_backend_hub_workflow_service_camunda_integration_service_post_run_claim_trigger_result_total{cluster=\"acme-cluster-test\",post_run_claim_trigger_reason=\"non_participating_pharmacy\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p04-w037",
+   "title": "Post Run Claim - Non Participating Pharmacy",
+   "visualization": "logger.log-table-widget",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT `fill_id`,`post_run_claim_trigger_reason`,`post_run_claim_next_task`, `program` FROM Log WHERE `cluster_name` = 'acme-cluster-prod' AND allColumnSearch('Processing post run claim trigger', insensitive: true) AND `post_run_claim_trigger_reason` = 'non_participating_pharmacy' "
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "NRQL could not be parsed: expected comparison operator, got 'AND' near: ...rue) AND `post_run_claim_trigg"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p04-w038",
+   "title": "Skipped Claim Run - By Reason",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.order.claim_run_skip_reason) FROM Metric WHERE metricName='acme_backend.order.claim_run_skip_reason' AND clusterName='acme-cluster-prod' TIMESERIES FACET `skip_reason`"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (skip_reason)(avg_over_time(acme_backend_order_claim_run_skip_reason{metricName=\"acme_backend.order.claim_run_skip_reason\",cluster=\"acme-cluster-prod\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'metricName' not in label_map; used 'metricName' \u2014 verify the label exists in your stack",
+     "FACET attribute 'skip_reason' not in label_map; used 'skip_reason'",
+     "assumed gauge 'acme_backend_order_claim_run_skip_reason'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (skip_reason)(rate(acme_backend_order_claim_run_skip_reason_total{cluster=\"acme-cluster-test\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p04-w039",
+   "title": "Skipped Claim Run",
+   "visualization": "viz.table",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT order_id, latest_pharmacy_selection_reason, skip_reason, pharmacy_npi FROM Metric WHERE metricName='acme_backend.order.claim_run_skip_reason' AND clusterName='acme-cluster-prod'"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "SELECT of raw attributes (no aggregation) has no metrics equivalent"
+    ]
+   },
+   "expected": []
+  }
+ ]
+}

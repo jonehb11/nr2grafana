@@ -1,0 +1,426 @@
+{
+ "schema": 1,
+ "page": "SQS Messages",
+ "widgets": [
+  {
+   "id": "p18-w001",
+   "title": "SQS Max Message Age",
+   "visualization": "viz.line",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT average(aws.sqs.ApproximateAgeOfOldestMessage)\nFROM Metric\nWHERE\n  aws.sqs.QueueName = concat('acme-backend-', {{env}}, '-input')\n  OR aws.sqs.QueueName = concat('acme-queue-2-', {{env}})\n  OR aws.sqs.QueueName = concat('acme-queue-4-', {{env}})\n  --OR aws.sqs.QueueName = concat('acme-backend-', {{env}}, '-input-dlq')\n  --OR aws.sqs.QueueName = concat('acme-queue-1-', {{env}})\n  --OR aws.sqs.QueueName = concat('acme-queue-3-', {{env}})\nFACET aws.sqs.QueueName\nTIMESERIES"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "NRQL could not be parsed: unexpected character '-' near: ...})\n  --OR aws.sqs.QueueName = "
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "cloudwatch",
+     "refId": "A",
+     "namespace": "AWS/SQS",
+     "metricName": "ApproximateAgeOfOldestMessage",
+     "statistic": "Average",
+     "dimensions": {
+      "QueueName": [
+       "*"
+      ]
+     },
+     "dimension_keys": [
+      "QueueName"
+     ],
+     "queryMode": "Metrics",
+     "region": "default",
+     "metricEditorMode": 0
+    }
+   ]
+  },
+  {
+   "id": "p18-w002",
+   "title": "Successful SQS messages",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.message_queue.process_message)\nFROM Metric\nWHERE status = 'success'\n  AND clusterName = concat('acme-cluster-', {{env}})\nFACET name, namespace, version\nTIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (span_name, namespace, version)(avg_over_time(acme_backend_message_queue_process_message{status=\"success\",cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'status' not in label_map; used 'status' \u2014 verify the label exists in your stack",
+     "FACET attribute 'version' not in label_map; used 'version'",
+     "assumed gauge 'acme_backend_message_queue_process_message'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (span_name, namespace, version)(rate(acme_backend_message_queue_process_message_total{status=\"success\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p18-w003",
+   "title": "Failed SQS messages",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.message_queue.process_message)\nFROM Metric\nWHERE status = 'failed'\n  AND clusterName = concat('acme-cluster-', {{env}})\nFACET name, namespace, version\nTIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (span_name, namespace, version)(avg_over_time(acme_backend_message_queue_process_message{status=\"failed\",cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'status' not in label_map; used 'status' \u2014 verify the label exists in your stack",
+     "FACET attribute 'version' not in label_map; used 'version'",
+     "assumed gauge 'acme_backend_message_queue_process_message'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (span_name, namespace, version)(rate(acme_backend_message_queue_process_message_total{status=\"failed\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p18-w004",
+   "title": "SQS Queue Size",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT average(aws.sqs.ApproximateNumberOfMessagesVisible)\nFROM Metric\nWHERE\n  aws.sqs.QueueName = concat('acme-backend-', {{env}}, '-input')\n  OR aws.sqs.QueueName = concat('acme-queue-2-', {{env}})\n  OR aws.sqs.QueueName = concat('acme-queue-4-', {{env}})\nFACET aws.sqs.QueueName\nTIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg by (aws_sqs_QueueName)(avg_over_time(aws_sqs_ApproximateNumberOfMessagesVisible{aws_sqs_QueueName=~\"Func\\\\(name='concat', args=\\\\[Lit\\\\(value='acme-backend-'\\\\), Attr\\\\(name='\\\\{\\\\{env\\\\}\\\\}'\\\\), Lit\\\\(value='-input'\\\\)\\\\], where=None, cases=\\\\[\\\\]\\\\)|Func\\\\(name='concat', args=\\\\[Lit\\\\(value='acme-queue-2-'\\\\), Attr\\\\(name='\\\\{\\\\{env\\\\}\\\\}'\\\\)\\\\], where=None, cases=\\\\[\\\\]\\\\)|Func\\\\(name='concat', args=\\\\[Lit\\\\(value='acme-queue-4-'\\\\), Attr\\\\(name='\\\\{\\\\{env\\\\}\\\\}'\\\\)\\\\], where=None, cases=\\\\[\\\\]\\\\)\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'aws.sqs.QueueName' not in label_map; used 'aws_sqs_QueueName'",
+     "assumed gauge 'aws_sqs_ApproximateNumberOfMessagesVisible'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "cloudwatch",
+     "refId": "A",
+     "namespace": "AWS/SQS",
+     "metricName": "ApproximateNumberOfMessagesVisible",
+     "statistic": "Average",
+     "dimensions": {
+      "QueueName": [
+       "*"
+      ]
+     },
+     "dimension_keys": [
+      "QueueName"
+     ],
+     "queryMode": "Metrics",
+     "region": "default",
+     "metricEditorMode": 0
+    }
+   ]
+  },
+  {
+   "id": "p18-w005",
+   "title": "SQS Messages Received",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(aws.sqs.NumberOfMessagesReceived)\nFROM Metric\nWHERE\n  aws.sqs.QueueName = concat('acme-backend-', {{env}}, '-input')\n  OR aws.sqs.QueueName = concat('acme-backend-', {{env}}, '-input-dlq')\n  OR aws.sqs.QueueName = concat('acme-queue-2-', {{env}})\n  OR aws.sqs.QueueName = concat('acme-queue-1-', {{env}})\n  OR aws.sqs.QueueName = concat('acme-queue-4-', {{env}})\n  OR aws.sqs.QueueName = concat('acme-queue-3-', {{env}})\nFACET aws.sqs.QueueName\nTIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (aws_sqs_QueueName)(avg_over_time(aws_sqs_NumberOfMessagesReceived{aws_sqs_QueueName=~\"Func\\\\(name='concat', args=\\\\[Lit\\\\(value='acme-backend-'\\\\), Attr\\\\(name='\\\\{\\\\{env\\\\}\\\\}'\\\\), Lit\\\\(value='-input'\\\\)\\\\], where=None, cases=\\\\[\\\\]\\\\)|Func\\\\(name='concat', args=\\\\[Lit\\\\(value='acme-backend-'\\\\), Attr\\\\(name='\\\\{\\\\{env\\\\}\\\\}'\\\\), Lit\\\\(value='-input-dlq'\\\\)\\\\], where=None, cases=\\\\[\\\\]\\\\)|Func\\\\(name='concat', args=\\\\[Lit\\\\(value='acme-queue-2-'\\\\), Attr\\\\(name='\\\\{\\\\{env\\\\}\\\\}'\\\\)\\\\], where=None, cases=\\\\[\\\\]\\\\)|Func\\\\(name='concat', args=\\\\[Lit\\\\(value='acme-queue-1-'\\\\), Attr\\\\(name='\\\\{\\\\{env\\\\}\\\\}'\\\\)\\\\], where=None, cases=\\\\[\\\\]\\\\)|Func\\\\(name='concat', args=\\\\[Lit\\\\(value='acme-queue-4-'\\\\), Attr\\\\(name='\\\\{\\\\{env\\\\}\\\\}'\\\\)\\\\], where=None, cases=\\\\[\\\\]\\\\)|Func\\\\(name='concat', args=\\\\[Lit\\\\(value='acme-queue-3-'\\\\), Attr\\\\(name='\\\\{\\\\{env\\\\}\\\\}'\\\\)\\\\], where=None, cases=\\\\[\\\\]\\\\)\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'aws.sqs.QueueName' not in label_map; used 'aws_sqs_QueueName'",
+     "assumed gauge 'aws_sqs_NumberOfMessagesReceived'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "cloudwatch",
+     "refId": "A",
+     "namespace": "AWS/SQS",
+     "metricName": "NumberOfMessagesReceived",
+     "statistic": "Sum",
+     "dimensions": {
+      "QueueName": [
+       "*"
+      ]
+     },
+     "dimension_keys": [
+      "QueueName"
+     ],
+     "queryMode": "Metrics",
+     "region": "default",
+     "metricEditorMode": 0
+    }
+   ]
+  },
+  {
+   "id": "p18-w006",
+   "title": "SQS DLQ Size",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT average(aws.sqs.ApproximateNumberOfMessagesVisible)\nFROM Metric\nWHERE\n  aws.sqs.QueueName = concat('acme-backend-', {{env}}, '-input-dlq')\n  OR aws.sqs.QueueName = concat('acme-queue-1-', {{env}})\n  OR aws.sqs.QueueName = concat('acme-queue-3-', {{env}})\nFACET aws.sqs.QueueName\nTIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg by (aws_sqs_QueueName)(avg_over_time(aws_sqs_ApproximateNumberOfMessagesVisible{aws_sqs_QueueName=~\"Func\\\\(name='concat', args=\\\\[Lit\\\\(value='acme-backend-'\\\\), Attr\\\\(name='\\\\{\\\\{env\\\\}\\\\}'\\\\), Lit\\\\(value='-input-dlq'\\\\)\\\\], where=None, cases=\\\\[\\\\]\\\\)|Func\\\\(name='concat', args=\\\\[Lit\\\\(value='acme-queue-1-'\\\\), Attr\\\\(name='\\\\{\\\\{env\\\\}\\\\}'\\\\)\\\\], where=None, cases=\\\\[\\\\]\\\\)|Func\\\\(name='concat', args=\\\\[Lit\\\\(value='acme-queue-3-'\\\\), Attr\\\\(name='\\\\{\\\\{env\\\\}\\\\}'\\\\)\\\\], where=None, cases=\\\\[\\\\]\\\\)\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'aws.sqs.QueueName' not in label_map; used 'aws_sqs_QueueName'",
+     "assumed gauge 'aws_sqs_ApproximateNumberOfMessagesVisible'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "cloudwatch",
+     "refId": "A",
+     "expression": "SEARCH('{AWS/SQS,QueueName} MetricName=\"ApproximateNumberOfMessagesVisible\" QueueName=\"*dlq*\"', 'Average', 300)",
+     "queryMode": "Metrics",
+     "region": "default",
+     "metricEditorMode": 1
+    }
+   ]
+  },
+  {
+   "id": "p18-w007",
+   "title": "Dependency Queue Sizes",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(aws.sqs.ApproximateNumberOfMessagesVisible)\nFROM Metric\nWHERE\n  aws.sqs.QueueName = concat('acme-queue-9-', {{env}}, '-delivery-request')\n  OR aws.sqs.QueueName = concat('acme-queue-9-', {{env}}, '-acme-name-5')\n  OR aws.sqs.QueueName = concat('acme-queue-7-', {{env}}, '-events')\n  OR aws.sqs.QueueName = concat('acme-queue-7-', {{env}}, '-events-dlq')\n  OR aws.sqs.QueueName = concat('acme-queue-6-', {{env}})\n  OR aws.sqs.QueueName = concat('acme-queue-5-', {{env}})\n  OR aws.sqs.QueueName = concat('acme-queue-8-', {{env}})\n  OR aws.sqs.QueueName = concat('acme-queue-8-', {{env}}, '-recomm-requests')\nFACET aws.sqs.QueueName\nTIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (aws_sqs_QueueName)(avg_over_time(aws_sqs_ApproximateNumberOfMessagesVisible{aws_sqs_QueueName=~\"Func\\\\(name='concat', args=\\\\[Lit\\\\(value='acme-queue-9-'\\\\), Attr\\\\(name='\\\\{\\\\{env\\\\}\\\\}'\\\\), Lit\\\\(value='-delivery-request'\\\\)\\\\], where=None, cases=\\\\[\\\\]\\\\)|Func\\\\(name='concat', args=\\\\[Lit\\\\(value='acme-queue-9-'\\\\), Attr\\\\(name='\\\\{\\\\{env\\\\}\\\\}'\\\\), Lit\\\\(value='-acme-name-5'\\\\)\\\\], where=None, cases=\\\\[\\\\]\\\\)|Func\\\\(name='concat', args=\\\\[Lit\\\\(value='acme-queue-7-'\\\\), Attr\\\\(name='\\\\{\\\\{env\\\\}\\\\}'\\\\), Lit\\\\(value='-events'\\\\)\\\\], where=None, cases=\\\\[\\\\]\\\\)|Func\\\\(name='concat', args=\\\\[Lit\\\\(value='acme-queue-7-'\\\\), Attr\\\\(name='\\\\{\\\\{env\\\\}\\\\}'\\\\), Lit\\\\(value='-events-dlq'\\\\)\\\\], where=None, cases=\\\\[\\\\]\\\\)|Func\\\\(name='concat', args=\\\\[Lit\\\\(value='acme-queue-6-'\\\\), Attr\\\\(name='\\\\{\\\\{env\\\\}\\\\}'\\\\)\\\\], where=None, cases=\\\\[\\\\]\\\\)|Func\\\\(name='concat', args=\\\\[Lit\\\\(value='acme-queue-5-'\\\\), Attr\\\\(name='\\\\{\\\\{env\\\\}\\\\}'\\\\)\\\\], where=None, cases=\\\\[\\\\]\\\\)|Func\\\\(name='concat', args=\\\\[Lit\\\\(value='acme-queue-8-'\\\\), Attr\\\\(name='\\\\{\\\\{env\\\\}\\\\}'\\\\)\\\\], where=None, cases=\\\\[\\\\]\\\\)|Func\\\\(name='concat', args=\\\\[Lit\\\\(value='acme-queue-8-'\\\\), Attr\\\\(name='\\\\{\\\\{env\\\\}\\\\}'\\\\), Lit\\\\(value='-recomm-requests'\\\\)\\\\], where=None, cases=\\\\[\\\\]\\\\)\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'aws.sqs.QueueName' not in label_map; used 'aws_sqs_QueueName'",
+     "assumed gauge 'aws_sqs_ApproximateNumberOfMessagesVisible'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "cloudwatch",
+     "refId": "A",
+     "expression": "SEARCH('{AWS/SQS,QueueName} MetricName=\"ApproximateNumberOfMessagesVisible\"', 'Sum', 300)",
+     "queryMode": "Metrics",
+     "region": "default",
+     "metricEditorMode": 1
+    }
+   ]
+  },
+  {
+   "id": "p18-w008",
+   "title": "Failed SQS messages",
+   "visualization": "viz.table",
+   "grafana_type": "table",
+   "nrql": [
+    "SELECT sum(acme_backend.message_queue.process_message) as Total\nFROM Metric\nWHERE status = 'failed'\n  AND clusterName = concat('acme-cluster-', {{env}})\nFACET name, namespace, version\nLIMIT MAX"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum by (span_name, namespace, version)(avg_over_time(acme_backend_message_queue_process_message{status=\"failed\",cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "attribute 'status' not in label_map; used 'status' \u2014 verify the label exists in your stack",
+     "FACET attribute 'version' not in label_map; used 'version'",
+     "assumed gauge 'acme_backend_message_queue_process_message'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (span_name, namespace, version)(increase(acme_backend_message_queue_process_message_total{status=\"failed\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p18-w009",
+   "title": "Average Message Duration",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT average(apm.service.transaction.duration)\nFROM Metric\nWHERE (\n  ({{env}} = 'staging' AND entity.guid = '<REDACTED_BLOB>')\n  OR ({{env}} = 'prod' AND entity.guid = '<REDACTED_BLOB>')\n  OR ({{env}} = 'dev' AND entity.guid = '<REDACTED_BLOB>')\n)\nAND transactionType = 'Other'\nAND subtype IN ('backend_message_handlers', 'switch_message_handlers')\nFACET capture(transactionName, r'OtherTransaction/?(?P<name>.*)')\nTIMESERIES\nLIMIT 10"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "topk(10, sum(rate(apm_service_transaction_duration_sum{transactionType=\"Other\",subtype=~\"backend_message_handlers|switch_message_handlers\"}[$__rate_interval])) / sum(rate(apm_service_transaction_duration_count{transactionType=\"Other\",subtype=~\"backend_message_handlers|switch_message_handlers\"}[$__rate_interval])))"
+     }
+    ],
+    "notes": [
+     "an OR clause in WHERE could not be merged into a single label matcher (different attributes, variables, or mixed predicate shapes); that clause was DROPPED \u2014 verify filter logic",
+     "attribute 'transactionType' not in label_map; used 'transactionType' \u2014 verify the label exists in your stack",
+     "attribute 'subtype' not in label_map; used 'subtype' \u2014 verify the label exists in your stack",
+     "FACET capture(...) has no label equivalent; grouping dropped",
+     "name suggests a duration histogram; verify 'apm_service_transaction_duration' type in Mimir",
+     "FACET LIMIT 10 became topk(10, ...); on range queries topk is evaluated per step so series may flicker"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p18-w010",
+   "title": "Max Message Duration",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT max(apm.service.transaction.duration)\nFROM Metric\nWHERE (\n  ({{env}} = 'staging' AND entity.guid = '<REDACTED_BLOB>')\n  OR ({{env}} = 'prod' AND entity.guid = '<REDACTED_BLOB>')\n  OR ({{env}} = 'dev' AND entity.guid = '<REDACTED_BLOB>')\n)\nAND transactionType = 'Other'\nAND subtype IN ('backend_message_handlers', 'switch_message_handlers')\nFACET capture(transactionName, r'OtherTransaction/?(?P<name>.*)')\nTIMESERIES \nLIMIT 10"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "topk(10, max(max_over_time(apm_service_transaction_duration{transactionType=\"Other\",subtype=~\"backend_message_handlers|switch_message_handlers\"}[$__rate_interval])))"
+     }
+    ],
+    "notes": [
+     "an OR clause in WHERE could not be merged into a single label matcher (different attributes, variables, or mixed predicate shapes); that clause was DROPPED \u2014 verify filter logic",
+     "attribute 'transactionType' not in label_map; used 'transactionType' \u2014 verify the label exists in your stack",
+     "attribute 'subtype' not in label_map; used 'subtype' \u2014 verify the label exists in your stack",
+     "FACET capture(...) has no label equivalent; grouping dropped",
+     "assumed gauge 'apm_service_transaction_duration'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "FACET LIMIT 10 became topk(10, ...); on range queries topk is evaluated per step so series may flicker"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p18-w011",
+   "title": "Topic Throughput (TPS)",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT rate(count(apm.service.transaction.duration), 1 second) as 'Non-web' FROM Metric WHERE \n  ({{env}} = 'staging' AND entity.guid = '<REDACTED_BLOB>')\n  OR ({{env}} = 'prod' AND entity.guid = '<REDACTED_BLOB>')\n  OR ({{env}} = 'dev' AND entity.guid = '<REDACTED_BLOB>')\nAND ((transactionType = 'Other' AND subtype in ('backend_message_handlers', 'switch_message_handlers'))) LIMIT MAX  TIMESERIES facet subtype"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (subtype)(rate(apm_service_transaction_duration_total[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "an OR clause in WHERE could not be merged into a single label matcher (different attributes, variables, or mixed predicate shapes); that clause was DROPPED \u2014 verify filter logic",
+     "FACET attribute 'subtype' not in label_map; used 'subtype'",
+     "assumed counter 'apm_service_transaction_duration_total'; verify name/type in Mimir (/api/v1/metadata)",
+     "unit:short",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p18-w012",
+   "title": "Slowest Message Duration",
+   "visualization": "viz.bar",
+   "grafana_type": "bargauge",
+   "nrql": [
+    "SELECT average(apm.service.transaction.duration)\nFROM Metric\nWHERE (\n  ({{env}} = 'staging' AND entity.guid = '<REDACTED_BLOB>')\n  OR ({{env}} = 'prod' AND entity.guid = '<REDACTED_BLOB>')\n  OR ({{env}} = 'dev' AND entity.guid = '<REDACTED_BLOB>')\n)\nAND transactionType = 'Other'\nAND subtype IN ('backend_message_handlers', 'switch_message_handlers')\nFACET capture(transactionName, r'OtherTransaction/?(?P<name>.*)')\nLIMIT 10"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "topk(10, sum(rate(apm_service_transaction_duration_sum{transactionType=\"Other\",subtype=~\"backend_message_handlers|switch_message_handlers\"}[$__range])) / sum(rate(apm_service_transaction_duration_count{transactionType=\"Other\",subtype=~\"backend_message_handlers|switch_message_handlers\"}[$__range])))"
+     }
+    ],
+    "notes": [
+     "an OR clause in WHERE could not be merged into a single label matcher (different attributes, variables, or mixed predicate shapes); that clause was DROPPED \u2014 verify filter logic",
+     "attribute 'transactionType' not in label_map; used 'transactionType' \u2014 verify the label exists in your stack",
+     "attribute 'subtype' not in label_map; used 'subtype' \u2014 verify the label exists in your stack",
+     "FACET capture(...) has no label equivalent; grouping dropped",
+     "name suggests a duration histogram; verify 'apm_service_transaction_duration' type in Mimir"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p18-w013",
+   "title": "Message Durations",
+   "visualization": "viz.table",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT rate(count(*), 1 second) AS '\u03bb (tasks/sec)', average(duration), percentile(duration,95) as 'Handler Latency (s)', count(duration) as total, average(duration) * count(duration) as 'Total Work'\nFROM Transaction \nwhere appName = concat('acme-backend (',{{env}},')') \nand name in (\n SELECT uniques(metricTimesliceName) FROM Metric WHERE \n   ({{env}} = 'staging' AND entity.guid = '<REDACTED_BLOB>')\n   OR ({{env}} = 'prod' AND entity.guid = '<REDACTED_BLOB>')\n   OR ({{env}} = 'dev' AND entity.guid = '<REDACTED_BLOB>')\n and transactionType in ('Other')\n and (k8s.podName like 'acme-backend-internal%' or k8s.podName like 'acme-backend-topic-consumer%')\n LIMIT MAX\n)\nAND transactionType = 'Other'\nFACET capture(name, r'OtherTransaction/?(?P<name>.*)')\nLIMIT 100"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "NRQL could not be parsed: bad IN list near: ...LECT uniques(metricTimesliceNa"
+    ]
+   },
+   "expected": []
+  }
+ ]
+}

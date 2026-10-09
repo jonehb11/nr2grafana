@@ -1,0 +1,640 @@
+{
+ "schema": 1,
+ "page": "Rx Requests",
+ "widgets": [
+  {
+   "id": "p10-w001",
+   "title": "Environments",
+   "visualization": "viz.table",
+   "grafana_type": "text",
+   "nrql": [
+    "select sum(Pods) as Pods from (SELECT latest(podsAvailable) as Pods from K8sDeploymentSample where namespaceName = 'acme-backend' FACET deploymentName, clusterName) facet clusterName"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "NRQL could not be parsed: expected name, got '(' near: ...from (SELECT latest(podsAvaila"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (cluster)(max by (deployment, cluster)(kube_deployment_status_replicas_available{namespace=\"acme-backend\"}))"
+    }
+   ]
+  },
+  {
+   "id": "p10-w002",
+   "title": "Rx Requests Created by Classification",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.prescription.request.created) as 'count' from Metric FACET classification TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (classification)(avg_over_time(acme_backend_prescription_request_created[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'classification' not in label_map; used 'classification'",
+     "assumed gauge 'acme_backend_prescription_request_created'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (classification)(rate(acme_backend_prescription_request_created_total[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p10-w003",
+   "title": "Rx Requests Scheduled",
+   "visualization": "viz.area",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.prescription.request.scheduled) as 'count' from Metric TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(avg_over_time(acme_backend_prescription_request_scheduled[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_prescription_request_scheduled'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(rate(acme_backend_prescription_request_scheduled_total[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p10-w004",
+   "title": "Rx Requests Created",
+   "visualization": "viz.area",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.prescription.request.created) as 'count' from Metric TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(avg_over_time(acme_backend_prescription_request_created[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_prescription_request_created'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(rate(acme_backend_prescription_request_created_total[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p10-w005",
+   "title": "Rx Requests to Surescripts",
+   "visualization": "viz.table",
+   "grafana_type": "table",
+   "nrql": [
+    "SELECT sum(acme_backend.prescription.request.task.created) as 'Number of Requests' from Metric WHERE task_type = 'rx_request' AND request_mode = 'surescripts' FACET request_via"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum by (request_via)(avg_over_time(acme_backend_prescription_request_task_created{task_type=\"rx_request\",request_mode=\"surescripts\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "attribute 'task_type' not in label_map; used 'task_type' \u2014 verify the label exists in your stack",
+     "attribute 'request_mode' not in label_map; used 'request_mode' \u2014 verify the label exists in your stack",
+     "FACET attribute 'request_via' not in label_map; used 'request_via'",
+     "assumed gauge 'acme_backend_prescription_request_task_created'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (request_via)(increase(acme_backend_prescription_request_task_created_total{task_type=\"rx_request\",request_mode=\"surescripts\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p10-w006",
+   "title": "Rx Requests Created Reason",
+   "visualization": "viz.table",
+   "grafana_type": "table",
+   "nrql": [
+    "SELECT sum(acme_backend.prescription.request.created) as 'count' from Metric facet reason"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum by (reason)(avg_over_time(acme_backend_prescription_request_created[$__range]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'reason' not in label_map; used 'reason'",
+     "assumed gauge 'acme_backend_prescription_request_created'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (reason)(increase(acme_backend_prescription_request_created_total[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p10-w007",
+   "title": "Rx Request Mode",
+   "visualization": "viz.table",
+   "grafana_type": "table",
+   "nrql": [
+    "SELECT sum(acme_backend.prescription.request.task.created) as 'count' from Metric WHERE task_type = 'rx_request' FACET request_mode"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum by (request_mode)(avg_over_time(acme_backend_prescription_request_task_created{task_type=\"rx_request\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "attribute 'task_type' not in label_map; used 'task_type' \u2014 verify the label exists in your stack",
+     "FACET attribute 'request_mode' not in label_map; used 'request_mode'",
+     "assumed gauge 'acme_backend_prescription_request_task_created'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (request_mode)(increase(acme_backend_prescription_request_task_created_total{task_type=\"rx_request\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p10-w008",
+   "title": "Renewal Eligibility Sucess",
+   "visualization": "viz.table",
+   "grafana_type": "table",
+   "nrql": [
+    "SELECT sum(acme_backend.prescription.request.renewal.eligibility) as 'count' from Metric where status = 'success' FACET reason"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum by (reason)(avg_over_time(acme_backend_prescription_request_renewal_eligibility{status=\"success\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "attribute 'status' not in label_map; used 'status' \u2014 verify the label exists in your stack",
+     "FACET attribute 'reason' not in label_map; used 'reason'",
+     "assumed gauge 'acme_backend_prescription_request_renewal_eligibility'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (reason)(increase(acme_backend_prescription_request_renewal_eligibility_total{status=\"success\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p10-w009",
+   "title": "Renewal Eligibility Failure",
+   "visualization": "viz.table",
+   "grafana_type": "table",
+   "nrql": [
+    "SELECT sum(acme_backend.prescription.request.renewal.eligibility) as 'count' from Metric where status = 'failure' FACET reason"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum by (reason)(avg_over_time(acme_backend_prescription_request_renewal_eligibility{status=\"failure\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "attribute 'status' not in label_map; used 'status' \u2014 verify the label exists in your stack",
+     "FACET attribute 'reason' not in label_map; used 'reason'",
+     "assumed gauge 'acme_backend_prescription_request_renewal_eligibility'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (reason)(increase(acme_backend_prescription_request_renewal_eligibility_total{status=\"failure\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p10-w010",
+   "title": "Renewals Denied",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT sum(acme_backend.prescription.request.status.updated) as Denied from Metric WHERE status = 'rx_denied'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum(avg_over_time(acme_backend_prescription_request_status_updated{status=\"rx_denied\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "attribute 'status' not in label_map; used 'status' \u2014 verify the label exists in your stack",
+     "assumed gauge 'acme_backend_prescription_request_status_updated'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(increase(acme_backend_prescription_request_status_updated_total{status=\"rx_denied\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p10-w011",
+   "title": "Rx Requests Submitted",
+   "visualization": "viz.area",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.prescription.request.task.created) as 'count' from Metric WHERE task_type = 'rx_request' FACET request_mode TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (request_mode)(avg_over_time(acme_backend_prescription_request_task_created{task_type=\"rx_request\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'task_type' not in label_map; used 'task_type' \u2014 verify the label exists in your stack",
+     "FACET attribute 'request_mode' not in label_map; used 'request_mode'",
+     "assumed gauge 'acme_backend_prescription_request_task_created'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (request_mode)(rate(acme_backend_prescription_request_task_created_total{task_type=\"rx_request\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p10-w012",
+   "title": "Rx Requests Archived",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT sum(acme_backend.prescription.request.status.updated) as Archived from Metric WHERE status = 'rx_request_archived'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum(avg_over_time(acme_backend_prescription_request_status_updated{status=\"rx_request_archived\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "attribute 'status' not in label_map; used 'status' \u2014 verify the label exists in your stack",
+     "assumed gauge 'acme_backend_prescription_request_status_updated'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(increase(acme_backend_prescription_request_status_updated_total{status=\"rx_request_archived\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p10-w013",
+   "title": "Renewals Received",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT sum(acme_backend.prescription.request.status.updated) as Received from Metric WHERE status = 'rx_received'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum(avg_over_time(acme_backend_prescription_request_status_updated{status=\"rx_received\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "attribute 'status' not in label_map; used 'status' \u2014 verify the label exists in your stack",
+     "assumed gauge 'acme_backend_prescription_request_status_updated'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(increase(acme_backend_prescription_request_status_updated_total{status=\"rx_received\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p10-w014",
+   "title": "Renewals Received by Classification",
+   "visualization": "viz.table",
+   "grafana_type": "table",
+   "nrql": [
+    "SELECT sum(acme_backend.prescription.request.status.updated) as Received from Metric WHERE status = 'rx_received' facet classification"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum by (classification)(avg_over_time(acme_backend_prescription_request_status_updated{status=\"rx_received\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "attribute 'status' not in label_map; used 'status' \u2014 verify the label exists in your stack",
+     "FACET attribute 'classification' not in label_map; used 'classification'",
+     "assumed gauge 'acme_backend_prescription_request_status_updated'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (classification)(increase(acme_backend_prescription_request_status_updated_total{status=\"rx_received\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p10-w015",
+   "title": "Rx Request Failed",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT sum(acme_backend.prescription.request.status.updated) as 'Request Failed' from Metric WHERE status = 'rx_request_failed'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum(avg_over_time(acme_backend_prescription_request_status_updated{status=\"rx_request_failed\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "attribute 'status' not in label_map; used 'status' \u2014 verify the label exists in your stack",
+     "assumed gauge 'acme_backend_prescription_request_status_updated'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(increase(acme_backend_prescription_request_status_updated_total{status=\"rx_request_failed\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p10-w016",
+   "title": "Patient Outreach",
+   "visualization": "viz.table",
+   "grafana_type": "table",
+   "nrql": [
+    "SELECT sum(acme_backend.prescription.request.task.created) as 'Number of Requests' from Metric where task_type = 'patient_outreach' FACET channel"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum by (channel)(avg_over_time(acme_backend_prescription_request_task_created{task_type=\"patient_outreach\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "attribute 'task_type' not in label_map; used 'task_type' \u2014 verify the label exists in your stack",
+     "FACET attribute 'channel' not in label_map; used 'channel'",
+     "assumed gauge 'acme_backend_prescription_request_task_created'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (channel)(increase(acme_backend_prescription_request_task_created_total{task_type=\"patient_outreach\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p10-w017",
+   "title": "Rx Request Status Update",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.prescription.request.status.updated) as 'Number of Requests' from Metric FACET status TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (status)(avg_over_time(acme_backend_prescription_request_status_updated[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'status' not in label_map; used 'status'",
+     "assumed gauge 'acme_backend_prescription_request_status_updated'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (status)(rate(acme_backend_prescription_request_status_updated_total[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p10-w018",
+   "title": "Rx Request Failed Reasons",
+   "visualization": "viz.table",
+   "grafana_type": "table",
+   "nrql": [
+    "SELECT sum(acme_backend.prescription.request.failed) as 'count' from Metric FACET request_via, reason"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum by (request_via, reason)(avg_over_time(acme_backend_prescription_request_failed[$__range]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'request_via' not in label_map; used 'request_via'",
+     "FACET attribute 'reason' not in label_map; used 'reason'",
+     "assumed gauge 'acme_backend_prescription_request_failed'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (request_via, reason)(increase(acme_backend_prescription_request_failed_total[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p10-w019",
+   "title": "Rx Requests By Users",
+   "visualization": "viz.table",
+   "grafana_type": "table",
+   "nrql": [
+    "SELECT sum(acme_backend.prescription.request.task.created) as 'count' from Metric WHERE task_type = 'rx_request' FACET username, request_number"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum by (username, request_number)(avg_over_time(acme_backend_prescription_request_task_created{task_type=\"rx_request\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "attribute 'task_type' not in label_map; used 'task_type' \u2014 verify the label exists in your stack",
+     "FACET attribute 'username' not in label_map; used 'username'",
+     "FACET attribute 'request_number' not in label_map; used 'request_number'",
+     "assumed gauge 'acme_backend_prescription_request_task_created'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (username, request_number)(increase(acme_backend_prescription_request_task_created_total{task_type=\"rx_request\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p10-w020",
+   "title": "Rx Request Followups",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.prescription.request.followup) as 'Number of Followups' from Metric FACET status TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (status)(avg_over_time(acme_backend_prescription_request_followup[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'status' not in label_map; used 'status'",
+     "assumed gauge 'acme_backend_prescription_request_followup'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (status)(rate(acme_backend_prescription_request_followup_total[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  }
+ ]
+}

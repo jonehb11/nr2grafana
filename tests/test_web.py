@@ -21,6 +21,7 @@ import urllib.request
 import zipfile
 from unittest import mock
 
+from nr2grafana import aicontext as real_aicontext
 from nr2grafana.web import server as websrv
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -780,6 +781,74 @@ def _stub_aicontext():
     m.to_prompt = to_prompt
     m.troubleshoot = troubleshoot
     m.analyze_cost = analyze_cost
+    # The SEAM-REPORT helper is pure and owned by this release: the
+    # routes exercise the real one through the stubbed module.
+    m.missing_report = real_aicontext.missing_report
+    return m
+
+
+def _stub_bind():
+    """SEAM-BIND stub: rewrites ${var} datasource refs from ds_map,
+    drops the datasource template vars unless keep_vars, and pins the
+    env variable; records every call."""
+    m = types.ModuleType("nr2grafana.bind")
+    m.calls = []
+    m.env_calls = []
+
+    def _panels(dash):
+        for p in dash.get("panels") or []:
+            yield p
+            for q in p.get("panels") or []:
+                yield q
+
+    def bind_datasources(dash, ds_map, keep_vars=False):
+        m.calls.append({"ds_map": dict(ds_map), "keep_vars": keep_vars})
+        for p in _panels(dash):
+            refs = [p.get("datasource")] + [
+                t.get("datasource") for t in p.get("targets") or []]
+            for ds in refs:
+                if isinstance(ds, dict) and ds.get("uid") in ds_map:
+                    ds["uid"] = ds_map[ds["uid"]]
+        if not keep_vars:
+            tpl = dash.setdefault("templating", {})
+            tpl["list"] = [v for v in tpl.get("list") or []
+                           if v.get("type") != "datasource"]
+        dash["_bound"] = True
+        return dash
+
+    def set_target_env(dash, env, env_map=None):
+        m.env_calls.append({"env": env, "env_map": env_map})
+        for v in (dash.get("templating") or {}).get("list") or []:
+            if v.get("name") == "env":
+                v["current"] = {"text": env, "value": env}
+        dash["_env"] = env
+        return dash
+
+    m.bind_datasources = bind_datasources
+    m.set_target_env = set_target_env
+    return m
+
+
+def _stub_hints():
+    """SEAM-HINTS stub: records what collect_hints was called with and
+    returns a deterministic hints dict (read-only by construction)."""
+    m = types.ModuleType("nr2grafana.translate.hints")
+    m.calls = []
+
+    def collect_hints(nr=None, grafana=None, dash=None, cfg=None,
+                      log=None):
+        m.calls.append({"has_nr": nr is not None,
+                        "has_grafana": grafana is not None,
+                        "dash": getattr(dash, "name", None),
+                        "target_env": (cfg or {}).get("target_env")})
+        if log:
+            log("hints stub collecting")
+        return {"metric_types": {"acme_backend_order_created_total":
+                                 "counter"},
+                "entities": {}, "attr_values": {"env": ["prod"]},
+                "label_values": {}}
+
+    m.collect_hints = collect_hints
     return m
 
 
@@ -865,7 +934,7 @@ def _stub_awscost():
                        "TotalImpactPercentage": 1400.0},
             "RootCauses": [{
                 "Service": "AmazonEBS", "Region": "us-east-1",
-                "LinkedAccount": "348342704569",
+                "LinkedAccount": "123456789012",
                 "UsageType": "USE1-DataTransfer-Regional-Bytes",
                 "Impact": {"Contribution": 164.0}}]}]
 
@@ -894,7 +963,7 @@ def _stub_rca():
     def parse_anomaly_report(text_or_json):
         m.parse_calls.append(text_or_json)
         usage = "USE1-DataTransfer-Regional-Bytes"
-        account = "348342704569"
+        account = "123456789012"
         region = "us-east-1"
         if isinstance(text_or_json, dict):
             rc = (text_or_json.get("RootCauses") or [{}])[0]
@@ -1093,6 +1162,8 @@ STUBS = {
     "nr2grafana.mitigate": _stub_mitigate(),
     "nr2grafana.reliability": _stub_reliability(),
     "nr2grafana.flowlogs": _stub_flowlogs(),
+    "nr2grafana.bind": _stub_bind(),
+    "nr2grafana.translate.hints": _stub_hints(),
 }
 
 
@@ -2910,7 +2981,7 @@ class RcaMitigateRouteTests(WebServerTestCase):
         code, resp = self.api(
             "POST", "/api/rca",
             {"report": "EBS DataTransfer-Regional-Bytes spike ~$164/day, "
-                       "step change 2026-08-31, acct 348342704569 "
+                       "step change 2026-08-31, acct 123456789012 "
                        "us-east-1"})
         self.assertEqual(code, 200)
         job = poll_job(self.base, resp["job"])
@@ -3799,6 +3870,395 @@ class AiConvertModeTests(WebServerTestCase):
             self.assertIn("error", body)
         finally:
             websrv.SESSION.anthropic_api_key = "sk-ant-test"
+
+
+def _seed_seam_dash(store, slug, pkg=None):
+    """A dashboard with unbound ${datasource}/${loki_datasource} refs,
+    an $env variable, a [MANUAL] placeholder, plus requirements and a
+    widget-report carrying the 1.11 SEAM-REPORT fields."""
+    dash = {
+        "title": "Seam " + slug, "uid": slug,
+        "templating": {"list": [
+            {"type": "datasource", "name": "datasource",
+             "query": "prometheus"},
+            {"type": "datasource", "name": "loki_datasource",
+             "query": "loki"},
+            {"type": "custom", "name": "env",
+             "current": {"text": "dev", "value": "dev"}}]},
+        "panels": [
+            {"id": 1, "title": "Orders", "type": "timeseries",
+             "datasource": {"type": "prometheus", "uid": "${datasource}"},
+             "targets": [{"refId": "A",
+                          "expr": "sum(increase(acme_backend_order_"
+                                  "created_total{cluster=\"acme-cluster-"
+                                  "$env\"}[$__range]))",
+                          "datasource": {"type": "prometheus",
+                                         "uid": "${datasource}"}}]},
+            {"id": 2, "title": "Errors", "type": "logs",
+             "targets": [{"refId": "A",
+                          "expr": '{app="acme-backend"} |~ "(?i)error"',
+                          "datasource": {"type": "loki",
+                                         "uid": "${loki_datasource}"}}]},
+            {"id": 3, "title": "Finance [MANUAL]", "type": "text",
+             "options": {"mode": "markdown", "content": "manual"},
+             "fieldConfig": {"defaults": {}, "overrides": []}}]}
+    store.upsert_dashboard(slug, dash["title"], "seed", "", dash)
+    store.save_artifact(slug, "requirements", {
+        "schema": "nr2grafana/requirements/v1",
+        "datasources": [
+            {"family": "prometheus", "plugin_id": "prometheus",
+             "uid_ref": "${datasource}", "panel_ids": [1],
+             "required": True},
+            {"family": "loki", "plugin_id": "loki",
+             "uid_ref": "${loki_datasource}", "panel_ids": [2],
+             "required": True}],
+        "plugins": [], "domains": [], "nr_native": []})
+    store.save_artifact(slug, "widget-report", {"widgets": [
+        {"panel_id": 1, "widget": "Orders", "confidence": "exact",
+         "nrql": ["SELECT sum(acme_backend.order.created) FROM Metric"],
+         "notes": [], "queries": [{"datasource": "prometheus"}],
+         "metric_kind": {"acme_backend_order_created_total": "counter"},
+         "render_vars": ["env"]},
+        {"panel_id": 2, "widget": "Errors", "confidence": "needs-review",
+         "nrql": ["SELECT count(*) FROM Log WHERE level = 'ERROR'"],
+         "notes": ["case-insensitive level match assumed"],
+         "queries": [{"datasource": "loki"}],
+         "closest_equivalent": {"datasource": "loki",
+                                "example_query":
+                                '{app="acme-backend"} | logfmt '
+                                '| level=~"(?i)error"'}},
+        {"panel_id": 3, "widget": "Finance", "confidence": "untranslatable",
+         "manual": True,
+         "nrql": ["SELECT sum(cost) FROM FinanceSample"],
+         "notes": ["FinanceSample has no LGTM equivalent"],
+         "queries": [],
+         "closest_equivalent": {"datasource": "cloudwatch",
+                                "note": "AWS Cost Explorer / TCO feature"}}]})
+    if pkg:
+        os.makedirs(pkg, exist_ok=True)
+        with open(os.path.join(pkg, "dashboard.json"), "w",
+                  encoding="utf-8") as f:
+            json.dump(dash, f)
+        store.set_setting("package_dir." + slug, pkg)
+    return dash
+
+
+_DS_MAP = {"datasource": "mimir", "${datasource}": "mimir"}
+
+
+class MissingAndBindTests(WebServerTestCase):
+    """1.11 API surface: GET /api/dashboards/<slug>/missing
+    (SEAM-REPORT), convert live/env/bind pass-through (SEAM-HINTS /
+    SEAM-BIND), import bind, and ?bind=1 downloads."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.slug = "seam-dash"
+        cls.pkg = os.path.join(cls.tmp.name, "seam", cls.slug)
+        cls.dash = _seed_seam_dash(cls.store, cls.slug, pkg=cls.pkg)
+        with open(SAMPLE, encoding="utf-8") as f:
+            cls.sample_obj = json.load(f)
+
+    def setUp(self):
+        websrv.SESSION.grafana_url = ""
+        websrv.SESSION.grafana_token = ""
+        websrv.SESSION.nr_api_key = ""
+        STUBS["nr2grafana.bind"].calls.clear()
+        STUBS["nr2grafana.bind"].env_calls.clear()
+        STUBS["nr2grafana.translate.hints"].calls.clear()
+
+    def _grafana_on(self, ds_map=None):
+        websrv.SESSION.grafana_url = "http://gf.local:3000"
+        websrv.SESSION.grafana_token = "tok"
+        patcher = mock.patch.object(
+            FakeGrafanaLive, "resolve_ds_map",
+            lambda self, dash, preferred=None: dict(
+                _DS_MAP if ds_map is None else ds_map))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    # -- GET /api/dashboards/<slug>/missing -----------------------------
+
+    def test_missing_offline_reports_every_unbound_family(self):
+        code, body = self.api("GET",
+                              "/api/dashboards/%s/missing" % self.slug)
+        self.assertEqual(code, 200, body)
+        self.assertEqual(body["slug"], self.slug)
+        self.assertFalse(body["grafana_checked"])
+        self.assertEqual(body["missing_datasources"],
+                         ["loki", "prometheus"])
+        self.assertFalse(body["ready"])
+        # the exact add-datasource template per family
+        prom = next(d for d in body["datasources_to_add"]
+                    if d["family"] == "prometheus")
+        self.assertEqual(prom["panel_ids"], [1])
+        self.assertEqual(prom["uid_ref"], "${datasource}")
+        tpl = prom["template"]
+        self.assertEqual(tpl["type"], "prometheus")
+        self.assertEqual(tpl["api"]["method"], "POST")
+        self.assertEqual(tpl["api"]["path"], "/api/grafana/datasource")
+        self.assertEqual(tpl["api"]["body"]["type"], "prometheus")
+        self.assertEqual(tpl["api"]["body"]["values"]["url"],
+                         "http://mimir:9009/prometheus")
+        self.assertEqual(tpl["mcp"]["tool"], "add_datasource")
+        self.assertEqual(tpl["mcp"]["arguments"]["type"], "prometheus")
+        self.assertIn("--type prometheus", tpl["cli"])
+        self.assertEqual(tpl["fields"][0]["name"], "url")
+        # manual panels: WHY + closest equivalent
+        self.assertEqual(len(body["manual_panels"]), 1)
+        man = body["manual_panels"][0]
+        self.assertEqual(man["panel_id"], 3)
+        self.assertEqual(man["title"], "Finance")
+        self.assertIn("FinanceSample", man["why"])
+        self.assertEqual(man["closest_equivalent"]["datasource"],
+                         "cloudwatch")
+        # needs-review panels carry their closest equivalent
+        self.assertEqual([r["panel_id"] for r in body["needs_review"]],
+                         [2])
+        self.assertIn("logfmt",
+                      body["needs_review"][0]["closest_equivalent"]
+                      ["example_query"])
+        self.assertEqual(body["counts"]["manual_panels"], 1)
+
+    def test_missing_resolves_against_live_instance(self):
+        # The fake instance has a prometheus datasource but no loki.
+        self._grafana_on()
+        code, body = self.api("GET",
+                              "/api/dashboards/%s/missing" % self.slug)
+        self.assertEqual(code, 200, body)
+        self.assertTrue(body["grafana_checked"])
+        self.assertEqual(body["missing_datasources"], ["loki"])
+        loki = body["datasources_to_add"][0]
+        self.assertIn("no loki datasource", loki["reason"])
+        self.assertEqual(loki["template"]["type"], "loki")
+
+    def test_missing_unknown_slug_404(self):
+        code, body = self.api("GET", "/api/dashboards/nope/missing")
+        self.assertEqual(code, 404)
+        self.assertIn("error", body)
+        code, body = self.api("GET", "/api/dashboards/../x/missing")
+        self.assertEqual(code, 404)
+
+    def test_detail_includes_missing_summary(self):
+        code, det = self.api("GET", "/api/dashboards/" + self.slug)
+        self.assertEqual(code, 200)
+        self.assertEqual(det["missing"]["missing_datasources"],
+                         ["loki", "prometheus"])
+        self.assertEqual(det["missing"]["manual_panels"][0]["panel_id"],
+                         3)
+
+    def test_spec_lists_missing_route_and_bind_params(self):
+        code, spec = self.api("GET", "/api/spec")
+        self.assertEqual(code, 200)
+        paths = {ep["path"]: ep["summary"] for ep in spec["endpoints"]}
+        self.assertIn("/api/dashboards/<slug>/missing", paths)
+        self.assertIn("bind", paths["/api/convert"])
+        self.assertIn("live", paths["/api/convert"])
+        self.assertIn("bind", paths["/api/grafana/import"])
+
+    # -- downloads ?bind=1 ------------------------------------------------
+
+    def test_download_bind_requires_grafana(self):
+        code, headers, raw = http_bin(
+            self.base, "/download/dashboard/%s.json?bind=1" % self.slug)
+        self.assertEqual(code, 400)
+        self.assertIn("Grafana", json.loads(raw.decode())["error"])
+        # the portable download still works without a connection
+        code, headers, raw = http_bin(
+            self.base, "/download/dashboard/%s.json" % self.slug)
+        self.assertEqual(code, 200)
+        self.assertEqual(
+            json.loads(raw.decode())["panels"][0]["targets"][0]
+            ["datasource"]["uid"], "${datasource}")
+
+    def test_download_bind_produces_bound_json(self):
+        self._grafana_on()
+        code, headers, raw = http_bin(
+            self.base,
+            "/download/dashboard/%s.json?bind=1&env=prod" % self.slug)
+        self.assertEqual(code, 200, raw)
+        self.assertIn(self.slug + ".bound.json",
+                      headers.get("Content-Disposition", ""))
+        bound = json.loads(raw.decode())
+        tgt = bound["panels"][0]["targets"][0]
+        self.assertEqual(tgt["datasource"]["uid"], "mimir")
+        self.assertEqual(bound["panels"][0]["datasource"]["uid"], "mimir")
+        # datasource template vars dropped; env pinned (F8 fixed)
+        names = [v["name"] for v in bound["templating"]["list"]]
+        self.assertEqual(names, ["env"])
+        self.assertEqual(bound["templating"]["list"][0]["current"]
+                         ["value"], "prod")
+        self.assertEqual(STUBS["nr2grafana.bind"].calls[-1]["ds_map"],
+                         _DS_MAP)
+        self.assertEqual(STUBS["nr2grafana.bind"].env_calls[-1]["env"],
+                         "prod")
+        # the stored dashboard is untouched (bind works on a copy)
+        row = self.store.get_dashboard(self.slug)
+        self.assertEqual(
+            row["data"]["panels"][0]["targets"][0]["datasource"]["uid"],
+            "${datasource}")
+        self.assertNotIn("_bound", row["data"])
+
+    def test_download_bind_nothing_resolvable_is_400_pointing_at_missing(
+            self):
+        self._grafana_on(ds_map={})
+        code, headers, raw = http_bin(
+            self.base, "/download/dashboard/%s.json?bind=1" % self.slug)
+        self.assertEqual(code, 400)
+        self.assertIn("/missing", json.loads(raw.decode())["error"])
+
+    def test_download_package_bind_adds_bound_file(self):
+        self._grafana_on()
+        code, headers, raw = http_bin(
+            self.base, "/download/package/%s.zip?bind=1" % self.slug)
+        self.assertEqual(code, 200, raw)
+        zf = zipfile.ZipFile(io.BytesIO(raw))
+        names = zf.namelist()
+        self.assertIn(self.slug + "/dashboard.json", names)
+        self.assertIn(self.slug + "/dashboard.bound.json", names)
+        portable = json.loads(zf.read(self.slug + "/dashboard.json"))
+        bound = json.loads(zf.read(self.slug + "/dashboard.bound.json"))
+        self.assertEqual(portable["panels"][0]["targets"][0]
+                         ["datasource"]["uid"], "${datasource}")
+        self.assertEqual(bound["panels"][0]["targets"][0]
+                         ["datasource"]["uid"], "mimir")
+
+    def test_download_all_bind_best_effort_with_notes(self):
+        self._grafana_on()
+        code, headers, raw = http_bin(self.base,
+                                      "/download/all.zip?bind=1&force=1")
+        self.assertEqual(code, 200, raw)
+        zf = zipfile.ZipFile(io.BytesIO(raw))
+        names = zf.namelist()
+        self.assertIn(self.slug + "/dashboard.bound.json", names)
+        self.assertIn(self.slug + "/dashboard.json", names)
+
+    # -- import with bind -------------------------------------------------
+
+    def test_import_bind_binds_before_import(self):
+        self._grafana_on()
+        code, resp = self.api("POST", "/api/grafana/import",
+                              {"slug": self.slug, "bind": True,
+                               "env": "prod"})
+        self.assertEqual(code, 200)
+        job = poll_job(self.base, resp["job"])
+        self.assertEqual(job["status"], "done", job)
+        res = job["result"]["results"][0]
+        self.assertEqual(res["status"], "ok")
+        self.assertEqual(res["bound"], 2)
+        self.assertTrue(any("bound 2 datasource" in ln
+                            for ln in job["log"]))
+        self.assertEqual(STUBS["nr2grafana.bind"].env_calls[-1]["env"],
+                         "prod")
+
+    def test_import_without_bind_leaves_refs_alone(self):
+        self._grafana_on()
+        code, resp = self.api("POST", "/api/grafana/import",
+                              {"slug": self.slug})
+        job = poll_job(self.base, resp["job"])
+        self.assertEqual(job["status"], "done", job)
+        self.assertNotIn("bound", job["result"]["results"][0])
+        self.assertEqual(STUBS["nr2grafana.bind"].calls, [])
+
+    # -- convert live / env / bind ----------------------------------------
+
+    def test_convert_live_env_bind_pass_through(self):
+        self._grafana_on()
+        websrv.SESSION.nr_api_key = "NRAK-TEST"
+        out_dir = os.path.join(self.tmp.name, "seam-out")
+        code, resp = self.api("POST", "/api/convert",
+                              {"nr_json": self.sample_obj,
+                               "out_dir": out_dir, "package": True,
+                               "live": True, "env": "prod",
+                               "bind": True})
+        self.assertEqual(code, 200)
+        job = poll_job(self.base, resp["job"])
+        self.assertEqual(job["status"], "done", job)
+        entry = job["result"]["dashboards"][0]
+        # SEAM-HINTS: collect_hints saw the NR + Grafana clients, the
+        # parsed dashboard and the pinned env; the run was flagged live.
+        call = STUBS["nr2grafana.translate.hints"].calls[-1]
+        self.assertTrue(call["has_nr"])
+        self.assertTrue(call["has_grafana"])
+        self.assertTrue(call["dash"])
+        self.assertEqual(call["target_env"], "prod")
+        self.assertTrue(entry["live_hints"])
+        self.assertEqual(entry["env"], "prod")
+        self.assertTrue(any("live hints:" in ln for ln in job["log"]))
+        # SEAM-BIND: dashboard.bound.json next to the portable one.
+        self.assertTrue(entry["bound"], entry)
+        self.assertTrue(os.path.isfile(entry["bound_file"]))
+        self.assertEqual(os.path.basename(entry["bound_file"]),
+                         "dashboard.bound.json")
+        self.assertTrue(os.path.isfile(
+            os.path.join(entry["package_dir"], "dashboard.json")))
+        with open(entry["bound_file"], encoding="utf-8") as f:
+            bound = json.load(f)
+        self.assertTrue(bound.get("_bound"))
+        self.assertEqual(bound.get("_env"), "prod")
+        self.assertEqual(entry["ds_map"], _DS_MAP)
+        self.assertIsNotNone(
+            self.store.get_artifact(entry["slug"], "dashboard-bound"))
+        # the stored (portable) dashboard keeps its template variables
+        row = self.store.get_dashboard(entry["slug"])
+        self.assertNotIn("_bound", row["data"])
+        # SEAM-REPORT summary rides along on the convert result
+        self.assertIn("missing_datasources", entry)
+        self.assertIn("manual_panels", entry)
+        run = self.store.list_runs("convert")[-1]
+        self.assertEqual(run["meta"]["env"], "prod")
+        self.assertTrue(run["meta"]["live"])
+        self.assertTrue(run["meta"]["bind"])
+
+    def test_convert_live_bind_without_connections_degrades(self):
+        out_dir = os.path.join(self.tmp.name, "seam-out-offline")
+        code, resp = self.api("POST", "/api/convert",
+                              {"nr_json": self.sample_obj,
+                               "out_dir": out_dir, "live": True,
+                               "bind": True})
+        self.assertEqual(code, 200)
+        job = poll_job(self.base, resp["job"])
+        self.assertEqual(job["status"], "done", job)
+        entry = job["result"]["dashboards"][0]
+        self.assertFalse(entry["live_hints"])
+        self.assertFalse(entry["bound"])
+        self.assertNotIn("bound_file", entry)
+        self.assertTrue(any("no New Relic key or Grafana URL" in ln
+                            for ln in job["log"]))
+        self.assertTrue(any("bind requested but no Grafana URL" in ln
+                            for ln in job["log"]))
+        self.assertEqual(STUBS["nr2grafana.translate.hints"].calls, [])
+        self.assertEqual(STUBS["nr2grafana.bind"].calls, [])
+
+    def test_convert_bind_unresolvable_is_noted_not_fatal(self):
+        self._grafana_on(ds_map={})
+        out_dir = os.path.join(self.tmp.name, "seam-out-nomap")
+        code, resp = self.api("POST", "/api/convert",
+                              {"nr_json": self.sample_obj,
+                               "out_dir": out_dir, "bind": True})
+        job = poll_job(self.base, resp["job"])
+        self.assertEqual(job["status"], "done", job)
+        entry = job["result"]["dashboards"][0]
+        self.assertFalse(entry["bound"])
+        self.assertIn("/missing", entry["bind_error"])
+
+    def test_convert_live_hint_failure_falls_back_offline(self):
+        self._grafana_on()
+        out_dir = os.path.join(self.tmp.name, "seam-out-hintfail")
+
+        def boom(**kwargs):
+            raise RuntimeError("mimir unreachable")
+        with mock.patch.object(STUBS["nr2grafana.translate.hints"],
+                               "collect_hints", boom):
+            code, resp = self.api("POST", "/api/convert",
+                                  {"nr_json": self.sample_obj,
+                                   "out_dir": out_dir, "live": True})
+            job = poll_job(self.base, resp["job"])
+        self.assertEqual(job["status"], "done", job)
+        self.assertFalse(job["result"]["dashboards"][0]["live_hints"])
+        self.assertTrue(any("mimir unreachable" in ln
+                            for ln in job["log"]))
 
 
 if __name__ == "__main__":

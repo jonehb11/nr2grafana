@@ -1,0 +1,246 @@
+{
+ "schema": 1,
+ "page": "Carepoint Logs",
+ "widgets": [
+  {
+   "id": "p22-w001",
+   "title": "Emdeon transmit Finished",
+   "visualization": "viz.bar",
+   "grafana_type": "bargauge",
+   "nrql": [
+    "SELECT count(*) FROM Log where message LIKE '%Emdeon transmit Finished%' FACET hostname"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "loki",
+      "type": "instant",
+      "expr": "sum by (instance)(count_over_time({service_name=~\".+\"} |~ \"(?i).*Emdeon transmit Finished.*\" [$__range]))"
+     }
+    ],
+    "notes": [
+     "no stream-label filter found in WHERE; emitted {service_name=~\".+\"} which scans all streams \u2014 add a label filter",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "loki",
+     "refId": "A",
+     "expr": "sum by (instance)(count_over_time({service_name=~\".+\"} |~ \"(?i).*Emdeon transmit Finished.*\" [$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p22-w002",
+   "title": "Relay Health Finished",
+   "visualization": "viz.bar",
+   "grafana_type": "bargauge",
+   "nrql": [
+    "SELECT count(*) FROM Log where message LIKE '%Relay Health Finished%' FACET hostname"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "loki",
+      "type": "instant",
+      "expr": "sum by (instance)(count_over_time({service_name=~\".+\"} |~ \"(?i).*Relay Health Finished.*\" [$__range]))"
+     }
+    ],
+    "notes": [
+     "no stream-label filter found in WHERE; emitted {service_name=~\".+\"} which scans all streams \u2014 add a label filter",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "loki",
+     "refId": "A",
+     "expr": "sum by (instance)(count_over_time({service_name=~\".+\"} |~ \"(?i).*Relay Health Finished.*\" [$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p22-w003",
+   "title": "ABORTING Execute Loop",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT count(*) FROM Log where message LIKE '%ABORTING Execute Loop%' FACET hostname"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "loki",
+      "type": "instant",
+      "expr": "sum by (instance)(count_over_time({service_name=~\".+\"} |~ \"(?i).*ABORTING Execute Loop.*\" [$__range]))"
+     }
+    ],
+    "notes": [
+     "no stream-label filter found in WHERE; emitted {service_name=~\".+\"} which scans all streams \u2014 add a label filter",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "loki",
+     "refId": "A",
+     "expr": "sum by (instance)(count_over_time({service_name=~\".+\"} |~ \"(?i).*ABORTING Execute Loop.*\" [$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p22-w004",
+   "title": "94:Emdeon Error",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT count(*) FROM Log where message LIKE '%94:Emdeon Error%' FACET hostname"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "loki",
+      "type": "instant",
+      "expr": "sum by (instance)(count_over_time({service_name=~\".+\"} |~ \"(?i).*94:Emdeon Error.*\" [$__range]))"
+     }
+    ],
+    "notes": [
+     "no stream-label filter found in WHERE; emitted {service_name=~\".+\"} which scans all streams \u2014 add a label filter",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "loki",
+     "refId": "A",
+     "expr": "sum by (instance)(count_over_time({service_name=~\".+\"} |~ \"(?i).*94:Emdeon Error.*\" [$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p22-w005",
+   "title": "Elapsed time",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT count(*) FROM Log where message LIKE '%Elapsed time%' FACET hostname"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "loki",
+      "type": "instant",
+      "expr": "sum by (instance)(count_over_time({service_name=~\".+\"} |~ \"(?i).*Elapsed time.*\" [$__range]))"
+     }
+    ],
+    "notes": [
+     "no stream-label filter found in WHERE; emitted {service_name=~\".+\"} which scans all streams \u2014 add a label filter",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "loki",
+     "refId": "A",
+     "expr": "sum by (instance)(count_over_time({service_name=~\".+\"} |~ \"(?i).*Elapsed time.*\" [$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p22-w006",
+   "title": "HTTP ERROR",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT count(*) FROM Log where message LIKE '%HTTP ERROR%' FACET hostname"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "loki",
+      "type": "instant",
+      "expr": "sum by (instance)(count_over_time({service_name=~\".+\"} |~ \"(?i).*HTTP ERROR.*\" [$__range]))"
+     }
+    ],
+    "notes": [
+     "no stream-label filter found in WHERE; emitted {service_name=~\".+\"} which scans all streams \u2014 add a label filter",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "loki",
+     "refId": "A",
+     "expr": "sum by (instance)(count_over_time({service_name=~\".+\"} |~ \"(?i).*HTTP ERROR.*\" [$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p22-w007",
+   "title": "94:Access violation",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT count(*) FROM Log where message LIKE '%94:Access violation%' FACET hostname"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "loki",
+      "type": "instant",
+      "expr": "sum by (instance)(count_over_time({service_name=~\".+\"} |~ \"(?i).*94:Access violation.*\" [$__range]))"
+     }
+    ],
+    "notes": [
+     "no stream-label filter found in WHERE; emitted {service_name=~\".+\"} which scans all streams \u2014 add a label filter",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "loki",
+     "refId": "A",
+     "expr": "sum by (instance)(count_over_time({service_name=~\".+\"} |~ \"(?i).*94:Access violation.*\" [$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p22-w008",
+   "title": "HT:Access violation",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT count(*) FROM Log where message LIKE '%HT:Access violation%' FACET hostname"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "loki",
+      "type": "instant",
+      "expr": "sum by (instance)(count_over_time({service_name=~\".+\"} |~ \"(?i).*HT:Access violation.*\" [$__range]))"
+     }
+    ],
+    "notes": [
+     "no stream-label filter found in WHERE; emitted {service_name=~\".+\"} which scans all streams \u2014 add a label filter",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "loki",
+     "refId": "A",
+     "expr": "sum by (instance)(count_over_time({service_name=~\".+\"} |~ \"(?i).*HT:Access violation.*\" [$__range]))"
+    }
+   ]
+  }
+ ]
+}

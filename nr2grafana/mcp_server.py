@@ -168,7 +168,18 @@ def _t_get_dashboard(arguments: Dict[str, Any], ctx: Ctx) -> Any:
         "review": art("review"),
         "changes": ctx.store.list_changes(slug),
         "package_dir": web._package_dir(ctx.store, slug),
+        "missing": web._safe_missing(ctx.store, slug),
     }
+
+
+def _t_missing_datasources(arguments: Dict[str, Any], ctx: Ctx) -> Any:
+    """SEAM-REPORT: exactly what is missing before the dashboard shows
+    data -- unbound datasource families with the add-datasource
+    template, [MANUAL] panels (why + closest equivalent), needs-review
+    panels. Resolved against the live Grafana when one is configured."""
+    web = _web()
+    slug = _req_str(arguments, "slug")
+    return web._missing_report(ctx.store, slug)
 
 
 def _t_get_artifact(arguments: Dict[str, Any], ctx: Ctx) -> Any:
@@ -182,9 +193,15 @@ def _t_get_artifact(arguments: Dict[str, Any], ctx: Ctx) -> Any:
 
 def _t_convert(arguments: Dict[str, Any], ctx: Ctx) -> Any:
     web = _web()
-    body = _sub(arguments, ("input_dir", "out_dir", "config_path"))
+    body = _sub(arguments, ("input_dir", "out_dir", "config_path",
+                            "env"))
     if arguments.get("package") is not None:
         body["package"] = bool(arguments["package"])
+    # 1.11: live hints (SEAM-HINTS) and datasource binding (SEAM-BIND)
+    # pass straight through to the same library path the web uses.
+    for flag in ("live", "bind"):
+        if arguments.get(flag) is not None:
+            body[flag] = bool(arguments[flag])
     nr_json = arguments.get("nr_json")
     if nr_json is not None:
         pasted = web._normalize_nr_json(nr_json)
@@ -316,9 +333,8 @@ def _t_ai_context(arguments: Dict[str, Any], ctx: Ctx) -> Any:
     fmt = str(arguments.get("format") or "").lower()
     grafana = web._optional_grafana_live()
     deepdive = web._artifact(ctx.store, web._cost_slug(slug), "deepdive")
-    context = aicontext.build_context(
-        ctx.store, slug=slug, grafana=grafana, deepdive=deepdive,
-        redact=True)
+    context = web._build_ai_context(ctx.store, slug, grafana=grafana,
+                                    deepdive=deepdive)
     if fmt in ("markdown", "md"):
         return {"slug": slug, "format": "markdown",
                 "markdown": aicontext.to_markdown(context)}
@@ -367,9 +383,10 @@ def _t_add_datasource(arguments: Dict[str, Any], ctx: Ctx) -> Any:
 
 def _t_grafana_import(arguments: Dict[str, Any], ctx: Ctx) -> Any:
     web = _web()
-    body = _sub(arguments, ("slug", "slugs", "folder"))
-    if arguments.get("overwrite") is not None:
-        body["overwrite"] = bool(arguments["overwrite"])
+    body = _sub(arguments, ("slug", "slugs", "folder", "env"))
+    for flag in ("overwrite", "bind"):
+        if arguments.get(flag) is not None:
+            body[flag] = bool(arguments[flag])
     if not body.get("slug") and not body.get("slugs"):
         raise ToolError("grafana_import needs a 'slug' (or 'slugs' list) "
                         "of a converted dashboard", _ERR_INVALID_PARAMS)
@@ -411,6 +428,11 @@ def _t_readiness(arguments: Dict[str, Any], ctx: Ctx) -> Any:
             ctx.store, slug)
     except Exception:
         pass
+    missing = web._safe_missing(ctx.store, slug)
+    if isinstance(missing, dict):
+        res["missing_datasources"] = missing.get("missing_datasources",
+                                                 [])
+        res["manual_panels"] = len(missing.get("manual_panels") or [])
     return res
 
 
@@ -440,7 +462,13 @@ _TOOL_SPECS = [
      "Convert New Relic dashboard(s) to Grafana. Provide 'nr_json' (a "
      "pasted New Relic dashboard object or a list of them) OR "
      "'input_dir' (a directory of .json dashboards). Persists the "
-     "converted dashboards and artifacts and returns the result.",
+     "converted dashboards and artifacts and returns the result, "
+     "including per-dashboard missing_datasources. 'live' true "
+     "collects read-only hints from Mimir / New Relic (metric kinds, "
+     "entity names, env values) when keys are configured; 'env' pins "
+     "the target env for $env; 'bind' true also writes "
+     "dashboard.bound.json with concrete datasource uids when a "
+     "Grafana connection exists.",
      {"type": "object",
       "properties": {
           "nr_json": {"description": "a New Relic dashboard object or a "
@@ -452,7 +480,27 @@ _TOOL_SPECS = [
           "config_path": {"type": "string"},
           "package": {"type": "boolean",
                       "description": "write a package directory "
-                                     "(default true)"}}}),
+                                     "(default true)"},
+          "live": {"type": "boolean",
+                   "description": "collect live Mimir/New Relic hints "
+                                  "(read-only) before translating"},
+          "env": {"type": "string",
+                  "description": "target environment name for $env "
+                                 "(e.g. prod)"},
+          "bind": {"type": "boolean",
+                   "description": "also write dashboard.bound.json "
+                                  "with concrete datasource uids"}}}),
+    ("missing_datasources", _t_missing_datasources,
+     "What is missing before a converted dashboard shows data: "
+     "missing_datasources (families with no bound uid) each with the "
+     "exact add-datasource template (API body, MCP add_datasource "
+     "call, CLI), manual_panels ([MANUAL] placeholders with why + "
+     "closest_equivalent) and needs_review panels. Resolved against the "
+     "live Grafana when one is configured.",
+     {"type": "object",
+      "properties": {"slug": {"type": "string",
+                              "description": "dashboard slug"}},
+      "required": ["slug"]}),
     ("fetch_newrelic", _t_fetch_newrelic,
      "Fetch dashboards FROM New Relic via NerdGraph (read-only). Needs "
      "a New Relic API key in the environment. Optionally limit to "
@@ -592,7 +640,9 @@ _TOOL_SPECS = [
     ("grafana_import", _t_grafana_import,
      "Import a converted dashboard into the live Grafana instance. Pass "
      "'slug' (or 'slugs' for several), an optional 'folder', and "
-     "'overwrite' true to replace an existing one. Returns each "
+     "'overwrite' true to replace an existing one. 'bind' true first "
+     "rewrites ${datasource}-style refs to the instance's concrete "
+     "datasource uids ('env' pins the $env variable). Returns each "
      "dashboard's Grafana URL / uid.",
      {"type": "object",
       "properties": {
@@ -600,7 +650,12 @@ _TOOL_SPECS = [
           "slugs": {"type": "array", "items": {"type": "string"}},
           "folder": {"type": "string",
                      "description": "Grafana folder (created if absent)"},
-          "overwrite": {"type": "boolean"}}}),
+          "overwrite": {"type": "boolean"},
+          "bind": {"type": "boolean",
+                   "description": "bind datasource refs to concrete "
+                                  "uids before importing"},
+          "env": {"type": "string",
+                  "description": "target environment for $env"}}}),
     ("grafana_test", _t_grafana_test,
      "Run each panel's query against the live Grafana and record which "
      "targets return data / no-data / error (the datatest artifact that "

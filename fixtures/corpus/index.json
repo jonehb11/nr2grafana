@@ -1,0 +1,57 @@
+{
+ "schema": 1,
+ "description": "Redacted golden corpus: NRQL shapes from a real 531-widget migration, the converter's output at the time (before) and the human-made Grafana targets (expected). All identifiers replaced by acme-* placeholders.",
+ "widgets": 531,
+ "pages": 25,
+ "files": [
+  "page-01.json",
+  "page-02.json",
+  "page-03.json",
+  "page-04.json",
+  "page-05.json",
+  "page-06.json",
+  "page-07.json",
+  "page-08.json",
+  "page-09.json",
+  "page-10.json",
+  "page-11.json",
+  "page-12.json",
+  "page-13.json",
+  "page-14.json",
+  "page-15.json",
+  "page-16.json",
+  "page-17.json",
+  "page-18.json",
+  "page-19.json",
+  "page-20.json",
+  "page-21.json",
+  "page-22.json",
+  "page-23.json",
+  "page-24.json",
+  "page-25.json"
+ ],
+ "before_confidence": {
+  "approximate": 1,
+  "exact": 33,
+  "needs-review": 428,
+  "untranslatable": 69
+ },
+ "placeholders": {
+  "cluster_prefix": "acme-cluster-",
+  "org": "acme",
+  "app": "acme-backend",
+  "app_metric_prefix": "acme_backend",
+  "queues": "acme-queue-<n>",
+  "accounts": "acme-account-<n>",
+  "other_names": "acme-name-<n>",
+  "hostnames": "example.com"
+ },
+ "redaction_counts": {
+  "queues": 9,
+  "accounts": 5,
+  "clusters": 5,
+  "numbers": 79,
+  "hostnames": 0,
+  "other_names": 10
+ }
+}

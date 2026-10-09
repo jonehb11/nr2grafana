@@ -299,7 +299,7 @@ class QueryBuilderTests(unittest.TestCase):
 
     def test_no_customer_values(self):
         q = flowlogs.build_ports_query()
-        for bad in ("348342704569", "arn:", "us-east-1c"):
+        for bad in ("123456789012", "arn:", "us-east-1c"):
             self.assertNotIn(bad, q)
 
     def test_port_label(self):
