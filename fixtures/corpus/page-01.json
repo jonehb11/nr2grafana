@@ -1,0 +1,1892 @@
+{
+ "schema": 1,
+ "page": "KPI",
+ "widgets": [
+  {
+   "id": "p01-w001",
+   "title": "Orders Created",
+   "visualization": "viz.table",
+   "grafana_type": "table",
+   "nrql": [
+    "SELECT sum(acme_backend.order.created) FROM Metric FACET `classification` LIMIT 10 SINCE 1800 seconds ago WHERE clusterName = concat('acme-cluster-', {{env}})"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "topk(10, sum by (classification)(avg_over_time(acme_backend_order_created{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__range])))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'classification' not in label_map; used 'classification'",
+     "assumed gauge 'acme_backend_order_created'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "topk(10, sum by (classification)(increase(acme_backend_order_created_total[$__range])))"
+    }
+   ]
+  },
+  {
+   "id": "p01-w002",
+   "title": "Refill Orders Created",
+   "visualization": "viz.table",
+   "grafana_type": "table",
+   "nrql": [
+    "SELECT sum(acme_backend.order.created) FROM Metric FACET `classification` LIMIT 10 SINCE 1800 seconds ago WHERE refill='True'WHERE clusterName = concat('acme-cluster-', {{env}})"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "topk(10, sum by (classification)(avg_over_time(acme_backend_order_created{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__range])))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'classification' not in label_map; used 'classification'",
+     "assumed gauge 'acme_backend_order_created'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "topk(10, sum by (classification)(increase(acme_backend_order_created_total[$__range])))"
+    }
+   ]
+  },
+  {
+   "id": "p01-w003",
+   "title": "Fills Dispensed",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT sum(acme_backend.prescription_fill.dispensed) FROM Metric SINCE 1800 seconds ago WHERE clusterName = concat('acme-cluster-', {{env}})"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum(avg_over_time(acme_backend_prescription_fill_dispensed{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_prescription_fill_dispensed'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(increase(acme_backend_prescription_fill_dispensed_total[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p01-w004",
+   "title": "Orders Created",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.order.created) FROM Metric TIMESERIES FACET `classification` LIMIT 10 SINCE 1800 seconds ago WHERE clusterName = concat('acme-cluster-', {{env}})"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "topk(10, sum by (classification)(avg_over_time(acme_backend_order_created{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval])))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'classification' not in label_map; used 'classification'",
+     "assumed gauge 'acme_backend_order_created'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET LIMIT 10 became topk(10, ...); on range queries topk is evaluated per step so series may flicker",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "topk(10, sum by (classification)(rate(acme_backend_order_created_total[$__rate_interval])) * $__interval_ms / 1000)"
+    }
+   ]
+  },
+  {
+   "id": "p01-w005",
+   "title": "Refill Orders Created",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.order.created) FROM Metric TIMESERIES FACET `classification` LIMIT 10 SINCE 1800 seconds ago WHERE refill='True' AND  clusterName = concat('acme-cluster-', {{env}})"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "topk(10, sum by (classification)(avg_over_time(acme_backend_order_created{refill=\"True\",cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval])))"
+     }
+    ],
+    "notes": [
+     "attribute 'refill' not in label_map; used 'refill' \u2014 verify the label exists in your stack",
+     "FACET attribute 'classification' not in label_map; used 'classification'",
+     "assumed gauge 'acme_backend_order_created'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET LIMIT 10 became topk(10, ...); on range queries topk is evaluated per step so series may flicker",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "topk(10, sum by (classification)(rate(acme_backend_order_created_total{refill=\"True\"}[$__rate_interval])) * $__interval_ms / 1000)"
+    }
+   ]
+  },
+  {
+   "id": "p01-w006",
+   "title": "Fills Dispensed",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.prescription_fill.dispensed) FROM Metric TIMESERIES SINCE 1800 seconds ago WHERE clusterName = concat('acme-cluster-', {{env}})"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(avg_over_time(acme_backend_prescription_fill_dispensed{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_prescription_fill_dispensed'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(rate(acme_backend_prescription_fill_dispensed_total[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p01-w007",
+   "title": "Hub Orders Created",
+   "visualization": "viz.bar",
+   "grafana_type": "bargauge",
+   "nrql": [
+    "SELECT sum(acme_backend.order.created) FROM Metric \nFACET CASES (\n  WHERE refill = 'True' AS 'Refill',\n  WHERE refill = 'False' AS 'NRx'\n) WHERE clusterName = concat('acme-cluster-', {{env}}) AND classification = 'hub'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum(avg_over_time(acme_backend_order_created{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",classification=\"hub\",refill=\"True\"}[$__range]))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum(avg_over_time(acme_backend_order_created{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",classification=\"hub\",refill=\"False\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "attribute 'classification' not in label_map; used 'classification' \u2014 verify the label exists in your stack",
+     "FACET cases(...) became one filtered query per case; NR's implicit 'Other' bucket is not emitted",
+     "attribute 'refill' not in label_map; used 'refill' \u2014 verify the label exists in your stack",
+     "assumed gauge 'acme_backend_order_created'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(increase(acme_backend_order_created_total{classification=\"hub\",refill=\"True\"}[$__range]))"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "sum(increase(acme_backend_order_created_total{classification=\"hub\",refill=\"False\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p01-w008",
+   "title": "Ionis / Tryngolza Orders",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.order.created.hub) FROM Metric WHERE clusterName = concat('acme-cluster-', {{env}}) AND (ndc = 10000000077 OR ndc = 10000000078 OR ndc = 10000000069) TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(avg_over_time(acme_backend_order_created_hub{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",ndc=~\"10000000077|10000000078|10000000069\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_order_created_hub'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(rate(acme_backend_order_created_hub_total{ndc=~\"10000000077|10000000078|10000000069\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p01-w009",
+   "title": "Amarin Orders",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.order.created.hub) AS GenericOrders FROM Metric WHERE clusterName = concat('acme-cluster-', {{env}}) AND (ndc = 10000000035 OR ndc = 10000000071) TIMESERIES",
+    "SELECT sum(acme_backend.order.created.hub) AS BrandOrders FROM Metric WHERE clusterName = 'acme-cluster-prod' AND (ndc= 10000000075 OR ndc = 10000000076) TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(avg_over_time(acme_backend_order_created_hub{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",ndc=~\"10000001|10000000071\"}[$__rate_interval]))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(avg_over_time(acme_backend_order_created_hub{cluster=\"acme-cluster-prod\",ndc=~\"10000000075|10000000076\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_order_created_hub'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "assumed gauge 'acme_backend_order_created_hub'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(rate(acme_backend_order_created_hub_total{ndc=~\"10000001|10000000071\"}[$__rate_interval])) * $__interval_ms / 1000"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "sum(rate(acme_backend_order_created_hub_total{cluster=\"acme-cluster-test\",ndc=~\"10000000075|10000000076\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p01-w010",
+   "title": "Hub Orders Creation Rate",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT rate(sum(acme_backend.order.created), 1 second)\nFROM Metric\nTIMESERIES 1 minute\nFACET CASES (\n  WHERE refill = 'True' AS 'Refill',\n  WHERE refill = 'False' AS 'NRx'\n) \nWHERE clusterName = concat('acme-cluster-', {{env}})\n  AND classification = 'hub'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(rate(acme_backend_order_created_total{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",classification=\"hub\",refill=\"True\"}[$__rate_interval]))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(rate(acme_backend_order_created_total{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",classification=\"hub\",refill=\"False\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'classification' not in label_map; used 'classification' \u2014 verify the label exists in your stack",
+     "FACET cases(...) became one filtered query per case; NR's implicit 'Other' bucket is not emitted",
+     "attribute 'refill' not in label_map; used 'refill' \u2014 verify the label exists in your stack",
+     "assumed counter 'acme_backend_order_created_total'; verify name/type in Mimir (/api/v1/metadata)",
+     "unit:short",
+     "TIMESERIES 1m: Grafana buckets by the query interval; set the panel's 'Min interval' to 1m to mirror NR bucketing"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(rate(acme_backend_order_created_total{classification=\"hub\",refill=\"True\"}[$__rate_interval]))"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "sum(rate(acme_backend_order_created_total{classification=\"hub\",refill=\"False\"}[$__rate_interval]))"
+    }
+   ]
+  },
+  {
+   "id": "p01-w011",
+   "title": "ERXs Received",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT sum(acme_backend.prescription.erx_received) FROM Metric SINCE 1800 seconds ago WHERE clusterName = concat('acme-cluster-', {{env}})"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum(avg_over_time(acme_backend_prescription_erx_received{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_prescription_erx_received'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(increase(acme_backend_prescription_erx_received_total[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p01-w012",
+   "title": "Telesales Button Click",
+   "visualization": "viz.bar",
+   "grafana_type": "bargauge",
+   "nrql": [
+    "SELECT sum(acme_backend.ui.telesales.button.click) FROM Metric where clusterName = concat('acme-cluster-', {{env}}) FACET `source` "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum by (source)(avg_over_time(acme_backend_ui_telesales_button_click{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'source' not in label_map; used 'source'",
+     "assumed gauge 'acme_backend_ui_telesales_button_click'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (source)(increase(acme_backend_ui_telesales_button_click_total[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p01-w013",
+   "title": "Hub Orders Created",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.order.created) FROM Metric TIMESERIES FACET CASES (\n  WHERE refill = 'True' AS 'Refill',\n  WHERE refill = 'False' AS 'NRx'\n) \nWHERE clusterName = concat('acme-cluster-', {{env}}) AND classification = 'hub'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(avg_over_time(acme_backend_order_created{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",classification=\"hub\",refill=\"True\"}[$__rate_interval]))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(avg_over_time(acme_backend_order_created{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",classification=\"hub\",refill=\"False\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'classification' not in label_map; used 'classification' \u2014 verify the label exists in your stack",
+     "FACET cases(...) became one filtered query per case; NR's implicit 'Other' bucket is not emitted",
+     "attribute 'refill' not in label_map; used 'refill' \u2014 verify the label exists in your stack",
+     "assumed gauge 'acme_backend_order_created'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(rate(acme_backend_order_created_total{classification=\"hub\",refill=\"True\"}[$__rate_interval])) * $__interval_ms / 1000"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "sum(rate(acme_backend_order_created_total{classification=\"hub\",refill=\"False\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p01-w014",
+   "title": "Activation code generation status",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.otsuka.activation_code.generation) FROM Metric TIMESERIES FACET `status` LIMIT 10 where clusterName = concat('acme-cluster-', {{env}})",
+    "SELECT sum(`acme_backend.http.request.status.200`) FROM Metric TIMESERIES FACET `view_name` WHERE clusterName = concat('acme-cluster-', {{env}}) where view_name ='v2:acme-name-1'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "topk(10, sum by (status)(avg_over_time(acme_backend_otsuka_activation_code_generation{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval])))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (view_name)(avg_over_time(acme_backend_http_request_status_200{view_name=\"v2:acme-name-1\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'status' not in label_map; used 'status'",
+     "assumed gauge 'acme_backend_otsuka_activation_code_generation'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET LIMIT 10 became topk(10, ...); on range queries topk is evaluated per step so series may flicker",
+     "attribute 'view_name' not in label_map; used 'view_name' \u2014 verify the label exists in your stack",
+     "FACET attribute 'view_name' not in label_map; used 'view_name'",
+     "assumed gauge 'acme_backend_http_request_status_200'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "topk(10, sum by (status)(rate(acme_backend_otsuka_activation_code_generation_total[$__rate_interval])) * $__interval_ms / 1000)"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "sum by (view_name)(rate(acme_backend_http_request_status_200_total{view_name=\"v2:acme-name-1\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p01-w015",
+   "title": "Prices Auto Unpublished",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT sum(acme_backend.auto_unpublish_price) FROM Metric WHERE clusterName = concat('acme-cluster-', {{env}})"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum(avg_over_time(acme_backend_auto_unpublish_price{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_auto_unpublish_price'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(increase(acme_backend_auto_unpublish_price_total[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p01-w016",
+   "title": "Miebo Orders",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.order.created.hub) FROM Metric WHERE clusterName = concat('acme-cluster-', {{env}}) AND (ndc = 10000000070) TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(avg_over_time(acme_backend_order_created_hub{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",ndc=\"10000000070\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'ndc' not in label_map; used 'ndc' \u2014 verify the label exists in your stack",
+     "assumed gauge 'acme_backend_order_created_hub'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(rate(acme_backend_order_created_hub_total{ndc=\"10000000070\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p01-w017",
+   "title": "Fulillment Orders Created by Store",
+   "visualization": "viz.table",
+   "grafana_type": "table",
+   "nrql": [
+    "SELECT sum(acme_backend.fulfillment.order.created) FROM Metric FACET `store` LIMIT 10 SINCE 1800 seconds ago WHERE clusterName = concat('acme-cluster-', {{env}})"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "topk(10, sum by (store)(avg_over_time(acme_backend_fulfillment_order_created{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__range])))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'store' not in label_map; used 'store'",
+     "assumed gauge 'acme_backend_fulfillment_order_created'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "topk(10, sum by (store)(increase(acme_backend_fulfillment_order_created_total[$__range])))"
+    }
+   ]
+  },
+  {
+   "id": "p01-w018",
+   "title": "Fulfillment Orders Created By Store",
+   "visualization": "viz.table",
+   "grafana_type": "table",
+   "nrql": [
+    "SELECT sum(acme_backend.fulfillment.order.created) FROM Metric where clusterName = concat('acme-cluster-', {{env}}) FACET `store` LIMIT 10 SINCE 1800 seconds ago"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "topk(10, sum by (store)(avg_over_time(acme_backend_fulfillment_order_created{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__range])))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'store' not in label_map; used 'store'",
+     "assumed gauge 'acme_backend_fulfillment_order_created'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "topk(10, sum by (store)(increase(acme_backend_fulfillment_order_created_total[$__range])))"
+    }
+   ]
+  },
+  {
+   "id": "p01-w019",
+   "title": "Neffy Orders",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.order.created.hub) FROM Metric WHERE clusterName = concat('acme-cluster-', {{env}}) AND (ndc = 10000000079) TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(avg_over_time(acme_backend_order_created_hub{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",ndc=\"10000000079\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'ndc' not in label_map; used 'ndc' \u2014 verify the label exists in your stack",
+     "assumed gauge 'acme_backend_order_created_hub'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(rate(acme_backend_order_created_hub_total{ndc=\"10000000079\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p01-w020",
+   "title": "Prior Auth Creation",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.prior_authorization_service.prior_auth_created) FROM Metric FACET creation_reason TIMESERIES LIMIT 10 SINCE 1800 seconds ago WHERE clusterName = 'acme-cluster-prod'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "topk(10, sum by (creation_reason)(avg_over_time(acme_backend_prior_authorization_service_prior_auth_created{cluster=\"acme-cluster-prod\"}[$__rate_interval])))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'creation_reason' not in label_map; used 'creation_reason'",
+     "assumed gauge 'acme_backend_prior_authorization_service_prior_auth_created'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET LIMIT 10 became topk(10, ...); on range queries topk is evaluated per step so series may flicker",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "topk(10, sum by (creation_reason)(rate(acme_backend_prior_authorization_service_prior_auth_created_total{cluster=\"acme-cluster-test\"}[$__rate_interval])) * $__interval_ms / 1000)"
+    }
+   ]
+  },
+  {
+   "id": "p01-w021",
+   "title": "Order Price Unpublished",
+   "visualization": "viz.bar",
+   "grafana_type": "bargauge",
+   "nrql": [
+    "SELECT sum(acme_backend.order.price.unpublish) FROM Metric FACET `mode` LIMIT 10 SINCE 1800 seconds ago WHERE clusterName = concat('acme-cluster-', {{env}})"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "topk(10, sum by (mode)(avg_over_time(acme_backend_order_price_unpublish{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__range])))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'mode' not in label_map; used 'mode'",
+     "assumed gauge 'acme_backend_order_price_unpublish'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "topk(10, sum by (mode)(increase(acme_backend_order_price_unpublish_total[$__range])))"
+    }
+   ]
+  },
+  {
+   "id": "p01-w022",
+   "title": "Covered Meds NDC Mismatches during Rx Imports",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.grx.prescription_created_without_workflow) FROM Metric WHERE clusterName = 'acme-cluster-prod' AND status ='failure' FACET drug_name TIMESERIES "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (drug_name)(avg_over_time(acme_backend_grx_prescription_created_without_workflow{cluster=\"acme-cluster-prod\",status=\"failure\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'status' not in label_map; used 'status' \u2014 verify the label exists in your stack",
+     "FACET attribute 'drug_name' not in label_map; used 'drug_name'",
+     "assumed gauge 'acme_backend_grx_prescription_created_without_workflow'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (drug_name)(rate(acme_backend_grx_prescription_created_without_workflow_total{cluster=\"acme-cluster-test\",status=\"failure\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p01-w023",
+   "title": "Post Fulfillment Approval Automation",
+   "visualization": "viz.table",
+   "grafana_type": "table",
+   "nrql": [
+    "SELECT sum(acme_backend.hub.fulfillment.approval.automation) as Count FROM Metric where clusterName = concat('acme-cluster-', {{env}}) FACET `transfer_type` LIMIT 10 SINCE 1800 seconds ago"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "topk(10, sum by (transfer_type)(avg_over_time(acme_backend_hub_fulfillment_approval_automation{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__range])))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'transfer_type' not in label_map; used 'transfer_type'",
+     "assumed gauge 'acme_backend_hub_fulfillment_approval_automation'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "topk(10, sum by (transfer_type)(increase(acme_backend_hub_fulfillment_approval_automation_total[$__range])))"
+    }
+   ]
+  },
+  {
+   "id": "p01-w024",
+   "title": "Price Refresh",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.order.price.refresh.requested) FROM Metric TIMESERIES SINCE 1800 seconds ago where clusterName = concat('acme-cluster-', {{env}})",
+    "SELECT sum(acme_backend.order.price.refresh) FROM Metric FACET success TIMESERIES SINCE 1800 seconds ago where clusterName = 'acme-cluster-prod'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(avg_over_time(acme_backend_order_price_refresh_requested{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (success)(avg_over_time(acme_backend_order_price_refresh{cluster=\"acme-cluster-prod\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_order_price_refresh_requested'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "timefrom:now-1800s",
+     "FACET attribute 'success' not in label_map; used 'success'",
+     "assumed gauge 'acme_backend_order_price_refresh'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(rate(acme_backend_order_price_refresh_requested_total[$__rate_interval])) * $__interval_ms / 1000"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "sum by (success)(rate(acme_backend_order_price_refresh_total{cluster=\"acme-cluster-test\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p01-w025",
+   "title": "Orders Purchased",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.order.purchased) FROM Metric FACET expected_type TIMESERIES SINCE 1800 seconds ago WHERE clusterName = concat('acme-cluster-', {{env}})"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (expected_type)(avg_over_time(acme_backend_order_purchased{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'expected_type' not in label_map; used 'expected_type'",
+     "assumed gauge 'acme_backend_order_purchased'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (expected_type)(rate(acme_backend_order_purchased_total[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p01-w026",
+   "title": "Prescription Entry Created",
+   "visualization": "viz.bar",
+   "grafana_type": "bargauge",
+   "nrql": [
+    "SELECT sum(acme_backend.prescription.entry.created) FROM Metric FACET `rx_source` LIMIT 10 where clusterName = concat('acme-cluster-', {{env}})"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "topk(10, sum by (rx_source)(avg_over_time(acme_backend_prescription_entry_created{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__range])))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'rx_source' not in label_map; used 'rx_source'",
+     "assumed gauge 'acme_backend_prescription_entry_created'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "topk(10, sum by (rx_source)(increase(acme_backend_prescription_entry_created_total[$__range])))"
+    }
+   ]
+  },
+  {
+   "id": "p01-w027",
+   "title": "Monitor insurance search timeout",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(`acme_backend.automation.tasks.monitor_search_and_save_when_complete`) FROM Metric where clusterName = concat('acme-cluster-', {{env}}) SINCE 12 HOURS AGO TIMESERIES "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(avg_over_time(acme_backend_automation_tasks_monitor_search_and_save_when_complete{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_automation_tasks_monitor_search_and_save_when_complete'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "timefrom:now-12h"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(rate(acme_backend_automation_tasks_monitor_search_and_save_when_complete_total[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p01-w028",
+   "title": "Eligibility Async",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.eligibility.async.success) AS 'Success (async)' FROM Metric WHERE clusterName = concat('acme-cluster-', {{env}}) AND `pharmacy_partner` IS NULL TIMESERIES ",
+    "SELECT sum(acme_backend.eligibility.async.failed) AS 'Failed (async)' FROM Metric WHERE clusterName = 'acme-cluster-prod' AND `pharmacy_partner` IS NULL TIMESERIES "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(avg_over_time(acme_backend_eligibility_async_success{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",pharmacy_partner=\"\"}[$__rate_interval]))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(avg_over_time(acme_backend_eligibility_async_failed{cluster=\"acme-cluster-prod\",pharmacy_partner=\"\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'pharmacy_partner' not in label_map; used 'pharmacy_partner' \u2014 verify the label exists in your stack",
+     "assumed gauge 'acme_backend_eligibility_async_success'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "attribute 'pharmacy_partner' not in label_map; used 'pharmacy_partner' \u2014 verify the label exists in your stack",
+     "assumed gauge 'acme_backend_eligibility_async_failed'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(rate(acme_backend_eligibility_async_success_total{pharmacy_partner=\"\"}[$__rate_interval])) * $__interval_ms / 1000"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "sum(rate(acme_backend_eligibility_async_failed_total{cluster=\"acme-cluster-test\",pharmacy_partner=\"\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p01-w029",
+   "title": "Automated Order Status Change",
+   "visualization": "viz.table",
+   "grafana_type": "table",
+   "nrql": [
+    "SELECT sum(acme_backend.order.status.update) as Count FROM Metric where clusterName = concat('acme-cluster-', {{env}}) FACET tuple(`old_status`, `updated_status`) WHERE `created_by_id` = 89 LIMIT 10 SINCE 1800 seconds ago"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "topk(10, sum(avg_over_time(acme_backend_order_status_update{created_by_id=\"89\"}[$__range])))"
+     }
+    ],
+    "notes": [
+     "attribute 'created_by_id' not in label_map; used 'created_by_id' \u2014 verify the label exists in your stack",
+     "FACET tuple(...) has no label equivalent; grouping dropped",
+     "assumed gauge 'acme_backend_order_status_update'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "topk(10, sum(increase(acme_backend_order_status_update_total{created_by_id=\"89\"}[$__range])))"
+    }
+   ]
+  },
+  {
+   "id": "p01-w030",
+   "title": "Delayed Pricing",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.order.price.delay.started) AS 'Delay Started' FROM Metric WHERE clusterName = concat('acme-cluster-', {{env}}) TIMESERIES",
+    "SELECT sum(acme_backend.order.price.delay.ended) AS 'Delay Ended' FROM Metric WHERE clusterName = 'acme-cluster-prod' TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(avg_over_time(acme_backend_order_price_delay_started{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(avg_over_time(acme_backend_order_price_delay_ended{cluster=\"acme-cluster-prod\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_order_price_delay_started'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "assumed gauge 'acme_backend_order_price_delay_ended'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(rate(acme_backend_order_price_delay_started_total[$__rate_interval])) * $__interval_ms / 1000"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "sum(rate(acme_backend_order_price_delay_ended_total{cluster=\"acme-cluster-test\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p01-w031",
+   "title": "Hub Fulfillment Approval",
+   "visualization": "viz.table",
+   "grafana_type": "table",
+   "nrql": [
+    "SELECT sum(acme_backend.hub.fulfillment.approval) as Count FROM Metric FACET `status` where clusterName = concat('acme-cluster-', {{env}}) LIMIT 10 SINCE 1800 seconds ago"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "topk(10, sum by (status)(avg_over_time(acme_backend_hub_fulfillment_approval{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__range])))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'status' not in label_map; used 'status'",
+     "assumed gauge 'acme_backend_hub_fulfillment_approval'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "topk(10, sum by (status)(increase(acme_backend_hub_fulfillment_approval_total[$__range])))"
+    }
+   ]
+  },
+  {
+   "id": "p01-w032",
+   "title": "eComm Webhook",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.acme_health_webhook.process_event) as Count FROM Metric facet event WHERE clusterName = concat('acme-cluster-', {{env}}) timeseries since 7 days ago"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (event)(avg_over_time(acme_backend_acme_health_webhook_process_event{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'event' not in label_map; used 'event'",
+     "assumed gauge 'acme_backend_acme_health_webhook_process_event'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high",
+     "timefrom:now-7d"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (event)(rate(acme_backend_acme_health_webhook_process_event_total[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p01-w033",
+   "title": "Inactive cancelled orders",
+   "visualization": "logger.log-table-widget",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT `log_severity`,`timestamp`,`order_id` FROM Log, Log_dev WHERE `cluster_name` = concat('acme-cluster-', {{env}}) AND allColumnSearch('Auto-cancelled inactive hub order', insensitive: true)"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "NRQL could not be parsed: dangling predicate near: ...true)"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p01-w034",
+   "title": "Hub Fulfillment Approval Errors",
+   "visualization": "viz.table",
+   "grafana_type": "table",
+   "nrql": [
+    "SELECT sum(acme_backend.hub.fulfillment.approval) as Count FROM Metric where clusterName = concat('acme-cluster-', {{env}}) and status = 'error'  FACET `error_code` LIMIT 10 SINCE 1800 seconds ago"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "topk(10, sum by (error_code)(avg_over_time(acme_backend_hub_fulfillment_approval{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",status=\"error\"}[$__range])))"
+     }
+    ],
+    "notes": [
+     "attribute 'status' not in label_map; used 'status' \u2014 verify the label exists in your stack",
+     "FACET attribute 'error_code' not in label_map; used 'error_code'",
+     "assumed gauge 'acme_backend_hub_fulfillment_approval'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "topk(10, sum by (error_code)(increase(acme_backend_hub_fulfillment_approval_total{status=\"error\"}[$__range])))"
+    }
+   ]
+  },
+  {
+   "id": "p01-w035",
+   "title": "Brand Generics Claim Count by DAW and Type",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(`acme_backend.prescribed_substitution.%`) FROM Metric WHERE clusterName = concat('acme-cluster-', {{env}}) FACET CASES(WHERE metricName = 'acme_backend.prescribed_substitution.daw0.manual' AS 'daw0, manual', WHERE metricName = 'acme_backend.prescribed_substitution.daw0.automation' AS 'daw0, automated', WHERE metricName = 'acme_backend.prescribed_substitution.daw1.manual' AS 'daw1, manual', WHERE metricName = 'acme_backend.prescribed_substitution.daw1.automation' as 'daw1, automated') WHERE metricName NOT LIKE 'per_second' TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(avg_over_time(acme_backend_prescribed_substitution_{metricName!~\"(?i)per.second\",metricName=\"acme_backend.prescribed_substitution.daw0.manual\"}[$__rate_interval]))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(avg_over_time(acme_backend_prescribed_substitution_{metricName!~\"(?i)per.second\",metricName=\"acme_backend.prescribed_substitution.daw0.automation\"}[$__rate_interval]))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(avg_over_time(acme_backend_prescribed_substitution_{metricName!~\"(?i)per.second\",metricName=\"acme_backend.prescribed_substitution.daw1.manual\"}[$__rate_interval]))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(avg_over_time(acme_backend_prescribed_substitution_{metricName!~\"(?i)per.second\",metricName=\"acme_backend.prescribed_substitution.daw1.automation\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'metricName' not in label_map; used 'metricName' \u2014 verify the label exists in your stack",
+     "FACET cases(...) became one filtered query per case; NR's implicit 'Other' bucket is not emitted",
+     "assumed gauge 'acme_backend_prescribed_substitution_'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(rate({__name__=\"acme_backend_prescribed_substitution__total\",__name__!~\"(?i)per.second\",__name__=\"acme_backend.prescribed_substitution.daw0.manual\"}[$__rate_interval])) * $__interval_ms / 1000"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "sum(rate({__name__=\"acme_backend_prescribed_substitution__total\",__name__!~\"(?i)per.second\",__name__=\"acme_backend.prescribed_substitution.daw0.automation\"}[$__rate_interval])) * $__interval_ms / 1000"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "C",
+     "expr": "sum(rate({__name__=\"acme_backend_prescribed_substitution__total\",__name__!~\"(?i)per.second\",__name__=\"acme_backend.prescribed_substitution.daw1.manual\"}[$__rate_interval])) * $__interval_ms / 1000"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "D",
+     "expr": "sum(rate({__name__=\"acme_backend_prescribed_substitution__total\",__name__!~\"(?i)per.second\",__name__=\"acme_backend.prescribed_substitution.daw1.automation\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p01-w036",
+   "title": "Inactive Orders Cancelled",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.order.cancel.inactivity.success) as 'Inactive Order Cancelled' FROM Metric SINCE 1800 seconds ago WHERE clusterName = concat('acme-cluster-', {{env}}) timeseries"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(avg_over_time(acme_backend_order_cancel_inactivity_success{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_order_cancel_inactivity_success'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(rate(acme_backend_order_cancel_inactivity_success_total[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p01-w037",
+   "title": "Inactive Orders Cancelled",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT sum(acme_backend.order.cancel.inactivity.success) as 'Inactive Order Cancelled' FROM Metric SINCE 1800 seconds ago WHERE clusterName = concat('acme-cluster-', {{env}})"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum(avg_over_time(acme_backend_order_cancel_inactivity_success{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_order_cancel_inactivity_success'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(increase(acme_backend_order_cancel_inactivity_success_total[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p01-w038",
+   "title": "(untitled)",
+   "visualization": "viz.markdown",
+   "grafana_type": "text",
+   "nrql": [],
+   "before": {
+    "confidence": "exact",
+    "queries": [],
+    "notes": []
+   },
+   "expected": []
+  },
+  {
+   "id": "p01-w039",
+   "title": "Caremark Refills",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(`acme_backend.pharmacy_routing.caremark_refill.added`) FROM Metric FACET pharmacy_npi TIMESERIES WHERE clusterName = concat('acme-cluster-', {{env}}) LIMIT max"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (pharmacy_npi)(avg_over_time(acme_backend_pharmacy_routing_caremark_refill_added{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'pharmacy_npi' not in label_map; used 'pharmacy_npi'",
+     "assumed gauge 'acme_backend_pharmacy_routing_caremark_refill_added'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (pharmacy_npi)(rate(acme_backend_pharmacy_routing_caremark_refill_added_total[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p01-w040",
+   "title": "Hub Weekly Refill Distribution",
+   "visualization": "viz.table",
+   "grafana_type": "table",
+   "nrql": [
+    "SELECT sum(acme_backend.hub.weekly.refill.distribution) as Count FROM Metric FACET `day` where clusterName = concat('acme-cluster-', {{env}}) LIMIT 10 "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "topk(10, sum by (day)(avg_over_time(acme_backend_hub_weekly_refill_distribution{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__range])))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'day' not in label_map; used 'day'",
+     "assumed gauge 'acme_backend_hub_weekly_refill_distribution'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "topk(10, sum by (day)(increase(acme_backend_hub_weekly_refill_distribution_total[$__range])))"
+    }
+   ]
+  },
+  {
+   "id": "p01-w041",
+   "title": "Scheduled Hub Refill Task",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT sum(acme_backend.sched_task.hub_refill) as Count FROM Metric WHERE clusterName = concat('acme-cluster-', {{env}})"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum(avg_over_time(acme_backend_sched_task_hub_refill{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_sched_task_hub_refill'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(increase(acme_backend_sched_task_hub_refill_total[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p01-w042",
+   "title": "Hub Weekly Refill Distribution",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT sum(acme_backend.hub.weekly.refill.distribution.update) FROM Metric where clusterName = concat('acme-cluster-', {{env}}) "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum(avg_over_time(acme_backend_hub_weekly_refill_distribution_update{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_hub_weekly_refill_distribution_update'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(increase(acme_backend_hub_weekly_refill_distribution_update_total[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p01-w043",
+   "title": "Hub Weekly Refill Distribution",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT sum(acme_backend.hub.weekly.refill.distribution.skipped) FROM Metric where clusterName = concat('acme-cluster-', {{env}}) "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum(avg_over_time(acme_backend_hub_weekly_refill_distribution_skipped{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_hub_weekly_refill_distribution_skipped'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(increase(acme_backend_hub_weekly_refill_distribution_skipped_total[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p01-w044",
+   "title": "(untitled)",
+   "visualization": "viz.markdown",
+   "grafana_type": "text",
+   "nrql": [],
+   "before": {
+    "confidence": "exact",
+    "queries": [],
+    "notes": []
+   },
+   "expected": []
+  },
+  {
+   "id": "p01-w045",
+   "title": "Prescription Entry Created",
+   "visualization": "viz.bar",
+   "grafana_type": "bargauge",
+   "nrql": [
+    "SELECT sum(acme_backend.prescription.entry.created) FROM Metric FACET `rx_source` LIMIT 10 where clusterName =concat('acme-cluster-', {{env}})"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "topk(10, sum by (rx_source)(avg_over_time(acme_backend_prescription_entry_created{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__range])))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'rx_source' not in label_map; used 'rx_source'",
+     "assumed gauge 'acme_backend_prescription_entry_created'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "topk(10, sum by (rx_source)(increase(acme_backend_prescription_entry_created_total[$__range])))"
+    }
+   ]
+  },
+  {
+   "id": "p01-w046",
+   "title": "Prescription Sync",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(`acme_backend.grx.prescription_sync`) FROM Metric where clusterName = concat('acme-cluster-', {{env}}) SINCE 12 HOURS AGO TIMESERIES FACET status "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (status)(avg_over_time(acme_backend_grx_prescription_sync{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'status' not in label_map; used 'status'",
+     "assumed gauge 'acme_backend_grx_prescription_sync'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high",
+     "timefrom:now-12h"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (status)(rate(acme_backend_grx_prescription_sync_total[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p01-w047",
+   "title": "ERXs Received",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.prescription.erx_received) FROM Metric SINCE 1800 seconds ago WHERE clusterName = concat('acme-cluster-', {{env}}) TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(avg_over_time(acme_backend_prescription_erx_received{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_prescription_erx_received'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(rate(acme_backend_prescription_erx_received_total[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p01-w048",
+   "title": "Prescription Requests",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.prescription.request.created) FROM Metric TIMESERIES FACET `reason` LIMIT 10 SINCE 1800 seconds ago WHERE clusterName = concat('acme-cluster-', {{env}})"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "topk(10, sum by (reason)(avg_over_time(acme_backend_prescription_request_created{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval])))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'reason' not in label_map; used 'reason'",
+     "assumed gauge 'acme_backend_prescription_request_created'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET LIMIT 10 became topk(10, ...); on range queries topk is evaluated per step so series may flicker",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "topk(10, sum by (reason)(rate(acme_backend_prescription_request_created_total[$__rate_interval])) * $__interval_ms / 1000)"
+    }
+   ]
+  },
+  {
+   "id": "p01-w049",
+   "title": "Hub Rx Received",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(`acme_backend.hub.rx.received`) as `Hub Rx` FROM Metric where clusterName = concat('acme-cluster-', {{env}}) SINCE 12 HOURS AGO TIMESERIES "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(avg_over_time(acme_backend_hub_rx_received{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_hub_rx_received'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "timefrom:now-12h"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(rate(acme_backend_hub_rx_received_total[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p01-w050",
+   "title": "Hub Order Skipped",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(`acme_backend.hub.order.skipped`) FROM Metric where clusterName = concat('acme-cluster-', {{env}}) and reason != 'not_first_rx_in_store' AND from_rx_sync='True' SINCE 12 HOURS AGO TIMESERIES FACET reason "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (reason)(avg_over_time(acme_backend_hub_order_skipped{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",reason!=\"not_first_rx_in_store\",from_rx_sync=\"True\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'reason' not in label_map; used 'reason' \u2014 verify the label exists in your stack",
+     "attribute 'from_rx_sync' not in label_map; used 'from_rx_sync' \u2014 verify the label exists in your stack",
+     "FACET attribute 'reason' not in label_map; used 'reason'",
+     "assumed gauge 'acme_backend_hub_order_skipped'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high",
+     "timefrom:now-12h"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (reason)(rate(acme_backend_hub_order_skipped_total{reason!=\"not_first_rx_in_store\",from_rx_sync=\"True\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p01-w051",
+   "title": "(untitled)",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT sum(`acme_backend.hub.rx.received`) AS 'Hub Rx total'\nFROM Metric where clusterName = concat('acme-cluster-', {{env}})"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum(avg_over_time(acme_backend_hub_rx_received{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_hub_rx_received'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(increase(acme_backend_hub_rx_received_total[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p01-w052",
+   "title": "Order Creation Skip Count - Individual Reasons",
+   "visualization": "viz.bar",
+   "grafana_type": "bargauge",
+   "nrql": [
+    "SELECT sum(`acme_backend.hub.order.skipped`) AS 'Hub Order Skipped total'\nFROM Metric\nWHERE reason != 'not_first_rx_in_store' AND from_rx_sync='True' and clusterName = concat('acme-cluster-', {{env}})\nFACET reason"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum by (reason)(avg_over_time(acme_backend_hub_order_skipped{reason!=\"not_first_rx_in_store\",from_rx_sync=\"True\",cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "attribute 'reason' not in label_map; used 'reason' \u2014 verify the label exists in your stack",
+     "attribute 'from_rx_sync' not in label_map; used 'from_rx_sync' \u2014 verify the label exists in your stack",
+     "FACET attribute 'reason' not in label_map; used 'reason'",
+     "assumed gauge 'acme_backend_hub_order_skipped'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (reason)(increase(acme_backend_hub_order_skipped_total{reason!=\"not_first_rx_in_store\",from_rx_sync=\"True\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p01-w053",
+   "title": "(untitled)",
+   "visualization": "viz.markdown",
+   "grafana_type": "text",
+   "nrql": [],
+   "before": {
+    "confidence": "exact",
+    "queries": [],
+    "notes": []
+   },
+   "expected": []
+  },
+  {
+   "id": "p01-w054",
+   "title": "Order Status Change via Ops Tool",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.ops_tool.order.status.change) as Count FROM Metric WHERE clusterName = concat('acme-cluster-', {{env}}) TIMESERIES 1 hour"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(avg_over_time(acme_backend_ops_tool_order_status_change{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_ops_tool_order_status_change'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "TIMESERIES 1h: Grafana buckets by the query interval; set the panel's 'Min interval' to 1h to mirror NR bucketing"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(rate(acme_backend_ops_tool_order_status_change_total[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p01-w055",
+   "title": "Order Status Change via Ops Tool",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT sum(acme_backend.ops_tool.order.status.change) as Count FROM Metric WHERE clusterName = concat('acme-cluster-', {{env}})"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum(avg_over_time(acme_backend_ops_tool_order_status_change{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_ops_tool_order_status_change'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(increase(acme_backend_ops_tool_order_status_change_total[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p01-w056",
+   "title": "Order Status Change via Ops Tool",
+   "visualization": "viz.table",
+   "grafana_type": "table",
+   "nrql": [
+    "SELECT sum(acme_backend.ops_tool.order.status.change) as Count FROM Metric facet tuple(`from`, `to`) WHERE clusterName = concat('acme-cluster-', {{env}})"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum(avg_over_time(acme_backend_ops_tool_order_status_change{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "FACET tuple(...) has no label equivalent; grouping dropped",
+     "assumed gauge 'acme_backend_ops_tool_order_status_change'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(increase(acme_backend_ops_tool_order_status_change_total[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p01-w057",
+   "title": "Ops Tool Usage",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT count(*) FROM Metric WHERE clusterName = concat('acme-cluster-', {{env}}) and  metricName like '%ops_tool%' facet command TIMESERIES "
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "FROM Metric needs a metric name argument in count()"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p01-w058",
+   "title": "Order Status Change via Ops Tool",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.ops_tool.order.status.change) as Count FROM Metric facet tuple(`from`, `to`) WHERE clusterName = concat('acme-cluster-', {{env}}) TIMESERIES 1 hour "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(avg_over_time(acme_backend_ops_tool_order_status_change{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "FACET tuple(...) has no label equivalent; grouping dropped",
+     "assumed gauge 'acme_backend_ops_tool_order_status_change'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "TIMESERIES 1h: Grafana buckets by the query interval; set the panel's 'Min interval' to 1h to mirror NR bucketing"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(rate(acme_backend_ops_tool_order_status_change_total[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  }
+ ]
+}

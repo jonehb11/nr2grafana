@@ -23,8 +23,15 @@ Design goals:
 
 Public surface::
 
-    build_context(store, slug, include, grafana, deepdive, redact=True)
+    build_context(store, slug, include, grafana, deepdive, redact=True,
+                  missing=None)
         -> dict   # schema "nr2grafana/ai-context/v1"
+    missing_report(requirements, widgets, templates=None, bound_refs=None,
+                   instance_types=None, cfg=None) -> dict
+        # SEAM-REPORT: what is still missing before the dashboard works
+        # (unbound datasource families + the exact add-datasource
+        # template, [MANUAL] panels with WHY + closest equivalent,
+        # needs-review panels)
     to_markdown(context) -> str            # section per artifact
     to_prompt(context, question="") -> str # ready single-string prompt
     troubleshoot(assistant, context, question="") -> dict
@@ -147,9 +154,19 @@ LEGEND = {
     "translations": "Per-panel migration hints for the panels the "
                     "converter could not translate cleanly: the "
                     "original_nrql, the converter confidence "
-                    "(exact/approximate/needs-review/untranslatable) and "
+                    "(exact/approximate/needs-review/untranslatable), "
                     "the translation_notes explaining what needs review "
-                    "or a from-scratch conversion.",
+                    "or a from-scratch conversion, plus metric_kind "
+                    "(counter/gauge/histogram/summary per metric), "
+                    "closest_equivalent (datasource + example query/"
+                    "target for a [MANUAL] or needs-review panel) and "
+                    "missing_datasource (the family this panel needs but "
+                    "that is not bound yet).",
+    "missing": "What to add before this dashboard works: "
+               "missing_datasources (families with no bound uid) with "
+               "the exact add-datasource template (API body, MCP tool "
+               "call, CLI command), manual_panels ([MANUAL] placeholders "
+               "with WHY + closest_equivalent) and needs_review panels.",
     "flowlogs": "VPC Flow Logs cross-AZ byte attribution: the dominant "
                 "destination port (e.g. 9095 = Mimir/Loki gRPC), GB/day, "
                 "per-driver %-of-cross-AZ share, top talker flows and the "
@@ -762,13 +779,59 @@ def _conf_rank(conf: Any) -> int:
     return _CONF_RANK.get(str(conf or "").strip().lower(), 2)
 
 
+def _widget_title(w: Dict[str, Any]) -> str:
+    return _trunc(w.get("widget") or w.get("panel_title")
+                  or w.get("title") or "", 120)
+
+
+def _closest_equivalent(w: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The SEAM-REPORT closest_equivalent of a widget row, compacted to
+    {datasource, example_query|cw_target, note}; None when absent."""
+    ce = w.get("closest_equivalent")
+    if isinstance(ce, str) and ce.strip():
+        return {"note": _trunc(ce, _MAX_STR)}
+    if not isinstance(ce, dict) or not ce:
+        return None
+    out: Dict[str, Any] = {}
+    for k in ("datasource", "example_query", "note"):
+        v = ce.get(k)
+        if v not in (None, "", [], {}):
+            out[k] = _trunc(v, _MAX_STR) if isinstance(v, str) else v
+    if isinstance(ce.get("cw_target"), dict) and ce["cw_target"]:
+        out["cw_target"] = ce["cw_target"]
+    return out or None
+
+
+def _metric_kind(w: Dict[str, Any]) -> Any:
+    """metric_kind per SEAM-REPORT: a {metric: kind} map or a bare kind
+    string; anything else is dropped."""
+    mk = w.get("metric_kind")
+    if isinstance(mk, dict) and mk:
+        return {str(k): str(v) for k, v in sorted(mk.items())}
+    if isinstance(mk, str) and mk:
+        return mk
+    return None
+
+
+def _missing_family(w: Dict[str, Any]) -> str:
+    md = w.get("missing_datasource")
+    return str(md) if isinstance(md, str) and md else ""
+
+
+def _is_manual(w: Dict[str, Any]) -> bool:
+    conf = str(w.get("confidence") or "").strip().lower()
+    return bool(w.get("manual")) or conf == "untranslatable"
+
+
 def _panel_translations(widgets: Any) -> List[Dict[str, Any]]:
     """Compact per-panel migration hints from the widget-report.
 
     Surfaces only the panels that need attention -- a non-exact
-    converter confidence or any translation notes -- carrying their
-    original_nrql and translation_notes so the AI copilot can translate
-    or improve them. Deterministic: worst confidence first, then
+    converter confidence, any translation notes, or a missing
+    datasource -- carrying their original_nrql and translation_notes
+    plus the SEAM-REPORT fields (metric_kind, closest_equivalent,
+    missing_datasource, manual) so the AI copilot can translate or
+    improve them. Deterministic: worst confidence first, then
     panel_id, then title; capped and truncated for compactness.
     """
     rows: List[Dict[str, Any]] = []
@@ -780,19 +843,271 @@ def _panel_translations(widgets: Any) -> List[Dict[str, Any]]:
                  for n in _as_list(w.get("notes")) if n]
         nrql = [_trunc(str(q), _MAX_STR)
                 for q in _as_list(w.get("nrql")) if q]
-        if conf.lower() in ("exact", "") and not notes:
+        missing = _missing_family(w)
+        if conf.lower() in ("exact", "") and not notes and not missing:
             continue
-        rows.append({
+        row: Dict[str, Any] = {
             "panel_id": w.get("panel_id"),
-            "panel": _trunc(w.get("widget") or w.get("panel_title")
-                            or "", 120),
+            "panel": _widget_title(w),
             "confidence": conf,
             "original_nrql": nrql,
             "translation_notes": notes,
-        })
+        }
+        mk = _metric_kind(w)
+        if mk is not None:
+            row["metric_kind"] = mk
+        ce = _closest_equivalent(w)
+        if ce:
+            row["closest_equivalent"] = ce
+        if missing:
+            row["missing_datasource"] = missing
+        if _is_manual(w):
+            row["manual"] = True
+        rv = [str(v) for v in _as_list(w.get("render_vars")) if v]
+        if rv:
+            row["render_vars"] = rv[:TOP]
+        for flag in ("k8s_mapped", "cloudwatch"):
+            if w.get(flag):
+                row[flag] = True
+        rows.append(row)
     rows.sort(key=lambda r: (_conf_rank(r.get("confidence")),
                              str(r.get("panel_id")), str(r.get("panel"))))
     return rows[:_MAX_LIST]
+
+
+# ---------------------------------------------------------------------------
+# SEAM-REPORT: what is missing before the dashboard works
+# ---------------------------------------------------------------------------
+
+_VAR_REF_RE = re.compile(r"^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?$")
+
+# Datasource family -> Grafana plugin type when the requirements entry
+# carries none (cloudwatch is the 1.11 family for aws.* metrics).
+_FAMILY_PLUGIN = {
+    "prometheus": "prometheus", "mimir": "prometheus", "loki": "loki",
+    "tempo": "tempo", "cloudwatch": "cloudwatch",
+    "newrelic": "nrgrafanaplugin-newrelic-datasource",
+}
+
+
+def _default_templates() -> Dict[str, Any]:
+    """DS_TEMPLATES from grafana.live, or {} when not importable."""
+    try:
+        from .grafana.live import DS_TEMPLATES
+        return dict(DS_TEMPLATES)
+    except Exception:  # noqa: BLE001 - sibling mid-build
+        return {}
+
+
+def _is_var_ref(uid: Any) -> bool:
+    return not uid or bool(_VAR_REF_RE.match(str(uid)))
+
+
+def add_datasource_template(family: str, plugin_id: str = "",
+                            templates: Optional[Dict[str, Any]] = None) \
+        -> Dict[str, Any]:
+    """The exact add-datasource template for one missing family: the
+    fields to fill (placeholders only, never values), the HTTP API body,
+    the MCP ``add_datasource`` call and the CLI command. Secret fields
+    are listed by name and rendered as ``<SECRET>``."""
+    plugin_id = plugin_id or _FAMILY_PLUGIN.get(family, family)
+    templates = templates if templates is not None else _default_templates()
+    tpl = _as_dict(templates.get(plugin_id))
+    name = str(tpl.get("label") or family).split("/")[0].strip() or family
+    fields: List[Dict[str, Any]] = []
+    values: Dict[str, Any] = {}
+    for f in _as_list(tpl.get("fields")):
+        if not isinstance(f, dict) or not f.get("name"):
+            continue
+        fname = str(f["name"])
+        secret = bool(f.get("secret"))
+        placeholder = "" if secret else str(f.get("placeholder") or "")
+        fields.append({"name": fname,
+                       "label": str(f.get("label") or fname),
+                       "required": bool(f.get("required")),
+                       "secret": secret,
+                       "placeholder": placeholder})
+        if f.get("required") or fname == "url":
+            values[fname] = "<SECRET>" if secret else (
+                placeholder or "<%s>" % fname.upper())
+    if not fields:  # unknown plugin: the url is the universal field
+        fields.append({"name": "url", "label": "URL", "required": True,
+                       "secret": False, "placeholder": ""})
+        values["url"] = "<URL>"
+    cli = ("nr2grafana grafana add-datasource --type %s --name %s"
+           % (plugin_id, name))
+    for k, v in values.items():
+        cli += " --set %s=%s" % (k, v)
+    out: Dict[str, Any] = {
+        "family": family,
+        "type": plugin_id,
+        "name": name,
+        "fields": fields,
+        "api": {"method": "POST", "path": "/api/grafana/datasource",
+                "body": {"type": plugin_id, "name": name,
+                         "values": dict(values)}},
+        "mcp": {"tool": "add_datasource",
+                "arguments": dict({"type": plugin_id, "name": name},
+                                  **values)},
+        "cli": cli,
+    }
+    if tpl.get("notes"):
+        out["notes"] = _trunc(str(tpl["notes"]), 240)
+    return out
+
+
+def missing_report(requirements: Any, widgets: Any,
+                   templates: Optional[Dict[str, Any]] = None,
+                   bound_refs: Any = None,
+                   instance_types: Any = None,
+                   cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """SEAM-REPORT: exactly what is still missing before a converted
+    dashboard shows data, so an AI knows what to add.
+
+    ``requirements`` is the requirements artifact (its ``datasources``
+    rows and, when the requirements agent produced one, its
+    ``missing_datasources`` summary); ``widgets`` the widget-report
+    rows. ``bound_refs`` is the set of ``${var}`` refs / variable names
+    a live Grafana resolved (GrafanaLive.resolve_ds_map keys) and
+    ``instance_types`` the set of datasource plugin types present on
+    that instance; both None when no Grafana connection exists, in
+    which case every ``${var}`` reference counts as unbound (nothing
+    has been bound yet -- F8). Returns::
+
+        {"missing_datasources": [family, ...],
+         "datasources_to_add": [{family, plugin_id, panel_ids, uid_ref,
+                                 reason, template}],
+         "manual_panels": [{panel_id, title, why, closest_equivalent,
+                            original_nrql}],
+         "needs_review": [{panel_id, title, why, closest_equivalent,
+                           metric_kind, missing_datasource}],
+         "counts": {...}, "ready": bool}
+
+    Pure and deterministic; never raises on odd shapes.
+    """
+    reqs = _as_dict(requirements)
+    cfg = _as_dict(cfg)
+    bound = set(str(b) for b in bound_refs) if bound_refs else set()
+    types = (set(str(t) for t in instance_types)
+             if instance_types is not None else None)
+    fam_plugin = dict(_FAMILY_PLUGIN)
+    for family, spec in _as_dict(cfg.get("datasources")).items():
+        if isinstance(spec, dict) and spec.get("type"):
+            fam_plugin[str(family)] = str(spec["type"])
+
+    to_add: Dict[str, Dict[str, Any]] = {}
+
+    def need(family: str, plugin_id: str, panel_ids: List[Any],
+             uid_ref: str, reason: str) -> None:
+        entry = to_add.setdefault(family, {
+            "family": family, "plugin_id": plugin_id,
+            "panel_ids": [], "uid_ref": uid_ref, "reason": reason})
+        for pid in panel_ids:
+            if pid not in entry["panel_ids"]:
+                entry["panel_ids"].append(pid)
+
+    for d in _as_list(reqs.get("datasources")):
+        if not isinstance(d, dict):
+            continue
+        family = str(d.get("family") or d.get("type") or "")
+        if not family or d.get("required") is False:
+            continue
+        plugin_id = str(d.get("plugin_id") or fam_plugin.get(family)
+                        or family)
+        uid_ref = str(d.get("uid_ref") or d.get("uid") or "")
+        pids = [p for p in _as_list(d.get("panel_ids"))]
+        if types is not None:
+            if plugin_id in types or (uid_ref and uid_ref in bound):
+                continue
+            need(family, plugin_id, pids, uid_ref,
+                 "no %s datasource exists on the Grafana instance"
+                 % plugin_id)
+        elif _is_var_ref(uid_ref) and uid_ref not in bound:
+            need(family, plugin_id, pids, uid_ref,
+                 "datasource ref %s is not bound to a concrete uid "
+                 "(no Grafana connection to resolve it)"
+                 % (uid_ref or "(none)"))
+
+    # The requirements agent's own summary (SEAM-REPORT) wins by union.
+    for m in _as_list(reqs.get("missing_datasources")):
+        if isinstance(m, dict):
+            family = str(m.get("family") or "")
+            plugin_id = str(m.get("plugin_id") or fam_plugin.get(family)
+                            or family)
+            reason = str(m.get("reason") or m.get("note") or
+                         "required but no uid bound")
+            pids = _as_list(m.get("panel_ids"))
+        else:
+            family = str(m or "")
+            plugin_id = fam_plugin.get(family, family)
+            reason = "required but no uid bound"
+            pids = []
+        if family and (types is None or plugin_id not in types):
+            need(family, plugin_id, pids, "", reason)
+
+    manual: List[Dict[str, Any]] = []
+    review: List[Dict[str, Any]] = []
+    for w in _as_list(widgets):
+        if not isinstance(w, dict):
+            continue
+        fam = _missing_family(w)
+        if fam and (types is None or fam_plugin.get(fam, fam) not in types):
+            plugin_id = fam_plugin.get(fam, fam)
+            need(fam, plugin_id, [w.get("panel_id")], "",
+                 "no %s datasource exists on the Grafana instance "
+                 "(panel needs it)" % plugin_id if types is not None
+                 else "panel needs the %s datasource (no uid bound)"
+                 % fam)
+        notes = [str(n) for n in _as_list(w.get("notes")) if n]
+        why = _trunc("; ".join(notes), _MAX_STR) if notes else ""
+        conf = str(w.get("confidence") or "").strip().lower()
+        if _is_manual(w):
+            manual.append({
+                "panel_id": w.get("panel_id"),
+                "title": _widget_title(w),
+                "why": why or "no LGTM translation for this widget",
+                "closest_equivalent": _closest_equivalent(w),
+                "original_nrql": [_trunc(str(q), _MAX_STR)
+                                  for q in _as_list(w.get("nrql")) if q],
+            })
+        elif conf == "needs-review":
+            row: Dict[str, Any] = {
+                "panel_id": w.get("panel_id"),
+                "title": _widget_title(w),
+                "why": why or "approximate translation; verify against "
+                              "live data",
+                "closest_equivalent": _closest_equivalent(w),
+            }
+            mk = _metric_kind(w)
+            if mk is not None:
+                row["metric_kind"] = mk
+            if fam:
+                row["missing_datasource"] = fam
+            review.append(row)
+
+    def _pkey(r: Dict[str, Any]):
+        return (str(r.get("panel_id")), r.get("title") or "")
+    manual.sort(key=_pkey)
+    review.sort(key=_pkey)
+    rows = []
+    for family in sorted(to_add):
+        entry = to_add[family]
+        entry["panel_ids"] = sorted(
+            (p for p in entry["panel_ids"] if p is not None), key=str)
+        entry["template"] = add_datasource_template(
+            family, entry["plugin_id"], templates)
+        rows.append(entry)
+    families = [r["family"] for r in rows]
+    return {
+        "missing_datasources": families,
+        "datasources_to_add": rows,
+        "manual_panels": manual,
+        "needs_review": review,
+        "counts": {"missing_datasources": len(families),
+                   "manual_panels": len(manual),
+                   "needs_review": len(review)},
+        "ready": not families and not manual,
+    }
 
 
 def _grafana_note(grafana: Any) -> Optional[Dict[str, Any]]:
@@ -811,9 +1126,39 @@ def _grafana_note(grafana: Any) -> Optional[Dict[str, Any]]:
 # build_context
 # ---------------------------------------------------------------------------
 
+def _compact_missing(missing: Any) -> Optional[Dict[str, Any]]:
+    """Cap the SEAM-REPORT lists for the bundle (the API route returns
+    them in full); keep the exact add-datasource templates."""
+    src = _as_dict(missing)
+    if not src:
+        return None
+    out: Dict[str, Any] = {
+        "missing_datasources": [str(f) for f in
+                                _as_list(src.get("missing_datasources"))],
+        "datasources_to_add": [
+            d for d in _as_list(src.get("datasources_to_add"))
+            if isinstance(d, dict)][:_MAX_LIST],
+        "manual_panels": [
+            m for m in _as_list(src.get("manual_panels"))
+            if isinstance(m, dict)][:_MAX_LIST],
+        "needs_review": [
+            r for r in _as_list(src.get("needs_review"))
+            if isinstance(r, dict)][:_MAX_LIST],
+    }
+    counts = _as_dict(src.get("counts"))
+    out["counts"] = counts or {
+        "missing_datasources": len(out["missing_datasources"]),
+        "manual_panels": len(_as_list(src.get("manual_panels"))),
+        "needs_review": len(_as_list(src.get("needs_review")))}
+    out["ready"] = bool(src.get("ready", not out["missing_datasources"]
+                                and not out["manual_panels"]))
+    return out
+
+
 def build_context(store, slug: str = "", include: Optional[List[str]] = None,
                   grafana: Any = None, deepdive: Any = None,
-                  redact: bool = True) -> Dict[str, Any]:
+                  redact: bool = True,
+                  missing: Any = None) -> Dict[str, Any]:
     """Assemble the AI context bundle (schema ``nr2grafana/ai-context/v1``).
 
     ``store`` is a :class:`~nr2grafana.store.Store` (or None). ``slug``
@@ -823,7 +1168,11 @@ def build_context(store, slug: str = "", include: Optional[List[str]] = None,
     live client used only for a non-secret target note. ``deepdive`` is
     an optional pre-computed deep-dive artifact (and may carry a nested
     ``packing`` result); when omitted, both are read from the store.
-    ``redact`` scrubs secret-looking values from the whole bundle.
+    ``missing`` is an optional pre-computed :func:`missing_report`
+    (the web/MCP layer passes one resolved against the live Grafana);
+    when omitted it is derived offline from the stored requirements +
+    widget-report. ``redact`` scrubs secret-looking values from the
+    whole bundle.
 
     The bundle is compact (summaries + top-N) and stable (deterministic
     ordering, no wall-clock timestamp) so identical inputs yield an
@@ -882,18 +1231,31 @@ def build_context(store, slug: str = "", include: Optional[List[str]] = None,
         artifacts[kind] = summarize_artifact(kind, raw[kind])
 
     available = [k for k in ARTIFACT_ORDER if k in artifacts]
-    missing = [k for k in ARTIFACT_ORDER if k not in artifacts]
+    missing_kinds = [k for k in ARTIFACT_ORDER if k not in artifacts]
 
     # Per-panel migration hints (original_nrql + translation_notes) for
     # the panels the converter flagged, read from the widget-report.
     translations: List[Dict[str, Any]] = []
+    widgets: List[Any] = []
     if store is not None and slug:
         try:
             wr = store.get_artifact(slug, "widget-report")
         except Exception:  # noqa: BLE001 - store errors never crash us
             wr = None
         if isinstance(wr, dict):
-            translations = _panel_translations(wr.get("widgets"))
+            widgets = _as_list(wr.get("widgets"))
+            translations = _panel_translations(widgets)
+
+    # SEAM-REPORT "what to add": the caller's live-resolved report wins;
+    # otherwise derive it offline (every ${var} ref counts as unbound).
+    what_to_add = _compact_missing(missing)
+    if what_to_add is None and dash_row is not None and (
+            raw.get("requirements") or widgets):
+        try:
+            what_to_add = _compact_missing(missing_report(
+                raw.get("requirements"), widgets))
+        except Exception:  # noqa: BLE001 - never break the bundle
+            what_to_add = None
 
     context: Dict[str, Any] = {
         "schema": SCHEMA,
@@ -901,11 +1263,13 @@ def build_context(store, slug: str = "", include: Optional[List[str]] = None,
         "legend": dict(LEGEND),
         "dashboard": dashboard,
         "available_artifacts": available,
-        "missing_artifacts": missing,
+        "missing_artifacts": missing_kinds,
         "artifacts": artifacts,
     }
     if translations:
         context["translations"] = translations
+    if what_to_add is not None:
+        context["missing"] = what_to_add
     gnote = _grafana_note(grafana)
     if gnote:
         context["grafana"] = gnote
@@ -1084,6 +1448,87 @@ def _md_artifact(kind: str, summary: Dict[str, Any]) -> List[str]:
     return _kv_lines("", summary)
 
 
+WHAT_TO_ADD_HEADING = "## What to add before this dashboard works"
+
+
+def _md_what_to_add(what: Dict[str, Any]) -> List[str]:
+    """Render the SEAM-REPORT section: missing datasources with their
+    exact add-datasource template, [MANUAL] panels with WHY + closest
+    equivalent, and the needs-review panels."""
+    out: List[str] = [WHAT_TO_ADD_HEADING]
+    families = _as_list(what.get("missing_datasources"))
+    rows = _as_list(what.get("datasources_to_add"))
+    if not families and not rows:
+        out.append("- datasources: all required families are bound")
+    else:
+        out.append("- missing datasources: %s"
+                   % ", ".join(str(f) for f in families))
+    for d in rows:
+        if not isinstance(d, dict):
+            continue
+        tpl = _as_dict(d.get("template"))
+        line = "- add datasource %s (type %s)" % (
+            d.get("family"), d.get("plugin_id") or tpl.get("type"))
+        if d.get("reason"):
+            line += ": %s" % d["reason"]
+        out.append(line)
+        pids = _as_list(d.get("panel_ids"))
+        if pids:
+            out.append("  - panels: %s"
+                       % ", ".join(str(p) for p in pids[:_MAX_LIST]))
+        api = _as_dict(tpl.get("api"))
+        if api:
+            out.append("  - api: %s %s %s" % (
+                api.get("method"), api.get("path"),
+                json.dumps(api.get("body"), sort_keys=True)))
+        mcp = _as_dict(tpl.get("mcp"))
+        if mcp:
+            out.append("  - mcp: %s %s" % (
+                mcp.get("tool"),
+                json.dumps(mcp.get("arguments"), sort_keys=True)))
+        if tpl.get("cli"):
+            out.append("  - cli: %s" % tpl["cli"])
+        fields = [f for f in _as_list(tpl.get("fields"))
+                  if isinstance(f, dict)]
+        if fields:
+            out.append("  - fields: %s" % ", ".join(
+                "%s%s%s" % (f.get("name"),
+                            " (required)" if f.get("required") else "",
+                            " (secret)" if f.get("secret") else "")
+                for f in fields))
+        if tpl.get("notes"):
+            out.append("  - note: %s" % tpl["notes"])
+    manual = _as_list(what.get("manual_panels"))
+    counts = _as_dict(what.get("counts"))
+    if manual:
+        out.append("- manual panels (%s): honest [MANUAL] placeholders; "
+                   "build each by hand from the closest equivalent"
+                   % (counts.get("manual_panels") or len(manual)))
+        for m in manual:
+            if not isinstance(m, dict):
+                continue
+            out.append("  - panel %s %s: %s"
+                       % (m.get("panel_id"), m.get("title") or "",
+                          m.get("why") or ""))
+            if m.get("closest_equivalent"):
+                out.append("    - closest_equivalent: %s"
+                           % _fmt_scalar(m["closest_equivalent"]))
+    review = _as_list(what.get("needs_review"))
+    if review:
+        out.append("- needs review (%s): verify against live data"
+                   % (counts.get("needs_review") or len(review)))
+        for r in review:
+            if not isinstance(r, dict):
+                continue
+            line = "  - panel %s %s: %s" % (
+                r.get("panel_id"), r.get("title") or "", r.get("why") or "")
+            out.append(line)
+            if r.get("closest_equivalent"):
+                out.append("    - closest_equivalent: %s"
+                           % _fmt_scalar(r["closest_equivalent"]))
+    return out
+
+
 def to_markdown(context: Dict[str, Any]) -> str:
     """Render the bundle as compact, LLM-optimized markdown.
 
@@ -1108,6 +1553,11 @@ def to_markdown(context: Dict[str, Any]) -> str:
         out.append("- grafana_target: %s" % gnote.get("base_url"))
     out.append("")
 
+    what = _as_dict(context.get("missing"))
+    if what:
+        out.extend(_md_what_to_add(what))
+        out.append("")
+
     translations = _as_list(context.get("translations"))
     if translations:
         out.append("## Panel translations to review")
@@ -1117,11 +1567,22 @@ def to_markdown(context: Dict[str, Any]) -> str:
             head = "- panel %s %s [%s]" % (
                 t.get("panel_id"), t.get("panel") or "",
                 t.get("confidence") or "")
+            if t.get("manual"):
+                head += " MANUAL"
             out.append(head.rstrip())
             for q in _as_list(t.get("original_nrql")):
                 out.append("  - original_nrql: %s" % q)
             for n in _as_list(t.get("translation_notes")):
                 out.append("  - note: %s" % n)
+            if t.get("metric_kind"):
+                out.append("  - metric_kind: %s"
+                           % _fmt_scalar(t["metric_kind"]))
+            if t.get("missing_datasource"):
+                out.append("  - missing_datasource: %s"
+                           % t["missing_datasource"])
+            if t.get("closest_equivalent"):
+                out.append("  - closest_equivalent: %s"
+                           % _fmt_scalar(t["closest_equivalent"]))
         out.append("")
 
     avail = _as_list(context.get("available_artifacts"))

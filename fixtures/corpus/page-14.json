@@ -1,0 +1,491 @@
+{
+ "schema": 1,
+ "page": "Claims",
+ "widgets": [
+  {
+   "id": "p14-w001",
+   "title": "Automated Claims",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.claims.automated_run) FROM Metric FACET status WHERE clusterName = concat('acme-cluster-', {{env}}) TIMESERIES "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (status)(avg_over_time(acme_backend_claims_automated_run{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'status' not in label_map; used 'status'",
+     "assumed gauge 'acme_backend_claims_automated_run'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (status)(rate(acme_backend_claims_automated_run_total[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p14-w002",
+   "title": "Automated Claim Queue Size",
+   "visualization": "viz.area",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT latest(acme_backend.automated_claim.queue_size_by_priority) FROM Metric WHERE clusterName = concat('acme-cluster-', {{env}}) FACET priority_bucket TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "max by (priority_bucket)(last_over_time(acme_backend_automated_claim_queue_size_by_priority{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'priority_bucket' not in label_map; used 'priority_bucket'",
+     "assumed gauge 'acme_backend_automated_claim_queue_size_by_priority'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "max by (priority_bucket)(last_over_time(acme_backend_automated_claim_queue_size_by_priority[$__interval]))"
+    }
+   ]
+  },
+  {
+   "id": "p14-w003",
+   "title": "Automated Claim Queue TTL (seconds)",
+   "visualization": "viz.bar",
+   "grafana_type": "bargauge",
+   "nrql": [
+    "SELECT latest(acme_backend.automated_claim.queue_ttl_by_priority) FROM Metric WHERE clusterName = concat('acme-cluster-', {{env}}) FACET priority_bucket"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "max by (priority_bucket)(acme_backend_automated_claim_queue_ttl_by_priority{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"})"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'priority_bucket' not in label_map; used 'priority_bucket'",
+     "assumed gauge 'acme_backend_automated_claim_queue_ttl_by_priority'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "max by (priority_bucket)(acme_backend_automated_claim_queue_ttl_by_priority)"
+    }
+   ]
+  },
+  {
+   "id": "p14-w004",
+   "title": "Automated Claim Run TPS",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT rate(sum(acme_backend.claims.automated_run), 1 second) FROM Metric FACET status WHERE clusterName = concat('acme-cluster-', {{env}}) TIMESERIES "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (status)(rate(acme_backend_claims_automated_run_total{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'status' not in label_map; used 'status'",
+     "assumed counter 'acme_backend_claims_automated_run_total'; verify name/type in Mimir (/api/v1/metadata)",
+     "unit:short",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (status)(rate(acme_backend_claims_automated_run_total[$__rate_interval]))"
+    }
+   ]
+  },
+  {
+   "id": "p14-w005",
+   "title": "Automated Claim Run Exceptions",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.hub_workflow_service.automated_claim_run_exception_count) FROM Metric WHERE clusterName = concat('acme-cluster-', {{env}}) TIMESERIES\n"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(avg_over_time(acme_backend_hub_workflow_service_automated_claim_run_exception_count{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_hub_workflow_service_automated_claim_run_exception_count'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(avg_over_time(acme_backend_hub_workflow_service_automated_claim_run_exception_count[$__rate_interval]))"
+    }
+   ]
+  },
+  {
+   "id": "p14-w006",
+   "title": "Automated claim run failures",
+   "visualization": "viz.bar",
+   "grafana_type": "bargauge",
+   "nrql": [
+    "SELECT sum(`acme_backend.hub_workflow_service.automated_claim_run_exception_count`) FROM Metric WHERE clusterName = 'acme-cluster-prod' FACET error_msg "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum by (error_msg)(avg_over_time(acme_backend_hub_workflow_service_automated_claim_run_exception_count{cluster=\"acme-cluster-prod\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'error_msg' not in label_map; used 'error_msg'",
+     "assumed gauge 'acme_backend_hub_workflow_service_automated_claim_run_exception_count'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (error_msg)(avg_over_time(acme_backend_hub_workflow_service_automated_claim_run_exception_count{cluster=\"acme-cluster-test\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p14-w007",
+   "title": "Automation Claims Run",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT sum(acme_backend.claims.pending_claim_run_status) FROM Metric SINCE 1800 seconds ago WHERE clusterName = concat('acme-cluster-', {{env}}) AND status='success' "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum(avg_over_time(acme_backend_claims_pending_claim_run_status{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",status=\"success\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "attribute 'status' not in label_map; used 'status' \u2014 verify the label exists in your stack",
+     "assumed gauge 'acme_backend_claims_pending_claim_run_status'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(increase(acme_backend_claims_pending_claim_run_status_total{status=\"success\"}[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p14-w008",
+   "title": "Build Claims Success",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.switch.claimset.build.success) FROM Metric TIMESERIES WHERE clusterName = concat('acme-cluster-', {{env}})"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(avg_over_time(acme_backend_switch_claimset_build_success{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_switch_claimset_build_success'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(rate(acme_backend_switch_claimset_build_success_total[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p14-w009",
+   "title": "Submit Claims Success",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.switch.claim.submit.success) FROM Metric TIMESERIES  WHERE clusterName = concat('acme-cluster-', {{env}})"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(avg_over_time(acme_backend_switch_claim_submit_success{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_switch_claim_submit_success'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(rate(acme_backend_switch_claim_submit_success_total[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p14-w010",
+   "title": "Total Claims Run",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.claims.automated_run) FROM Metric TIMESERIES SINCE 1800 seconds ago WHERE clusterName = concat('acme-cluster-', {{env}}) FACET status",
+    "SELECT sum(acme_backend.claims.automated_run) FROM Metric TIMESERIES SINCE 1800 seconds ago WHERE status='failure'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (status)(avg_over_time(acme_backend_claims_automated_run{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(avg_over_time(acme_backend_claims_automated_run{status=\"failure\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'status' not in label_map; used 'status'",
+     "assumed gauge 'acme_backend_claims_automated_run'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high",
+     "timefrom:now-1800s",
+     "attribute 'status' not in label_map; used 'status' \u2014 verify the label exists in your stack",
+     "assumed gauge 'acme_backend_claims_automated_run'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (status)(rate(acme_backend_claims_automated_run_total[$__rate_interval])) * $__interval_ms / 1000"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "sum(rate(acme_backend_claims_automated_run_total{status=\"failure\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p14-w011",
+   "title": "Claim Rejection codes",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.switch.claim.reject_code) FROM Metric TIMESERIES  WHERE clusterName = concat('acme-cluster-', {{env}}) FACET code"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (code)(avg_over_time(acme_backend_switch_claim_reject_code{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'code' not in label_map; used 'code'",
+     "assumed gauge 'acme_backend_switch_claim_reject_code'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (code)(rate(acme_backend_switch_claim_reject_code_total[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p14-w012",
+   "title": "Claim Rejection codes",
+   "visualization": "viz.table",
+   "grafana_type": "table",
+   "nrql": [
+    "SELECT sum(acme_backend.switch.claim.reject_code) FROM Metric WHERE clusterName = concat('acme-cluster-', {{env}}) FACET code LIMIT 50"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "topk(50, sum by (code)(avg_over_time(acme_backend_switch_claim_reject_code{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__range])))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'code' not in label_map; used 'code'",
+     "assumed gauge 'acme_backend_switch_claim_reject_code'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "topk(50, sum by (code)(increase(acme_backend_switch_claim_reject_code_total[$__range])))"
+    }
+   ]
+  },
+  {
+   "id": "p14-w013",
+   "title": "Claimset's Process Status Updates",
+   "visualization": "viz.table",
+   "grafana_type": "table",
+   "nrql": [
+    "SELECT sum(acme_backend.switch.claimset.update_process_status) FROM Metric WHERE clusterName = concat('acme-cluster-', {{env}}) FACET process_status"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum by (process_status)(avg_over_time(acme_backend_switch_claimset_update_process_status{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'process_status' not in label_map; used 'process_status'",
+     "assumed gauge 'acme_backend_switch_claimset_update_process_status'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (process_status)(increase(acme_backend_switch_claimset_update_process_status_total[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p14-w014",
+   "title": "Manual claim run failures",
+   "visualization": "viz.bar",
+   "grafana_type": "bargauge",
+   "nrql": [
+    "SELECT sum(`acme_backend.hub_workflow_service.manual_claim_run_exception_count`) FROM Metric WHERE clusterName = concat('acme-cluster-', {{env}}) FACET error_msg "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum by (error_msg)(avg_over_time(acme_backend_hub_workflow_service_manual_claim_run_exception_count{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'error_msg' not in label_map; used 'error_msg'",
+     "assumed gauge 'acme_backend_hub_workflow_service_manual_claim_run_exception_count'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (error_msg)(avg_over_time(acme_backend_hub_workflow_service_manual_claim_run_exception_count[$__range]))"
+    }
+   ]
+  },
+  {
+   "id": "p14-w015",
+   "title": "Submit Claims Failure",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.switch.claim.submit.failed) FROM Metric TIMESERIES  WHERE clusterName = concat('acme-cluster-', {{env}})"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(avg_over_time(acme_backend_switch_claim_submit_failed{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_switch_claim_submit_failed'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(rate(acme_backend_switch_claim_submit_failed_total[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  }
+ ]
+}

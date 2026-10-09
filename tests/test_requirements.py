@@ -3,12 +3,14 @@
 import json
 import os
 import unittest
+from unittest import mock
 
 from nr2grafana.config import load_config
 from nr2grafana.grafana.builder import build_dashboards
 from nr2grafana.model import parse_nr_dashboard
 from nr2grafana.requirements import (
-    SCHEMA, analyze_dashboard, summarize, _logql_needs, _promql_needs,
+    SCHEMA, add_datasource_template, analyze_dashboard,
+    missing_datasources, summarize, _logql_needs, _promql_needs,
 )
 
 FIXTURE = os.path.join(
@@ -370,6 +372,311 @@ class EndToEndFixtureTests(unittest.TestCase):
         text = summarize(self.req)
         self.assertNotIn("\n", text)
         self.assertLess(len(text), 400)
+
+
+def make_cw_panel(pid, uid="${cloudwatch_datasource}", **extra):
+    target = dict({
+        "refId": "A",
+        "datasource": {"type": "cloudwatch", "uid": uid},
+        "namespace": "AWS/RDS", "metricName": "CPUUtilization",
+        "statistic": "Average", "region": "default",
+        "dimensions": {"DBInstanceIdentifier": ["*"]},
+        "queryMode": "Metrics", "metricEditorMode": 0,
+    }, **extra)
+    return {"id": pid, "type": "timeseries", "title": "RDS CPU %d" % pid,
+            "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+            "targets": [target]}
+
+
+CW_NRQL = ("SELECT average(`aws.rds.CPUUtilization`) FROM Metric "
+           "FACET aws.rds.DBInstanceIdentifier TIMESERIES")
+
+
+class CloudWatchDetectionTests(unittest.TestCase):
+    """SEAM-CW: the cloudwatch family is REQUIRED whenever a CW target
+    exists or the widget report says a panel needs CloudWatch."""
+
+    def setUp(self):
+        self.cfg = load_config()
+        self.cfg.setdefault("datasources", {})["cloudwatch"] = {
+            "type": "cloudwatch", "uid": "${cloudwatch_datasource}"}
+
+    def test_cw_target_makes_family_required(self):
+        dash = make_dash([
+            make_panel(1, "prometheus", "${datasource}", "up"),
+            make_cw_panel(2),
+        ])
+        report = [report_entry(1, "SELECT count(*) FROM Transaction"),
+                  report_entry(2, CW_NRQL, confidence="approximate",
+                               cloudwatch=True)]
+        req = analyze_dashboard(None, dash, report, self.cfg)
+        ds = {d["family"]: d for d in req["datasources"]}
+        self.assertIn("cloudwatch", ds)
+        self.assertTrue(ds["cloudwatch"]["required"])
+        self.assertTrue(ds["cloudwatch"]["core"])
+        self.assertEqual(ds["cloudwatch"]["plugin_id"], "cloudwatch")
+        self.assertEqual(ds["cloudwatch"]["uid_ref"],
+                         "${cloudwatch_datasource}")
+        self.assertEqual(ds["cloudwatch"]["panel_ids"], [2])
+        self.assertIn("CloudWatch", ds["cloudwatch"]["purpose"])
+        # core plugin: nothing to install
+        self.assertEqual(req["plugins"], [])
+
+    def test_report_flag_alone_makes_family_required(self):
+        # [MANUAL] text placeholder: no target, but the report says the
+        # closest equivalent is a CloudWatch target.
+        dash = make_dash([
+            {"id": 7, "type": "text", "title": "RDS CPU [MANUAL]",
+             "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+             "options": {"mode": "markdown", "content": "why"}},
+        ])
+        report = [report_entry(
+            7, CW_NRQL, confidence="untranslatable", cloudwatch=True,
+            manual=True, missing_datasource="cloudwatch",
+            notes=["aws.* metric has no data in Mimir"],
+            closest_equivalent={
+                "datasource": "cloudwatch",
+                "cw_target": {"namespace": "AWS/RDS",
+                              "metricName": "CPUUtilization",
+                              "statistic": "Average",
+                              "dimensions": {
+                                  "DBInstanceIdentifier": ["*"]}},
+                "note": "add a CloudWatch datasource"})]
+        req = analyze_dashboard(None, dash, report, self.cfg)
+        ds = {d["family"]: d for d in req["datasources"]}
+        self.assertIn("cloudwatch", ds)
+        self.assertEqual(ds["cloudwatch"]["panel_ids"], [7])
+        self.assertEqual(ds["cloudwatch"]["uid_ref"],
+                         "${cloudwatch_datasource}")
+
+    def test_closest_equivalent_cw_without_flag(self):
+        dash = make_dash([])
+        report = [report_entry(
+            3, CW_NRQL, confidence="needs-review",
+            closest_equivalent={"datasource": "cloudwatch",
+                                "note": "use CloudWatch"})]
+        req = analyze_dashboard(None, dash, report, self.cfg)
+        self.assertEqual([d["family"] for d in req["datasources"]],
+                         ["cloudwatch"])
+
+    def test_no_cloudwatch_without_evidence(self):
+        dash = make_dash([make_panel(1, "prometheus", "${datasource}",
+                                     "up")])
+        report = [report_entry(1, "SELECT count(*) FROM Transaction")]
+        req = analyze_dashboard(None, dash, report, self.cfg)
+        self.assertEqual([d["family"] for d in req["datasources"]],
+                         ["prometheus"])
+
+    def test_cw_data_expectations(self):
+        dash = make_dash([make_cw_panel(2)])
+        req = analyze_dashboard(None, dash, [], self.cfg)
+        exp = [e for e in req["data_expectations"]
+               if e["panel_id"] == 2][0]
+        self.assertEqual(exp["datasource"], "cloudwatch")
+        self.assertEqual(exp["needs"]["namespace"], "AWS/RDS")
+        self.assertEqual(exp["needs"]["metricName"], "CPUUtilization")
+        self.assertEqual(exp["needs"]["statistic"], "Average")
+        self.assertEqual(exp["needs"]["dimensions"],
+                         ["DBInstanceIdentifier"])
+
+    def test_cw_search_expression_expectation(self):
+        dash = make_dash([make_cw_panel(
+            4, expression="SEARCH('{AWS/SQS,QueueName} "
+                          "MetricName=\"NumberOfMessagesSent\"', "
+                          "'Sum', 300)",
+            metricEditorMode=1)])
+        req = analyze_dashboard(None, dash, [], self.cfg)
+        exp = req["data_expectations"][0]
+        self.assertIn("SEARCH(", exp["needs"]["expression"])
+
+
+class MissingDatasourcesTests(unittest.TestCase):
+    def setUp(self):
+        self.cfg = load_config()
+        self.dash = make_dash([
+            make_panel(1, "prometheus", "${datasource}", "up"),
+            make_panel(2, "loki", "loki-prod", '{job="x"}'),  # bound
+            make_cw_panel(3),
+        ])
+        self.report = [
+            report_entry(1, "SELECT count(*) FROM Transaction"),
+            report_entry(2, "SELECT count(*) FROM Log"),
+            report_entry(3, CW_NRQL, confidence="approximate",
+                         cloudwatch=True),
+        ]
+
+    def test_unbound_vars_are_missing_without_check(self):
+        req = analyze_dashboard(None, self.dash, self.report, self.cfg)
+        missing = {m["family"]: m for m in req["missing_datasources"]}
+        self.assertEqual(set(missing), {"prometheus", "cloudwatch"})
+        self.assertEqual(missing["cloudwatch"]["reason"], "unbound")
+        self.assertEqual(missing["cloudwatch"]["uid_ref"],
+                         "${cloudwatch_datasource}")
+        self.assertEqual(missing["cloudwatch"]["panel_ids"], [3])
+        self.assertEqual(missing["cloudwatch"]["plugin_id"], "cloudwatch")
+        self.assertIn("add-datasource --type cloudwatch",
+                      missing["cloudwatch"]["fix"])
+
+    def test_add_datasource_template_is_exact(self):
+        req = analyze_dashboard(None, self.dash, self.report, self.cfg)
+        cw = [m for m in req["missing_datasources"]
+              if m["family"] == "cloudwatch"][0]
+        tpl = cw["add_datasource"]
+        self.assertEqual(
+            tpl["cli"],
+            "nr2grafana grafana add-datasource --type cloudwatch "
+            "--name cloudwatch")
+        self.assertIn("/api/datasources", tpl["api"])
+        payload = tpl["payload"]
+        self.assertEqual(payload["type"], "cloudwatch")
+        self.assertEqual(payload["access"], "proxy")
+        self.assertIn("authType", payload["jsonData"])
+        self.assertIn("defaultRegion", payload["jsonData"])
+        # secrets are placeholders, never pre-filled
+        self.assertEqual(payload["secureJsonData"]["secretKey"],
+                         "<secretKey>")
+        self.assertIn("authType", tpl["required_fields"])
+        self.assertIn("defaultRegion", tpl["required_fields"])
+        prom = [m for m in req["missing_datasources"]
+                if m["family"] == "prometheus"][0]
+        self.assertEqual(prom["add_datasource"]["payload"]["url"],
+                         "http://mimir:9009/prometheus")
+
+    def test_check_rows_override_unbound(self):
+        # Instance has prometheus (ok) but no cloudwatch (missing) and
+        # a loki uid of the wrong type.
+        rows = [
+            {"item": "datasource:prometheus", "status": "ok",
+             "detail": "1 datasource(s)", "fix": ""},
+            {"item": "datasource:loki", "status": "wrong-type",
+             "detail": "uid 'loki-prod' is a prometheus datasource",
+             "fix": "Point the dashboard at a Loki datasource"},
+            {"item": "datasource:cloudwatch", "status": "missing",
+             "detail": "no datasource of type 'cloudwatch'",
+             "fix": "Add a CloudWatch datasource"},
+        ]
+        req = analyze_dashboard(None, self.dash, self.report, self.cfg,
+                                check_rows=rows)
+        missing = {m["family"]: m for m in req["missing_datasources"]}
+        self.assertEqual(set(missing), {"loki", "cloudwatch"})
+        self.assertEqual(missing["cloudwatch"]["reason"], "absent")
+        self.assertEqual(missing["cloudwatch"]["fix"],
+                         "Add a CloudWatch datasource")
+        self.assertEqual(missing["loki"]["reason"], "wrong-type")
+
+    def test_empty_check_rows_means_nothing_missing_when_covered(self):
+        rows = [{"item": "datasource:%s" % f, "status": "ok",
+                 "detail": "", "fix": ""}
+                for f in ("prometheus", "loki", "cloudwatch")]
+        req = analyze_dashboard(None, self.dash, self.report, self.cfg,
+                                check_rows=rows)
+        self.assertEqual(req["missing_datasources"], [])
+
+    def test_import_steps_and_summary_mention_missing(self):
+        req = analyze_dashboard(None, self.dash, self.report, self.cfg)
+        joined = " ".join(req["import"]["steps"])
+        self.assertIn("Add missing datasource(s)", joined)
+        self.assertIn("cloudwatch", joined)
+        text = summarize(req)
+        self.assertIn("missing datasources", text)
+        self.assertIn("cloudwatch (unbound)", text)
+
+    def test_missing_datasources_helper_recomputes(self):
+        req = analyze_dashboard(None, self.dash, self.report, self.cfg)
+        self.assertEqual(missing_datasources(req),
+                         req["missing_datasources"])
+        rows = [{"item": "datasource:%s" % f, "status": "ok",
+                 "detail": "", "fix": ""}
+                for f in ("prometheus", "loki", "cloudwatch")]
+        self.assertEqual(missing_datasources(req, rows), [])
+
+    def test_panel_missing_datasource_adds_panel_id(self):
+        report = self.report + [report_entry(
+            9, CW_NRQL, confidence="untranslatable", manual=True,
+            missing_datasource="cloudwatch")]
+        req = analyze_dashboard(None, self.dash, report, self.cfg)
+        cw = [m for m in req["missing_datasources"]
+              if m["family"] == "cloudwatch"][0]
+        self.assertEqual(cw["panel_ids"], [3, 9])
+
+    def test_json_serializable(self):
+        req = analyze_dashboard(None, self.dash, self.report, self.cfg)
+        json.dumps(req)
+
+
+class ManualPanelsTests(unittest.TestCase):
+    def setUp(self):
+        self.cfg = load_config()
+        self.report = [
+            report_entry(1, "SELECT count(*) FROM Transaction"),
+            report_entry(
+                2, "SELECT sum(cost) FROM FinanceSample",
+                confidence="untranslatable", viz="viz.billboard",
+                manual=True, notes=["FinanceSample has no LGTM source"],
+                closest_equivalent={
+                    "datasource": "prometheus",
+                    "example_query": "sum(aws_cost_daily_usd)",
+                    "note": "AWS Cost Explorer via nr2grafana tco"}),
+            report_entry(
+                3, CW_NRQL, confidence="needs-review", manual=True,
+                missing_datasource="cloudwatch", cloudwatch=True,
+                notes=["aws.* metric: no data in Mimir"],
+                closest_equivalent={
+                    "datasource": "cloudwatch",
+                    "cw_target": {"namespace": "AWS/RDS",
+                                  "metricName": "CPUUtilization",
+                                  "statistic": "Average",
+                                  "dimensions": {
+                                      "DBInstanceIdentifier": ["*"]}},
+                    "note": "CloudWatch target"}),
+        ]
+        self.req = analyze_dashboard(None, make_dash([]), self.report,
+                                     self.cfg)
+
+    def test_manual_panels_listed_with_why_and_equivalent(self):
+        manual = {m["panel_id"]: m for m in self.req["manual_panels"]}
+        self.assertEqual(set(manual), {2, 3})
+        m2 = manual[2]
+        self.assertEqual(m2["title"], "W2")
+        self.assertEqual(m2["why"], "FinanceSample has no LGTM source")
+        self.assertEqual(m2["closest_equivalent"]["example_query"],
+                         "sum(aws_cost_daily_usd)")
+        self.assertIn("sum(aws_cost_daily_usd)", m2["equivalent"])
+        self.assertIn("AWS Cost Explorer", m2["equivalent"])
+        self.assertIsNone(m2["missing_datasource"])
+        self.assertIn("FinanceSample", m2["nrql"])
+        m3 = manual[3]
+        self.assertEqual(m3["missing_datasource"], "cloudwatch")
+        self.assertIn("AWS/RDS CPUUtilization", m3["equivalent"])
+        self.assertIn("DBInstanceIdentifier", m3["equivalent"])
+
+    def test_nr_native_carries_closest_equivalent(self):
+        native = {n["panel_id"]: n for n in self.req["nr_native"]}
+        self.assertEqual(set(native), {2})
+        self.assertEqual(native[2]["closest_equivalent"]["datasource"],
+                         "prometheus")
+        self.assertIn("sum(aws_cost_daily_usd)", native[2]["equivalent"])
+
+    def test_summary_counts_extra_manual(self):
+        text = summarize(self.req)
+        self.assertIn("1 NR-native panel", text)
+        self.assertIn("1 other [MANUAL] panel", text)
+
+
+class AddDatasourceTemplateTests(unittest.TestCase):
+    def test_unknown_family_still_yields_payload(self):
+        tpl = add_datasource_template("stackdriver")
+        self.assertEqual(tpl["payload"]["type"], "stackdriver")
+        self.assertIn("add-datasource --type stackdriver", tpl["cli"])
+
+    def test_fallback_when_live_templates_unavailable(self):
+        import nr2grafana.requirements as reqmod
+        with mock.patch.object(reqmod, "_ds_template_spec",
+                               lambda pid: (reqmod._FALLBACK_FIELDS.get(
+                                   pid, []), "")):
+            tpl = reqmod.add_datasource_template("loki")
+        self.assertEqual(tpl["payload"]["url"], "http://loki:3100")
+        self.assertEqual(tpl["required_fields"], ["url"])
 
 
 class SummarizeEdgeTests(unittest.TestCase):

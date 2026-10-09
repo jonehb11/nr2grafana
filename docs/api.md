@@ -1,6 +1,8 @@
 # nr2grafana programmatic API
 
-nr2grafana 1.10 exposes every capability to AIs and scripts three ways.
+nr2grafana exposes every capability to AIs and scripts three ways
+(since 1.10; 1.11 adds live translation, datasource binding and the
+`missing_datasources` report to all three).
 All three drive the exact same read-only, propose-only library code the
 web UI uses: New Relic and AWS are never mutated, the tool proposes
 changes (configs, PromQL/LogQL, mitigations) and never executes them
@@ -49,7 +51,9 @@ them). Relevant env vars:
 | `list_dashboards` | -- | list stored converted dashboards |
 | `get_dashboard` | `slug` | one stored dashboard's Grafana JSON |
 | `get_artifact` | `slug`, `kind` | a stored artifact (widget-report, requirements, parity, ...) |
-| `convert` | `input_dir` \| `nr_json`, `out_dir?`, `package?` | convert NR dashboards (paste JSON via `nr_json`) |
+| `convert` | `input_dir` \| `nr_json`, `out_dir?`, `package?`, `live?`, `env?`, `bind?` | convert NR dashboards (paste JSON via `nr_json`); `live` collects read-only Mimir/NR hints, `env` sets the target environment for `$env`, `bind` also writes `dashboard.bound.json` when a Grafana connection exists; the result includes per-dashboard `missing_datasources` |
+| `missing_datasources` | `slug` | what is missing before the dashboard shows data: `missing_datasources` (families with no bound uid) each with the exact add-datasource template, `manual_panels` (`[MANUAL]` placeholders with why + `closest_equivalent`), `needs_review` |
+| `grafana_import` | `slug` \| `slugs`, `folder?`, `overwrite?`, `bind?`, `env?` | import into the live Grafana; `bind` rewrites `${datasource}`-style refs to concrete uids first |
 | `fetch_newrelic` | `guids?`, `out_dir?` | fetch NR dashboards to disk (needs NR key; read-only) |
 | `validate` | `path` \| `slug` | validate a dashboard / conversion |
 | `parity` | `slug`, `from?`, `to?` | NR-vs-Grafana numeric parity |
@@ -61,8 +65,32 @@ them). Relevant env vars:
 | `tco` | `months?`, `profile?` | AWS TCO trend (read-only Cost Explorer) |
 | `cost_rca` | `anomaly_report` \| `anomaly_id`, `profile?` | root-cause a cost anomaly |
 | `mitigate` | `rca?` \| `slug` | reliability-safe mitigation plan (proposal only) |
-| `ai_context` | `slug`, `format?` | compact AI context bundle |
-| `readiness` | `slug` | migration-readiness grade |
+| `ai_context` | `slug`, `format?` | compact AI context bundle (per-panel `metric_kind` / `closest_equivalent` / `missing_datasource` + a "what to add" section) |
+| `readiness` | `slug` | migration-readiness grade (embeds `missing_datasources`) |
+
+Example: ask what a converted dashboard still needs, then add it:
+
+```json
+{"method": "tools/call",
+ "params": {"name": "missing_datasources", "arguments": {"slug": "checkout"}}}
+```
+
+```json
+{"missing_datasources": ["cloudwatch"],
+ "datasources_to_add": [{"family": "cloudwatch", "type": "cloudwatch",
+                          "template": {"name": "CloudWatch", "type": "cloudwatch",
+                                       "jsonData": {"authType": "default",
+                                                    "defaultRegion": "us-east-1"}}}],
+ "manual_panels": [{"panel_id": 12, "title": "Monthly spend [MANUAL]",
+                    "why": "FinanceSample is New Relic billing data",
+                    "closest_equivalent": {"datasource": "aws-cost-explorer",
+                                           "note": "use tco analyze"}}],
+ "needs_review": [], "grafana_checked": true}
+```
+
+`grafana_checked` is true when the families were resolved against the
+live instance (a family whose plugin type exists there is not missing);
+false means offline rules (every unbound `${var}` counts).
 
 Long operations run to completion synchronously and return the finished
 artifact (there is no polling on the MCP transport).
@@ -168,6 +196,24 @@ Long operations return `{"job": "<id>"}`; poll `GET /api/jobs/<id>` until
 `status` is `done` or `error`. See `GET /api/spec` for the full route
 list.
 
+### 1.11 additions
+
+| Route | Body / query | Notes |
+|-------|--------------|-------|
+| `POST /api/convert` | `{input_dir?\|nr_json?, out_dir?, package?, live?: bool, env?: str, bind?: bool}` | `live` collects read-only Mimir/NR hints (when keys are set); `env` sets the target environment; `bind` also writes `dashboard.bound.json` when a Grafana connection exists. The job result lists `missing_datasources` per dashboard |
+| `GET /api/dashboards/<slug>/missing` | -- | `{missing_datasources, datasources_to_add, manual_panels, needs_review, grafana_checked}` (same shape as the MCP tool above) |
+| `GET /api/dashboards/<slug>` | -- | now embeds the `missing` summary next to the artifacts |
+| `POST /api/grafana/import` | `{slug\|slugs, folder?, overwrite?, bind?: bool, env?: str}` | `bind` rewrites datasource refs to the instance's concrete uids before importing |
+| `GET /download/dashboard/<slug>.json` | `?bind=1&env=prod` | returns the bound JSON (needs a Grafana connection) |
+| `GET /download/package/<slug>.zip` | `?bind=1` | zip includes `dashboard.bound.json` next to the portable `dashboard.json` |
+
+```console
+$ curl -s http://127.0.0.1:8765/api/dashboards/checkout/missing \
+    -H "Authorization: Bearer $TOKEN"
+{"missing_datasources": ["cloudwatch"], "datasources_to_add": [ ... ],
+ "manual_panels": [ ... ], "needs_review": [ ... ], "grafana_checked": true}
+```
+
 ---
 
 ## 3. JSON CLI
@@ -184,7 +230,21 @@ $ nr2grafana --json convert ./newrelic-dashboards --out ./out
 
 $ nr2grafana --json list | jq '.result'
 [ ... ]
+
+$ nr2grafana --json convert ./newrelic-dashboards --out ./out --package \
+    --live --env prod                 # read-only hints + target env
+$ nr2grafana --json export ./out/*/ --bind-datasources --env prod
+{"ok": true, "command": "export",
+ "result": {"exports": [{"source": "...", "output": ".../dashboard.bound.json",
+                         "ds_map": {"datasource": "<uid>"}, "unbound": [],
+                         "env": "prod", "pinned": false}],
+            "totals": {"dashboards": 1, "unbound": 0}}}
 ```
+
+`convert --live` needs `NEW_RELIC_API_KEY` and/or `GRAFANA_URL` +
+`GRAFANA_TOKEN`; `export --bind-datasources` and `grafana import
+--bind-datasources` need the Grafana pair (`--ds VAR=UID` binds
+offline). Details: [live-translation.md](live-translation.md).
 
 This makes nr2grafana scriptable from any language without the HTTP
 server or an MCP client -- pipe the JSON straight into `jq` or a program.

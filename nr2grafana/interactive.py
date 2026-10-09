@@ -21,7 +21,7 @@ import sys
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .config import DEFAULT_CONFIG
-from .grafana.client import GrafanaClient, GrafanaError
+from .grafana.client import GrafanaError
 from .livecheck import check_files
 from .nerdgraph import NerdGraphClient, NerdGraphError
 
@@ -257,6 +257,8 @@ class Wizard:
                     "🔧  Auto-heal",
                     "🗄   Manage datasources",
                     "📤  Import dashboards into Grafana",
+                    "📦  Export bound dashboards (datasources pinned to "
+                    "your Grafana)",
                     "💰  Analyze cost & efficiency",
                     "🔬  Deep-dive the LGTM stack",
                     "🤖  Export AI context",
@@ -296,22 +298,24 @@ class Wizard:
                 elif choice == 11:
                     self.flow_import()
                 elif choice == 12:
-                    self.flow_cost()
+                    self.flow_export()
                 elif choice == 13:
-                    self.flow_deepdive()
+                    self.flow_cost()
                 elif choice == 14:
-                    self.flow_ai_context()
+                    self.flow_deepdive()
                 elif choice == 15:
-                    self.flow_mcp()
+                    self.flow_ai_context()
                 elif choice == 16:
-                    self.flow_tco()
+                    self.flow_mcp()
                 elif choice == 17:
-                    self.flow_cost_rca()
+                    self.flow_tco()
                 elif choice == 18:
-                    self.flow_web()
+                    self.flow_cost_rca()
                 elif choice == 19:
-                    self.flow_config()
+                    self.flow_web()
                 elif choice == 20:
+                    self.flow_config()
+                elif choice == 21:
                     self.flow_expose_ai()
                 else:
                     print(dim("bye!"))
@@ -398,11 +402,20 @@ class Wizard:
         passthrough = confirm(
             "Keep untranslatable widgets live via the New Relic Grafana "
             "datasource plugin? (needs the plugin installed)", default=False)
+        live, api_key, region, gurl, gtoken = self._live_hint_sources()
+        env = prompt("Target environment for the env variable (e.g. "
+                     "prod; blank = keep the New Relic default)",
+                     self.recall("target_env", ""))
+        if env:
+            self.remember("target_env", env)
 
         from .cli import cmd_convert
         args = argparse.Namespace(inputs=[src], out=out, config=config,
                                   report="", page_strategy=strategy,
-                                  passthrough=passthrough)
+                                  passthrough=passthrough, live=live,
+                                  env=env, api_key=api_key, region=region,
+                                  grafana_url=gurl, grafana_token=gtoken,
+                                  insecure=False)
         rc = cmd_convert(args)
         self.summarize_report(os.path.join(out, "migration-report.json"))
         if rc == 0 and confirm(
@@ -414,6 +427,40 @@ class Wizard:
             print(green("✓ packages written → %s" % out) if arc == 0 else
                   red("✗ packaging had problems (see above)"))
         return rc
+
+    def _live_hint_sources(self) -> Tuple[bool, str, str, str, str]:
+        """Ask whether to translate with live, read-only hints and from
+        where. Returns (live, nr_api_key, region, grafana_url,
+        grafana_token); secrets are never remembered."""
+        live = confirm(
+            "Translate with LIVE hints? (read-only: Mimir metric types "
+            "via Grafana, entity names + attribute values via New Relic "
+            "-- fixes counter/gauge guesses and entity.guid filters)",
+            default=False)
+        if not live:
+            return False, "", self.recall("region", "US"), "", ""
+        api_key = prompt_secret("New Relic USER API key (Enter to skip "
+                                "the New Relic side)",
+                                env_var="NEW_RELIC_API_KEY")
+        region = self.recall("region", "US")
+        if api_key:
+            region = ["US", "EU"][menu(
+                "New Relic region?", ["US", "EU"],
+                default=0 if region == "US" else 1)]
+            self.remember("region", region)
+        gurl = prompt("Grafana URL for Mimir metadata (blank to skip the "
+                      "Grafana side)",
+                      self.recall("grafana_url", "http://localhost:3000"))
+        gtoken = ""
+        if gurl:
+            self.remember("grafana_url", gurl)
+            gtoken = prompt_secret("Grafana service-account token",
+                                   env_var="GRAFANA_TOKEN")
+        if not api_key and not gurl:
+            print(yellow("no hint source given -- converting with the "
+                         "static rules instead"))
+            return False, "", region, "", ""
+        return True, api_key, region, gurl, gtoken
 
     def summarize_report(self, report_path: str) -> None:
         try:
@@ -461,9 +508,10 @@ class Wizard:
                 "Verify data parity (NR vs Grafana)",
                 "Diagnose problems",
                 "Auto-heal",
+                "Export bound dashboards (datasources pinned)",
                 "Import into Grafana",
                 "Back to main menu",
-            ], default=9)
+            ], default=10)
             if nxt == 0:
                 self.flow_validate()
             elif nxt == 1:
@@ -481,6 +529,8 @@ class Wizard:
             elif nxt == 7:
                 self.flow_heal()
             elif nxt == 8:
+                self.flow_export()
+            elif nxt == 9:
                 self.flow_import()
             else:
                 return
@@ -1058,6 +1108,58 @@ class Wizard:
                   "requests always need the token off loopback."))
         return 0
 
+    # -- export (bound flavour) ---------------------------------------------
+
+    def flow_export(self) -> int:
+        header("Export bound dashboards")
+        print(dim("dashboard.json stays portable (datasource picker "
+                  "variables). This writes dashboard.bound.json next to "
+                  "it with every ${datasource}-style ref resolved to ONE "
+                  "Grafana instance's concrete datasource uids, and the "
+                  "env variable set to your target environment -- so no "
+                  "panel renders empty after import."))
+        src = self._package_source()
+        bind_live = confirm("Resolve datasource uids from a live Grafana "
+                            "instance?", default=True)
+        url = token = ""
+        if bind_live:
+            url, token = self._grafana_connection()
+        overrides: List[str] = []
+        while confirm("Bind a datasource variable to an explicit uid?"
+                      + (" (another)" if overrides else ""),
+                      default=False):
+            name = prompt("Variable name (datasource, loki_datasource, "
+                          "tempo_datasource, cloudwatch_datasource)",
+                          "datasource", validator=_require_nonempty)
+            uid = prompt("Datasource uid", validator=_require_nonempty)
+            overrides.append("%s=%s" % (name, uid))
+        env = prompt("Target environment value (blank = leave the env "
+                     "variable as is)", self.recall("target_env", ""))
+        pin = False
+        if env:
+            self.remember("target_env", env)
+            pin = confirm("Pin it? (rewrite every $env in the queries to "
+                          "%r and drop the variable)" % env,
+                          default=False)
+        if not bind_live and not overrides and not env:
+            print(yellow("nothing to export -- choose a live instance, an "
+                         "explicit uid or a target environment"))
+            return 2
+        from .cli import cmd_export
+        rc = cmd_export(argparse.Namespace(
+            inputs=[src], bind_datasources=bind_live, ds_overrides=overrides,
+            keep_vars=False, env=env, pin_env=pin,
+            config=self.recall("config", ""), out="",
+            grafana_url=url, grafana_token=token, insecure=False))
+        if rc == 0:
+            print(green("✓ bound dashboards written (dashboard.bound.json "
+                        "next to each dashboard.json)"))
+        else:
+            print(red("✗ export left datasource variables unbound or hit "
+                      "errors (see above) -- add the missing datasources "
+                      "or bind them explicitly"))
+        return rc
+
     # -- import -------------------------------------------------------------
 
     def flow_import(self) -> int:
@@ -1073,13 +1175,15 @@ class Wizard:
             "Service account token (recommended)",
             "Username + password",
         ])
+        # GrafanaLive is a GrafanaClient plus resolve_ds_map (binding).
+        from .grafana.live import GrafanaLive
         if auth == 0:
             token = prompt_secret("Grafana token", env_var="GRAFANA_TOKEN")
-            client = GrafanaClient(url, token=token)
+            client = GrafanaLive(url, token=token)
         else:
             user = prompt("Username", "admin")
             pw = prompt_secret("Password")
-            client = GrafanaClient(url, basic=(user, pw))
+            client = GrafanaLive(url, basic=(user, pw))
         try:
             info = client.health()
             print(green("✓ connected — Grafana %s"
@@ -1087,6 +1191,19 @@ class Wizard:
         except GrafanaError as e:
             print(red("cannot connect: %s" % e))
             return 1
+        bind_ds = confirm(
+            "Bind datasource variables to this instance's datasources "
+            "before importing? (writes dashboard.bound.json; No keeps the "
+            "portable pickers)", default=True)
+        env = ""
+        pin = False
+        if bind_ds:
+            env = prompt("Target environment value (blank = leave the env "
+                         "variable as is)", self.recall("target_env", ""))
+            if env:
+                self.remember("target_env", env)
+                pin = confirm("Pin it into every query? (drops the env "
+                              "variable)", default=False)
 
         folder_title = prompt("Folder to import into (blank = General)",
                               self.recall("folder", ""))
@@ -1113,6 +1230,17 @@ class Wizard:
             with open(path) as f:
                 dash = json.load(f)
             name = dash.get("title") or os.path.basename(path)
+            if bind_ds:
+                dash, missing = self._bind_for_import(client, dash, env,
+                                                      pin, path)
+                if missing:
+                    problems.append(name)
+                    print("  %s %s%s" % (
+                        red("✗"), name,
+                        dim(" (unbound datasource variable(s): %s -- add "
+                            "the datasource or bind it with 'export "
+                            "--ds')" % ", ".join(missing))))
+                    continue
             try:
                 res = client.import_dashboard(dash, folder_uid=folder_uid,
                                               overwrite=overwrite)
@@ -1132,6 +1260,35 @@ class Wizard:
               % (green(str(ok)),
                  red(str(len(problems))) if problems else "0"))
         return 1 if problems else 0
+
+    def _bind_for_import(self, client, dash: Dict[str, Any], env: str,
+                         pin: bool, path: str) \
+            -> Tuple[Dict[str, Any], List[str]]:
+        """Bind one dashboard to the connected instance (+ target env)
+        and keep the bound copy next to the source. Returns (dash,
+        unbound variable names); on a lookup failure the portable dash
+        is returned with its refs reported as unbound."""
+        from .bind import bind_datasources, set_target_env, unbound_refs
+        from .cli import _bound_path, load_config
+        try:
+            ds_map = client.resolve_ds_map(dash) or {}
+        except GrafanaError as e:
+            print(yellow("  could not list datasources: %s" % e))
+            return dash, unbound_refs(dash)
+        bound = bind_datasources(dash, ds_map) if ds_map else dash
+        if env:
+            cfg = load_config(self.recall("config", "") or "")
+            bound = set_target_env(bound, env, env_map=cfg.get("env_map"),
+                                   var_name=cfg.get("env_var") or "env",
+                                   pin=pin)
+        missing = unbound_refs(bound)
+        if not missing:
+            out = _bound_path(path)
+            with open(out, "w", encoding="utf-8") as f:
+                json.dump(bound, f, indent=2, ensure_ascii=False)
+                f.write("\n")
+            print(dim("  bound -> %s" % out))
+        return bound, missing
 
     # -- config -------------------------------------------------------------
 

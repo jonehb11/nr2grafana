@@ -1,0 +1,1262 @@
+{
+ "schema": 1,
+ "page": "Aurora DB",
+ "widgets": [
+  {
+   "id": "p08-w001",
+   "title": "CPU Utilization (Average)",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT average(aws.rds.CPUUtilization) FROM Metric TIMESERIES FACET aws.rds.DBInstanceIdentifier WHERE `aws.rds.dbClusterIdentifier` = concat('acme-backend-', {{env}})"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg by (aws_rds_DBInstanceIdentifier)(avg_over_time(aws_rds_CPUUtilization{aws_rds_dbClusterIdentifier=\"Func(name='concat', args=[Lit(value='acme-backend-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'aws.rds.dbClusterIdentifier' not in label_map; used 'aws_rds_dbClusterIdentifier' \u2014 verify the label exists in your stack",
+     "FACET attribute 'aws.rds.DBInstanceIdentifier' not in label_map; used 'aws_rds_DBInstanceIdentifier'",
+     "assumed gauge 'aws_rds_CPUUtilization'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "cloudwatch",
+     "refId": "A",
+     "namespace": "AWS/RDS",
+     "metricName": "CPUUtilization",
+     "statistic": "Average",
+     "dimensions": {
+      "DBInstanceIdentifier": [
+       "*"
+      ]
+     },
+     "dimension_keys": [
+      "DBInstanceIdentifier"
+     ],
+     "queryMode": "Metrics",
+     "region": "default",
+     "metricEditorMode": 0
+    }
+   ]
+  },
+  {
+   "id": "p08-w002",
+   "title": "CPU Utilization (p90)",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT percentile(aws.rds.CPUUtilization, 90) FROM Metric TIMESERIES FACET aws.rds.DBInstanceIdentifier WHERE `aws.rds.dbClusterIdentifier` = concat('acme-backend-', {{env}})"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "histogram_quantile(0.9, sum by (le, aws_rds_DBInstanceIdentifier)(rate(aws_rds_CPUUtilization_bucket{aws_rds_dbClusterIdentifier=\"Func(name='concat', args=[Lit(value='acme-backend-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval])))"
+     }
+    ],
+    "notes": [
+     "attribute 'aws.rds.dbClusterIdentifier' not in label_map; used 'aws_rds_dbClusterIdentifier' \u2014 verify the label exists in your stack",
+     "FACET attribute 'aws.rds.DBInstanceIdentifier' not in label_map; used 'aws_rds_DBInstanceIdentifier'",
+     "assumed 'aws.rds.CPUUtilization' is a histogram (required by percentile()); add it to metric_map with the exact Prometheus name/type",
+     "histogram_quantile interpolates within buckets; NR percentiles are computed from event data",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "cloudwatch",
+     "refId": "A",
+     "namespace": "AWS/RDS",
+     "metricName": "CPUUtilization",
+     "statistic": "p90",
+     "dimensions": {
+      "DBInstanceIdentifier": [
+       "*"
+      ]
+     },
+     "dimension_keys": [
+      "DBInstanceIdentifier"
+     ],
+     "queryMode": "Metrics",
+     "region": "default",
+     "metricEditorMode": 0
+    }
+   ]
+  },
+  {
+   "id": "p08-w003",
+   "title": "CPU Utilization (Max)",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT max(aws.rds.CPUUtilization) FROM Metric TIMESERIES FACET aws.rds.DBInstanceIdentifier WHERE `aws.rds.dbClusterIdentifier` = concat('acme-backend-', {{env}})"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "max by (aws_rds_DBInstanceIdentifier)(max_over_time(aws_rds_CPUUtilization{aws_rds_dbClusterIdentifier=\"Func(name='concat', args=[Lit(value='acme-backend-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'aws.rds.dbClusterIdentifier' not in label_map; used 'aws_rds_dbClusterIdentifier' \u2014 verify the label exists in your stack",
+     "FACET attribute 'aws.rds.DBInstanceIdentifier' not in label_map; used 'aws_rds_DBInstanceIdentifier'",
+     "assumed gauge 'aws_rds_CPUUtilization'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "cloudwatch",
+     "refId": "A",
+     "namespace": "AWS/RDS",
+     "metricName": "CPUUtilization",
+     "statistic": "Maximum",
+     "dimensions": {
+      "DBInstanceIdentifier": [
+       "*"
+      ]
+     },
+     "dimension_keys": [
+      "DBInstanceIdentifier"
+     ],
+     "queryMode": "Metrics",
+     "region": "default",
+     "metricEditorMode": 0
+    }
+   ]
+  },
+  {
+   "id": "p08-w004",
+   "title": "Write IOPS",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT average(`aws.rds.WriteIOPS`) FROM Metric FACET aws.rds.DBInstanceIdentifier TIMESERIES WHERE `aws.rds.dbClusterIdentifier` = concat('acme-backend-', {{env}})"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg by (aws_rds_DBInstanceIdentifier)(avg_over_time(aws_rds_WriteIOPS{aws_rds_dbClusterIdentifier=\"Func(name='concat', args=[Lit(value='acme-backend-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'aws.rds.dbClusterIdentifier' not in label_map; used 'aws_rds_dbClusterIdentifier' \u2014 verify the label exists in your stack",
+     "FACET attribute 'aws.rds.DBInstanceIdentifier' not in label_map; used 'aws_rds_DBInstanceIdentifier'",
+     "assumed gauge 'aws_rds_WriteIOPS'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "cloudwatch",
+     "refId": "A",
+     "namespace": "AWS/RDS",
+     "metricName": "WriteIOPS",
+     "statistic": "Average",
+     "dimensions": {
+      "DBInstanceIdentifier": [
+       "*"
+      ]
+     },
+     "dimension_keys": [
+      "DBInstanceIdentifier"
+     ],
+     "queryMode": "Metrics",
+     "region": "default",
+     "metricEditorMode": 0
+    }
+   ]
+  },
+  {
+   "id": "p08-w005",
+   "title": "Storage Usage",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT average(aws.rds.allocatedStorageBytes) as UsedStorage, average(aws.rds.FreeLocalStorage) as AvailableStorage FROM Metric TIMESERIES WHERE `aws.rds.dbClusterIdentifier` = concat('acme-backend-', {{env}})"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg(avg_over_time(aws_rds_allocatedStorageBytes{aws_rds_dbClusterIdentifier=\"Func(name='concat', args=[Lit(value='acme-backend-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg(avg_over_time(aws_rds_FreeLocalStorage{aws_rds_dbClusterIdentifier=\"Func(name='concat', args=[Lit(value='acme-backend-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'aws.rds.dbClusterIdentifier' not in label_map; used 'aws_rds_dbClusterIdentifier' \u2014 verify the label exists in your stack",
+     "assumed gauge 'aws_rds_allocatedStorageBytes'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'aws_rds_FreeLocalStorage'; verify metric name/type in Mimir and add to metric_map if wrong"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "cloudwatch",
+     "refId": "A",
+     "namespace": "AWS/RDS",
+     "metricName": "AllocatedStorage",
+     "statistic": "Average",
+     "dimensions": {
+      "DBInstanceIdentifier": [
+       "*"
+      ]
+     },
+     "dimension_keys": [
+      "DBInstanceIdentifier"
+     ],
+     "queryMode": "Metrics",
+     "region": "default",
+     "metricEditorMode": 0
+    },
+    {
+     "datasource": "cloudwatch",
+     "refId": "B",
+     "namespace": "AWS/RDS",
+     "metricName": "FreeLocalStorage",
+     "statistic": "Average",
+     "dimensions": {
+      "DBInstanceIdentifier": [
+       "*"
+      ]
+     },
+     "dimension_keys": [
+      "DBInstanceIdentifier"
+     ],
+     "queryMode": "Metrics",
+     "region": "default",
+     "metricEditorMode": 0
+    }
+   ]
+  },
+  {
+   "id": "p08-w006",
+   "title": "Memory Usage (p95)",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT percentile(aws.rds.FreeableMemory, 95) as Available, percentile(aws.rds.SwapUsage, 95) as Used FROM Metric WHERE `aws.rds.dbClusterIdentifier` = concat('acme-backend-', {{env}}) FACET aws.rds.DBInstanceIdentifier TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "histogram_quantile(0.95, sum by (le, aws_rds_DBInstanceIdentifier)(rate(aws_rds_FreeableMemory_bucket{aws_rds_dbClusterIdentifier=\"Func(name='concat', args=[Lit(value='acme-backend-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval])))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "histogram_quantile(0.95, sum by (le, aws_rds_DBInstanceIdentifier)(rate(aws_rds_SwapUsage_bucket{aws_rds_dbClusterIdentifier=\"Func(name='concat', args=[Lit(value='acme-backend-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval])))"
+     }
+    ],
+    "notes": [
+     "attribute 'aws.rds.dbClusterIdentifier' not in label_map; used 'aws_rds_dbClusterIdentifier' \u2014 verify the label exists in your stack",
+     "FACET attribute 'aws.rds.DBInstanceIdentifier' not in label_map; used 'aws_rds_DBInstanceIdentifier'",
+     "assumed 'aws.rds.FreeableMemory' is a histogram (required by percentile()); add it to metric_map with the exact Prometheus name/type",
+     "histogram_quantile interpolates within buckets; NR percentiles are computed from event data",
+     "assumed 'aws.rds.SwapUsage' is a histogram (required by percentile()); add it to metric_map with the exact Prometheus name/type",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "cloudwatch",
+     "refId": "A",
+     "namespace": "AWS/RDS",
+     "metricName": "FreeableMemory",
+     "statistic": "p95",
+     "dimensions": {
+      "DBInstanceIdentifier": [
+       "*"
+      ]
+     },
+     "dimension_keys": [
+      "DBInstanceIdentifier"
+     ],
+     "queryMode": "Metrics",
+     "region": "default",
+     "metricEditorMode": 0
+    },
+    {
+     "datasource": "cloudwatch",
+     "refId": "B",
+     "namespace": "AWS/RDS",
+     "metricName": "SwapUsage",
+     "statistic": "p95",
+     "dimensions": {
+      "DBInstanceIdentifier": [
+       "*"
+      ]
+     },
+     "dimension_keys": [
+      "DBInstanceIdentifier"
+     ],
+     "queryMode": "Metrics",
+     "region": "default",
+     "metricEditorMode": 0
+    }
+   ]
+  },
+  {
+   "id": "p08-w007",
+   "title": "Cache Hit Ratios",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT average(`aws.rds.BufferCacheHitRatio`) as BufferCache, average(aws.rds.ResultSetCacheHitRatio) as ResultSetCache FROM Metric FACET `aws.rds.DBInstanceIdentifier` TIMESERIES WHERE `aws.rds.dbClusterIdentifier` = concat('acme-backend-', {{env}})"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg by (aws_rds_DBInstanceIdentifier)(avg_over_time(aws_rds_BufferCacheHitRatio{aws_rds_dbClusterIdentifier=\"Func(name='concat', args=[Lit(value='acme-backend-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg by (aws_rds_DBInstanceIdentifier)(avg_over_time(aws_rds_ResultSetCacheHitRatio{aws_rds_dbClusterIdentifier=\"Func(name='concat', args=[Lit(value='acme-backend-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'aws.rds.dbClusterIdentifier' not in label_map; used 'aws_rds_dbClusterIdentifier' \u2014 verify the label exists in your stack",
+     "FACET attribute 'aws.rds.DBInstanceIdentifier' not in label_map; used 'aws_rds_DBInstanceIdentifier'",
+     "assumed gauge 'aws_rds_BufferCacheHitRatio'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'aws_rds_ResultSetCacheHitRatio'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "cloudwatch",
+     "refId": "A",
+     "namespace": "AWS/RDS",
+     "metricName": "BufferCacheHitRatio",
+     "statistic": "Average",
+     "dimensions": {
+      "DBInstanceIdentifier": [
+       "*"
+      ]
+     },
+     "dimension_keys": [
+      "DBInstanceIdentifier"
+     ],
+     "queryMode": "Metrics",
+     "region": "default",
+     "metricEditorMode": 0
+    },
+    {
+     "datasource": "cloudwatch",
+     "refId": "B",
+     "namespace": "AWS/RDS",
+     "metricName": "ResultSetCacheHitRatio",
+     "statistic": "Average",
+     "dimensions": {
+      "DBInstanceIdentifier": [
+       "*"
+      ]
+     },
+     "dimension_keys": [
+      "DBInstanceIdentifier"
+     ],
+     "queryMode": "Metrics",
+     "region": "default",
+     "metricEditorMode": 0
+    }
+   ]
+  },
+  {
+   "id": "p08-w008",
+   "title": "Read IOPS",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT average(`aws.rds.ReadIOPS`) FROM Metric FACET aws.rds.DBInstanceIdentifier TIMESERIES WHERE `aws.rds.dbClusterIdentifier` = concat('acme-backend-', {{env}})"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg by (aws_rds_DBInstanceIdentifier)(avg_over_time(aws_rds_ReadIOPS{aws_rds_dbClusterIdentifier=\"Func(name='concat', args=[Lit(value='acme-backend-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'aws.rds.dbClusterIdentifier' not in label_map; used 'aws_rds_dbClusterIdentifier' \u2014 verify the label exists in your stack",
+     "FACET attribute 'aws.rds.DBInstanceIdentifier' not in label_map; used 'aws_rds_DBInstanceIdentifier'",
+     "assumed gauge 'aws_rds_ReadIOPS'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "cloudwatch",
+     "refId": "A",
+     "namespace": "AWS/RDS",
+     "metricName": "ReadIOPS",
+     "statistic": "Average",
+     "dimensions": {
+      "DBInstanceIdentifier": [
+       "*"
+      ]
+     },
+     "dimension_keys": [
+      "DBInstanceIdentifier"
+     ],
+     "queryMode": "Metrics",
+     "region": "default",
+     "metricEditorMode": 0
+    }
+   ]
+  },
+  {
+   "id": "p08-w009",
+   "title": "Memory Usage (max)",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT max(aws.rds.FreeableMemory) as Available, max(aws.rds.SwapUsage) as Used FROM Metric WHERE `aws.rds.dbClusterIdentifier` = 'acme-backend-prod' FACET aws.rds.DBInstanceIdentifier TIMESERIES WHERE `aws.rds.dbClusterIdentifier` = concat('acme-backend-', {{env}})"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "max by (aws_rds_DBInstanceIdentifier)(max_over_time(aws_rds_FreeableMemory{aws_rds_dbClusterIdentifier=\"Func(name='concat', args=[Lit(value='acme-backend-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "max by (aws_rds_DBInstanceIdentifier)(max_over_time(aws_rds_SwapUsage{aws_rds_dbClusterIdentifier=\"Func(name='concat', args=[Lit(value='acme-backend-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'aws.rds.dbClusterIdentifier' not in label_map; used 'aws_rds_dbClusterIdentifier' \u2014 verify the label exists in your stack",
+     "FACET attribute 'aws.rds.DBInstanceIdentifier' not in label_map; used 'aws_rds_DBInstanceIdentifier'",
+     "assumed gauge 'aws_rds_FreeableMemory'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'aws_rds_SwapUsage'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "cloudwatch",
+     "refId": "A",
+     "namespace": "AWS/RDS",
+     "metricName": "FreeableMemory",
+     "statistic": "Maximum",
+     "dimensions": {
+      "DBInstanceIdentifier": [
+       "*"
+      ]
+     },
+     "dimension_keys": [
+      "DBInstanceIdentifier"
+     ],
+     "queryMode": "Metrics",
+     "region": "default",
+     "metricEditorMode": 0
+    },
+    {
+     "datasource": "cloudwatch",
+     "refId": "B",
+     "namespace": "AWS/RDS",
+     "metricName": "SwapUsage",
+     "statistic": "Maximum",
+     "dimensions": {
+      "DBInstanceIdentifier": [
+       "*"
+      ]
+     },
+     "dimension_keys": [
+      "DBInstanceIdentifier"
+     ],
+     "queryMode": "Metrics",
+     "region": "default",
+     "metricEditorMode": 0
+    }
+   ]
+  },
+  {
+   "id": "p08-w010",
+   "title": "Table Size by Table",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT latest(acme_backend.postgres_metrics.disk_usage.table_size) FROM Metric WHERE clusterName = concat('acme-cluster-', {{env}}) FACET table_name LIMIT 25 TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "topk(25, max by (table_name)(last_over_time(acme_backend_postgres_metrics_disk_usage_table_size{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__interval])))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'table_name' not in label_map; used 'table_name'",
+     "assumed gauge 'acme_backend_postgres_metrics_disk_usage_table_size'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "FACET LIMIT 25 became topk(25, ...); on range queries topk is evaluated per step so series may flicker"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "topk(25, max by (table_name)(last_over_time(acme_backend_postgres_metrics_disk_usage_table_size[$__interval])))"
+    }
+   ]
+  },
+  {
+   "id": "p08-w011",
+   "title": "Client Connections",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT max(aws.rds.DatabaseConnections), average(aws.rds.DatabaseConnections), average(aws.rds.ActiveTransactions) FROM Metric TIMESERIES WHERE `aws.rds.dbClusterIdentifier` = concat('acme-backend-', {{env}})"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "max(max_over_time(aws_rds_DatabaseConnections{aws_rds_dbClusterIdentifier=\"Func(name='concat', args=[Lit(value='acme-backend-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg(avg_over_time(aws_rds_DatabaseConnections{aws_rds_dbClusterIdentifier=\"Func(name='concat', args=[Lit(value='acme-backend-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg(avg_over_time(aws_rds_ActiveTransactions{aws_rds_dbClusterIdentifier=\"Func(name='concat', args=[Lit(value='acme-backend-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'aws.rds.dbClusterIdentifier' not in label_map; used 'aws_rds_dbClusterIdentifier' \u2014 verify the label exists in your stack",
+     "assumed gauge 'aws_rds_DatabaseConnections'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'aws_rds_ActiveTransactions'; verify metric name/type in Mimir and add to metric_map if wrong"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "cloudwatch",
+     "refId": "A",
+     "namespace": "AWS/RDS",
+     "metricName": "DatabaseConnections",
+     "statistic": "Maximum",
+     "dimensions": {
+      "DBInstanceIdentifier": [
+       "*"
+      ]
+     },
+     "dimension_keys": [
+      "DBInstanceIdentifier"
+     ],
+     "queryMode": "Metrics",
+     "region": "default",
+     "metricEditorMode": 0
+    },
+    {
+     "datasource": "cloudwatch",
+     "refId": "B",
+     "namespace": "AWS/RDS",
+     "metricName": "DatabaseConnections",
+     "statistic": "Average",
+     "dimensions": {
+      "DBInstanceIdentifier": [
+       "*"
+      ]
+     },
+     "dimension_keys": [
+      "DBInstanceIdentifier"
+     ],
+     "queryMode": "Metrics",
+     "region": "default",
+     "metricEditorMode": 0
+    },
+    {
+     "datasource": "cloudwatch",
+     "refId": "C",
+     "namespace": "AWS/RDS",
+     "metricName": "ActiveTransactions",
+     "statistic": "Average",
+     "dimensions": {
+      "DBInstanceIdentifier": [
+       "*"
+      ]
+     },
+     "dimension_keys": [
+      "DBInstanceIdentifier"
+     ],
+     "queryMode": "Metrics",
+     "region": "default",
+     "metricEditorMode": 0
+    }
+   ]
+  },
+  {
+   "id": "p08-w012",
+   "title": "Network Throughput",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(`aws.rds.NetworkReceiveThroughput`) as Receive, sum(`aws.rds.NetworkTransmitThroughput`) as Transmit FROM Metric TIMESERIES MAX WHERE `aws.rds.dbClusterIdentifier` = concat('acme-backend-', {{env}}) FACET aws.rds.DBInstanceIdentifier"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (aws_rds_DBInstanceIdentifier)(avg_over_time(aws_rds_NetworkReceiveThroughput{aws_rds_dbClusterIdentifier=\"Func(name='concat', args=[Lit(value='acme-backend-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (aws_rds_DBInstanceIdentifier)(avg_over_time(aws_rds_NetworkTransmitThroughput{aws_rds_dbClusterIdentifier=\"Func(name='concat', args=[Lit(value='acme-backend-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'aws.rds.dbClusterIdentifier' not in label_map; used 'aws_rds_dbClusterIdentifier' \u2014 verify the label exists in your stack",
+     "FACET attribute 'aws.rds.DBInstanceIdentifier' not in label_map; used 'aws_rds_DBInstanceIdentifier'",
+     "assumed gauge 'aws_rds_NetworkReceiveThroughput'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "assumed gauge 'aws_rds_NetworkTransmitThroughput'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "cloudwatch",
+     "refId": "A",
+     "namespace": "AWS/RDS",
+     "metricName": "NetworkReceiveThroughput",
+     "statistic": "Sum",
+     "dimensions": {
+      "DBInstanceIdentifier": [
+       "*"
+      ]
+     },
+     "dimension_keys": [
+      "DBInstanceIdentifier"
+     ],
+     "queryMode": "Metrics",
+     "region": "default",
+     "metricEditorMode": 0
+    },
+    {
+     "datasource": "cloudwatch",
+     "refId": "B",
+     "namespace": "AWS/RDS",
+     "metricName": "NetworkTransmitThroughput",
+     "statistic": "Sum",
+     "dimensions": {
+      "DBInstanceIdentifier": [
+       "*"
+      ]
+     },
+     "dimension_keys": [
+      "DBInstanceIdentifier"
+     ],
+     "queryMode": "Metrics",
+     "region": "default",
+     "metricEditorMode": 0
+    }
+   ]
+  },
+  {
+   "id": "p08-w013",
+   "title": "Aurora Replica Lag",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT average(aws.rds.AuroraReplicaLag) FROM Metric FACET aws.rds.DBInstanceIdentifier  TIMESERIES WHERE `aws.rds.dbClusterIdentifier` = concat('acme-backend-', {{env}})"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg by (aws_rds_DBInstanceIdentifier)(avg_over_time(aws_rds_AuroraReplicaLag{aws_rds_dbClusterIdentifier=\"Func(name='concat', args=[Lit(value='acme-backend-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'aws.rds.dbClusterIdentifier' not in label_map; used 'aws_rds_dbClusterIdentifier' \u2014 verify the label exists in your stack",
+     "FACET attribute 'aws.rds.DBInstanceIdentifier' not in label_map; used 'aws_rds_DBInstanceIdentifier'",
+     "assumed gauge 'aws_rds_AuroraReplicaLag'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "cloudwatch",
+     "refId": "A",
+     "namespace": "AWS/RDS",
+     "metricName": "AuroraReplicaLag",
+     "statistic": "Average",
+     "dimensions": {
+      "DBInstanceIdentifier": [
+       "*"
+      ]
+     },
+     "dimension_keys": [
+      "DBInstanceIdentifier"
+     ],
+     "queryMode": "Metrics",
+     "region": "default",
+     "metricEditorMode": 0
+    }
+   ]
+  },
+  {
+   "id": "p08-w014",
+   "title": "Index Size by Table",
+   "visualization": "viz.bar",
+   "grafana_type": "bargauge",
+   "nrql": [
+    "SELECT latest(acme_backend.postgres_metrics.disk_usage.indexes_size) FROM Metric WHERE clusterName = concat('acme-cluster-', {{env}}) FACET table_name"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "max by (table_name)(acme_backend_postgres_metrics_disk_usage_indexes_size{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"})"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'table_name' not in label_map; used 'table_name'",
+     "assumed gauge 'acme_backend_postgres_metrics_disk_usage_indexes_size'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "max by (table_name)(acme_backend_postgres_metrics_disk_usage_indexes_size)"
+    }
+   ]
+  },
+  {
+   "id": "p08-w015",
+   "title": "Disk Usage by Table (includes index size)",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT latest(acme_backend.postgres_metrics.disk_usage.total_size) FROM Metric WHERE clusterName = concat('acme-cluster-', {{env}}) FACET table_name TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "max by (table_name)(last_over_time(acme_backend_postgres_metrics_disk_usage_total_size{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'table_name' not in label_map; used 'table_name'",
+     "assumed gauge 'acme_backend_postgres_metrics_disk_usage_total_size'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "max by (table_name)(last_over_time(acme_backend_postgres_metrics_disk_usage_total_size[$__interval]))"
+    }
+   ]
+  },
+  {
+   "id": "p08-w016",
+   "title": "Network Throughput",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(`aws.rds.NetworkReceiveThroughput`) as Receive, sum(`aws.rds.NetworkTransmitThroughput`) as Transmit FROM Metric TIMESERIES WHERE `aws.rds.dbClusterIdentifier` = concat('acme-backend-', {{env}})"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(avg_over_time(aws_rds_NetworkReceiveThroughput{aws_rds_dbClusterIdentifier=\"Func(name='concat', args=[Lit(value='acme-backend-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(avg_over_time(aws_rds_NetworkTransmitThroughput{aws_rds_dbClusterIdentifier=\"Func(name='concat', args=[Lit(value='acme-backend-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'aws.rds.dbClusterIdentifier' not in label_map; used 'aws_rds_dbClusterIdentifier' \u2014 verify the label exists in your stack",
+     "assumed gauge 'aws_rds_NetworkReceiveThroughput'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "assumed gauge 'aws_rds_NetworkTransmitThroughput'; verify metric name/type in Mimir and add to metric_map if wrong"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "cloudwatch",
+     "refId": "A",
+     "namespace": "AWS/RDS",
+     "metricName": "NetworkReceiveThroughput",
+     "statistic": "Sum",
+     "dimensions": {
+      "DBInstanceIdentifier": [
+       "*"
+      ]
+     },
+     "dimension_keys": [
+      "DBInstanceIdentifier"
+     ],
+     "queryMode": "Metrics",
+     "region": "default",
+     "metricEditorMode": 0
+    },
+    {
+     "datasource": "cloudwatch",
+     "refId": "B",
+     "namespace": "AWS/RDS",
+     "metricName": "NetworkTransmitThroughput",
+     "statistic": "Sum",
+     "dimensions": {
+      "DBInstanceIdentifier": [
+       "*"
+      ]
+     },
+     "dimension_keys": [
+      "DBInstanceIdentifier"
+     ],
+     "queryMode": "Metrics",
+     "region": "default",
+     "metricEditorMode": 0
+    }
+   ]
+  },
+  {
+   "id": "p08-w017",
+   "title": "Latency",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT average(aws.rds.ReadLatency), average(aws.rds.WriteLatency) FROM Metric TIMESERIES WHERE `aws.rds.dbClusterIdentifier` = concat('acme-backend-', {{env}})"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg(avg_over_time(aws_rds_ReadLatency{aws_rds_dbClusterIdentifier=\"Func(name='concat', args=[Lit(value='acme-backend-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg(avg_over_time(aws_rds_WriteLatency{aws_rds_dbClusterIdentifier=\"Func(name='concat', args=[Lit(value='acme-backend-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'aws.rds.dbClusterIdentifier' not in label_map; used 'aws_rds_dbClusterIdentifier' \u2014 verify the label exists in your stack",
+     "assumed gauge 'aws_rds_ReadLatency'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "assumed gauge 'aws_rds_WriteLatency'; verify metric name/type in Mimir and add to metric_map if wrong"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "cloudwatch",
+     "refId": "A",
+     "namespace": "AWS/RDS",
+     "metricName": "ReadLatency",
+     "statistic": "Average",
+     "dimensions": {
+      "DBInstanceIdentifier": [
+       "*"
+      ]
+     },
+     "dimension_keys": [
+      "DBInstanceIdentifier"
+     ],
+     "queryMode": "Metrics",
+     "region": "default",
+     "metricEditorMode": 0
+    },
+    {
+     "datasource": "cloudwatch",
+     "refId": "B",
+     "namespace": "AWS/RDS",
+     "metricName": "WriteLatency",
+     "statistic": "Average",
+     "dimensions": {
+      "DBInstanceIdentifier": [
+       "*"
+      ]
+     },
+     "dimension_keys": [
+      "DBInstanceIdentifier"
+     ],
+     "queryMode": "Metrics",
+     "region": "default",
+     "metricEditorMode": 0
+    }
+   ]
+  },
+  {
+   "id": "p08-w018",
+   "title": "Commit Throughput",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT average(`aws.rds.CommitThroughput`) FROM Metric FACET aws.rds.DBInstanceIdentifier TIMESERIES WHERE `aws.rds.dbClusterIdentifier` = concat('acme-backend-', {{env}})"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg by (aws_rds_DBInstanceIdentifier)(avg_over_time(aws_rds_CommitThroughput{aws_rds_dbClusterIdentifier=\"Func(name='concat', args=[Lit(value='acme-backend-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'aws.rds.dbClusterIdentifier' not in label_map; used 'aws_rds_dbClusterIdentifier' \u2014 verify the label exists in your stack",
+     "FACET attribute 'aws.rds.DBInstanceIdentifier' not in label_map; used 'aws_rds_DBInstanceIdentifier'",
+     "assumed gauge 'aws_rds_CommitThroughput'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "cloudwatch",
+     "refId": "A",
+     "namespace": "AWS/RDS",
+     "metricName": "CommitThroughput",
+     "statistic": "Average",
+     "dimensions": {
+      "DBInstanceIdentifier": [
+       "*"
+      ]
+     },
+     "dimension_keys": [
+      "DBInstanceIdentifier"
+     ],
+     "queryMode": "Metrics",
+     "region": "default",
+     "metricEditorMode": 0
+    }
+   ]
+  },
+  {
+   "id": "p08-w019",
+   "title": "Queries (Transactions)",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "select count(newrelic.timeslice.value) as 'Transactions' FROM Metric where appName = concat('acme-backend (', {{env}}, ')') with METRIC_FORMAT 'Datastore/statement/Postgres/{q}/{p}' facet q,p TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (q, p)(increase(newrelic_timeslice_value_total{service_name=\"Func(name='concat', args=[Lit(value='acme-backend ('), Attr(name='{{env}}'), Lit(value=')')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'q' not in label_map; used 'q'",
+     "FACET attribute 'p' not in label_map; used 'p'",
+     "assumed counter 'newrelic_timeslice_value_total'; verify name/type in Mimir (/api/v1/metadata)",
+     "unit:short",
+     "count() on a Metric counter emitted as the summed increase (event count); NRQL count() strictly counts datapoints \u2014 use sum() in NR to compare like for like",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p08-w020",
+   "title": "95%-Latency",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT percentile(aws.rds.ReadLatency,95), percentile(aws.rds.WriteLatency,95) FROM Metric TIMESERIES WHERE `aws.rds.dbClusterIdentifier` = concat('acme-backend-', {{env}})"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "histogram_quantile(0.95, sum by (le)(rate(aws_rds_ReadLatency_bucket{aws_rds_dbClusterIdentifier=\"Func(name='concat', args=[Lit(value='acme-backend-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval])))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "histogram_quantile(0.95, sum by (le)(rate(aws_rds_WriteLatency_bucket{aws_rds_dbClusterIdentifier=\"Func(name='concat', args=[Lit(value='acme-backend-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval])))"
+     }
+    ],
+    "notes": [
+     "attribute 'aws.rds.dbClusterIdentifier' not in label_map; used 'aws_rds_dbClusterIdentifier' \u2014 verify the label exists in your stack",
+     "assumed 'aws.rds.ReadLatency' is a histogram (required by percentile()); add it to metric_map with the exact Prometheus name/type",
+     "histogram_quantile interpolates within buckets; NR percentiles are computed from event data",
+     "assumed 'aws.rds.WriteLatency' is a histogram (required by percentile()); add it to metric_map with the exact Prometheus name/type"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "cloudwatch",
+     "refId": "A",
+     "namespace": "AWS/RDS",
+     "metricName": "ReadLatency",
+     "statistic": "p95",
+     "dimensions": {
+      "DBInstanceIdentifier": [
+       "*"
+      ]
+     },
+     "dimension_keys": [
+      "DBInstanceIdentifier"
+     ],
+     "queryMode": "Metrics",
+     "region": "default",
+     "metricEditorMode": 0
+    },
+    {
+     "datasource": "cloudwatch",
+     "refId": "B",
+     "namespace": "AWS/RDS",
+     "metricName": "WriteLatency",
+     "statistic": "p95",
+     "dimensions": {
+      "DBInstanceIdentifier": [
+       "*"
+      ]
+     },
+     "dimension_keys": [
+      "DBInstanceIdentifier"
+     ],
+     "queryMode": "Metrics",
+     "region": "default",
+     "metricEditorMode": 0
+    }
+   ]
+  },
+  {
+   "id": "p08-w021",
+   "title": "Queries (Latency)",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "select average(newrelic.timeslice.value) as 'Latency' FROM Metric where appName = concat('acme-backend (', {{env}}, ')') with METRIC_FORMAT 'Datastore/statement/Postgres/{q}/{p}' facet q,p TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (q, p)(rate(newrelic_timeslice_value_sum{service_name=\"Func(name='concat', args=[Lit(value='acme-backend ('), Attr(name='{{env}}'), Lit(value=')')], where=None, cases=[])\"}[$__rate_interval])) / sum by (q, p)(rate(newrelic_timeslice_value_count{service_name=\"Func(name='concat', args=[Lit(value='acme-backend ('), Attr(name='{{env}}'), Lit(value=')')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'q' not in label_map; used 'q'",
+     "FACET attribute 'p' not in label_map; used 'p'",
+     "name suggests a duration histogram; verify 'newrelic_timeslice_value' type in Mimir",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p08-w022",
+   "title": "Total Queries",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "select count(newrelic.timeslice.value) as 'Transactions' FROM Metric where appName = concat('acme-backend (',{{env}},')') with METRIC_FORMAT 'Datastore/statement/Postgres/{q}/{p}' TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(increase(newrelic_timeslice_value_total{service_name=\"Func(name='concat', args=[Lit(value='acme-backend ('), Attr(name='{{env}}'), Lit(value=')')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "assumed counter 'newrelic_timeslice_value_total'; verify name/type in Mimir (/api/v1/metadata)",
+     "unit:short",
+     "count() on a Metric counter emitted as the summed increase (event count); NRQL count() strictly counts datapoints \u2014 use sum() in NR to compare like for like"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p08-w023",
+   "title": "Queries (TPS)",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "select rate(count(newrelic.timeslice.value), 1 second) as 'TPS' FROM Metric where appName = concat('acme-backend (',{{env}},')') with METRIC_FORMAT 'Datastore/statement/Postgres/{q}/{p}' facet q,p TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (q, p)(rate(newrelic_timeslice_value_total{service_name=\"Func(name='concat', args=[Lit(value='acme-backend ('), Attr(name='{{env}}'), Lit(value=')')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'q' not in label_map; used 'q'",
+     "FACET attribute 'p' not in label_map; used 'p'",
+     "assumed counter 'newrelic_timeslice_value_total'; verify name/type in Mimir (/api/v1/metadata)",
+     "unit:short",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p08-w024",
+   "title": "Detected Long Running Queries Overtime",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT count(*) from Log where namespace_name='acme-backend' and cluster_name= concat('acme-cluster-', {{env}}) and log_name='acme_backend.database_monitoring' and message = 'Detected long running query' since 7 days ago TIMESERIES 1 hour"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "loki",
+      "type": "range",
+      "expr": "sum(count_over_time({namespace=\"acme-backend\", cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"} |= \"Detected long running query\" | json | log_name=\"acme_backend.database_monitoring\" | __error__=\"\" [$__auto]))"
+     }
+    ],
+    "notes": [
+     "attribute 'log_name' not in label_map; used 'log_name' \u2014 verify the label exists in your stack",
+     "equality on message became a substring line filter (|= \"Detected long running query\")",
+     "filter on 'log_name' assumes it is a parsed json field in Loki",
+     "TIMESERIES 1h: Grafana buckets by the query interval; set the panel's 'Min interval' to 1h to mirror NR bucketing",
+     "timefrom:now-7d"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "loki",
+     "refId": "A",
+     "expr": "sum(count_over_time({namespace=\"acme-backend\"} |= \"Detected long running query\" | json | log_name=\"acme_backend.database_monitoring\" | __error__=\"\" [$__auto]))"
+    }
+   ]
+  },
+  {
+   "id": "p08-w025",
+   "title": "Detected Long Running Queries",
+   "visualization": "logger.log-table-widget",
+   "grafana_type": "logs",
+   "nrql": [
+    "SELECT timestamp, duration, query  from Log where namespace_name='acme-backend' and cluster_name= concat('acme-cluster-', {{env}}) and log_name='acme_backend.database_monitoring' and message = 'Detected long running query' since 7 days ago "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "loki",
+      "type": "range",
+      "expr": "{namespace=\"acme-backend\", cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"} |= \"Detected long running query\" | json | log_name=\"acme_backend.database_monitoring\" | __error__=\"\""
+     }
+    ],
+    "notes": [
+     "attribute 'log_name' not in label_map; used 'log_name' \u2014 verify the label exists in your stack",
+     "equality on message became a substring line filter (|= \"Detected long running query\")",
+     "filter on 'log_name' assumes it is a parsed json field in Loki",
+     "panel-hint:logs",
+     "column projection (timestamp, duration, query) is not supported by Loki; the full log line is shown",
+     "timefrom:now-7d"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "loki",
+     "refId": "A",
+     "expr": "{namespace=\"acme-backend\"} |= \"Detected long running query\" | json | log_name=\"acme_backend.database_monitoring\" | __error__=\"\""
+    }
+   ]
+  },
+  {
+   "id": "p08-w026",
+   "title": "Top Detected Long Running Queries",
+   "visualization": "viz.table",
+   "grafana_type": "logs",
+   "nrql": [
+    "SELECT timestamp, duration, query  from Log where namespace_name='acme-backend' and cluster_name=concat('acme-cluster-', {{env}}) and log_name='acme_backend.database_monitoring' and message = 'Detected long running query' and query NOT LIKE '%insert into backend_ordersummary%' order by duration desc limit 100"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "loki",
+      "type": "range",
+      "expr": "{namespace=\"acme-backend\", cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"} |= \"Detected long running query\" | json | log_name=\"acme_backend.database_monitoring\" | query!~\"(?i).*insert into backend.ordersummary.*\" | __error__=\"\""
+     }
+    ],
+    "notes": [
+     "attribute 'log_name' not in label_map; used 'log_name' \u2014 verify the label exists in your stack",
+     "attribute 'query' not in label_map; used 'query' \u2014 verify the label exists in your stack",
+     "equality on message became a substring line filter (|= \"Detected long running query\")",
+     "filter on 'log_name' assumes it is a parsed json field in Loki",
+     "filter on 'query' assumes it is a parsed json field in Loki",
+     "panel-hint:logs",
+     "maxlines:100",
+     "column projection (timestamp, duration, query) is not supported by Loki; the full log line is shown"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "loki",
+     "refId": "A",
+     "expr": "{namespace=\"acme-backend\"} |= \"Detected long running query\" | json | log_name=\"acme_backend.database_monitoring\" | query!~\"(?i).*insert into backend.ordersummary.*\" | __error__=\"\""
+    }
+   ]
+  }
+ ]
+}

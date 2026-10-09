@@ -183,7 +183,7 @@ _RCA = {
     "schema": "nr2grafana/rca/v1",
     "incident": {
         "usage_type": "USE1-DataTransfer-Regional-Bytes",
-        "service": "EBS", "account": "348342704569",
+        "service": "EBS", "account": "123456789012",
         "region": "us-east-1", "usd_per_day": 164.0,
         "gb_per_day": 16470.0, "hypothesis_class": "CROSS_AZ_NETWORK",
         "step_change_date": "2026-08-31", "score": 0.98,
@@ -265,6 +265,66 @@ _WIDGET_REPORT = {
          "nrql": ["SELECT percentile(duration, 95) FROM Transaction"],
          "notes": ["percentile mapped to histogram_quantile approx"]},
     ]
+}
+
+
+# 1.11 SEAM-REPORT widget rows: metric_kind, closest_equivalent,
+# missing_datasource, manual, render_vars, cloudwatch.
+_WIDGET_REPORT_SEAM = {
+    "widgets": [
+        {"panel_id": 4, "widget": "RDS CPU", "confidence": "approximate",
+         "nrql": ["SELECT average(aws.rds.CPUUtilization) FROM Metric"],
+         "notes": [], "cloudwatch": True,
+         "missing_datasource": "cloudwatch",
+         "closest_equivalent": {
+             "datasource": "cloudwatch",
+             "cw_target": {"namespace": "AWS/RDS",
+                           "metricName": "CPUUtilization",
+                           "statistic": "Average"},
+             "note": "needs the cloudwatch datasource"}},
+        {"panel_id": 5, "widget": "Finance", "confidence": "untranslatable",
+         "manual": True,
+         "nrql": ["SELECT sum(cost) FROM FinanceSample"],
+         "notes": ["FinanceSample has no LGTM equivalent"],
+         "closest_equivalent": {"datasource": "cloudwatch",
+                                "note": "AWS Cost Explorer / TCO feature"}},
+        {"panel_id": 6, "widget": "Orders", "confidence": "needs-review",
+         "nrql": ["SELECT sum(acme_backend.order.created) FROM Metric "
+                  "WHERE cluster = concat('acme-cluster-', {{env}})"],
+         "notes": ["assumed counter (sum of an event-named metric)"],
+         "metric_kind": {"acme_backend_order_created_total": "counter"},
+         "render_vars": ["env"],
+         "closest_equivalent": {
+             "datasource": "prometheus",
+             "example_query": "sum(increase(acme_backend_order_created_"
+                              "total{cluster=\"acme-cluster-$env\"}"
+                              "[$__range]))"}},
+        {"panel_id": 7, "widget": "Plain", "confidence": "exact",
+         "nrql": ["SELECT count(*) FROM Transaction"], "notes": []},
+    ]
+}
+
+_REQUIREMENTS_UNBOUND = {
+    "schema": "nr2grafana/requirements/v1",
+    "datasources": [
+        {"family": "prometheus", "plugin_id": "prometheus",
+         "uid_ref": "${datasource}", "panel_ids": [6, 7],
+         "required": True},
+        {"family": "loki", "plugin_id": "loki",
+         "uid_ref": "${loki_datasource}", "panel_ids": [2],
+         "required": True}],
+}
+
+_TEMPLATES = {
+    "prometheus": {"label": "Prometheus / Mimir", "fields": [
+        {"name": "url", "label": "URL", "required": True,
+         "secret": False, "placeholder": "http://mimir:9009/prometheus"}],
+        "notes": "point at the Mimir prometheus API"},
+    "cloudwatch": {"label": "CloudWatch", "fields": [
+        {"name": "defaultRegion", "label": "Region", "required": True,
+         "secret": False, "placeholder": "us-east-1"},
+        {"name": "secretKey", "label": "Secret key", "required": False,
+         "secret": True, "placeholder": "AKIA..."}]},
 }
 
 
@@ -476,6 +536,195 @@ class AiContextTest(unittest.TestCase):
     def test_translations_legend_entry(self):
         ctx = aicontext.build_context(self.store, "svc-1")
         self.assertIn("translations", ctx["legend"])
+
+    # -- 1.11 SEAM-REPORT: per-panel fields + "what to add" -------------
+
+    def test_translations_carry_seam_report_fields(self):
+        self.store.save_artifact("svc-1", "widget-report",
+                                 _WIDGET_REPORT_SEAM)
+        ctx = aicontext.build_context(self.store, "svc-1")
+        rows = {r["panel_id"]: r for r in ctx["translations"]}
+        # the exact panel is omitted; the approximate one with a missing
+        # datasource is kept so the AI knows what to add
+        self.assertEqual(sorted(rows), [4, 5, 6])
+        self.assertEqual(rows[4]["missing_datasource"], "cloudwatch")
+        self.assertTrue(rows[4]["cloudwatch"])
+        self.assertEqual(rows[4]["closest_equivalent"]["cw_target"]
+                         ["namespace"], "AWS/RDS")
+        self.assertTrue(rows[5]["manual"])
+        self.assertIn("AWS Cost Explorer",
+                      rows[5]["closest_equivalent"]["note"])
+        self.assertEqual(rows[6]["metric_kind"],
+                         {"acme_backend_order_created_total": "counter"})
+        self.assertEqual(rows[6]["render_vars"], ["env"])
+        self.assertIn("increase(acme_backend_order_created_total",
+                      rows[6]["closest_equivalent"]["example_query"])
+        self.assertNotIn("manual", rows[6])
+
+    def test_missing_report_offline_treats_var_refs_as_unbound(self):
+        rep = aicontext.missing_report(
+            _REQUIREMENTS_UNBOUND, _WIDGET_REPORT_SEAM["widgets"],
+            templates=_TEMPLATES)
+        self.assertEqual(rep["missing_datasources"],
+                         ["cloudwatch", "loki", "prometheus"])
+        self.assertFalse(rep["ready"])
+        by_fam = {d["family"]: d for d in rep["datasources_to_add"]}
+        self.assertEqual(by_fam["prometheus"]["panel_ids"], [6, 7])
+        self.assertIn("not bound", by_fam["prometheus"]["reason"])
+        # the widget row's missing_datasource contributes cloudwatch
+        self.assertEqual(by_fam["cloudwatch"]["panel_ids"], [4])
+        # the exact add-datasource template
+        tpl = by_fam["prometheus"]["template"]
+        self.assertEqual(tpl["type"], "prometheus")
+        self.assertEqual(tpl["name"], "Prometheus")
+        self.assertEqual(tpl["api"],
+                         {"method": "POST",
+                          "path": "/api/grafana/datasource",
+                          "body": {"type": "prometheus",
+                                   "name": "Prometheus",
+                                   "values": {"url": "http://mimir:9009/"
+                                                     "prometheus"}}})
+        self.assertEqual(tpl["mcp"]["tool"], "add_datasource")
+        self.assertEqual(tpl["mcp"]["arguments"]["url"],
+                         "http://mimir:9009/prometheus")
+        self.assertEqual(
+            tpl["cli"],
+            "nr2grafana grafana add-datasource --type prometheus --name "
+            "Prometheus --set url=http://mimir:9009/prometheus")
+        self.assertIn("Mimir", tpl["notes"])
+        # manual + needs-review panels
+        self.assertEqual([m["panel_id"] for m in rep["manual_panels"]],
+                         [5])
+        man = rep["manual_panels"][0]
+        self.assertIn("FinanceSample", man["why"])
+        self.assertEqual(man["closest_equivalent"]["datasource"],
+                         "cloudwatch")
+        self.assertEqual([r["panel_id"] for r in rep["needs_review"]],
+                         [6])
+        self.assertEqual(rep["needs_review"][0]["metric_kind"],
+                         {"acme_backend_order_created_total": "counter"})
+        self.assertEqual(rep["counts"],
+                         {"missing_datasources": 3, "manual_panels": 1,
+                          "needs_review": 1})
+
+    def test_missing_report_resolves_against_instance(self):
+        rep = aicontext.missing_report(
+            _REQUIREMENTS_UNBOUND, _WIDGET_REPORT_SEAM["widgets"],
+            templates=_TEMPLATES,
+            instance_types={"prometheus", "loki", "cloudwatch"})
+        self.assertEqual(rep["missing_datasources"], [])
+        rep = aicontext.missing_report(
+            _REQUIREMENTS_UNBOUND, _WIDGET_REPORT_SEAM["widgets"],
+            templates=_TEMPLATES, instance_types={"loki"},
+            bound_refs={"${datasource}", "datasource"})
+        # prometheus ref bound by resolve_ds_map; cloudwatch absent
+        self.assertEqual(rep["missing_datasources"], ["cloudwatch"])
+        self.assertIn("no cloudwatch datasource",
+                      rep["datasources_to_add"][0]["reason"])
+
+    def test_missing_report_honors_requirements_summary(self):
+        reqs = dict(_REQUIREMENTS_UNBOUND)
+        reqs["datasources"] = []
+        reqs["missing_datasources"] = [
+            "tempo", {"family": "cloudwatch", "panel_ids": [9],
+                      "reason": "aws.* metrics need CloudWatch"}]
+        rep = aicontext.missing_report(reqs, [], templates=_TEMPLATES)
+        self.assertEqual(rep["missing_datasources"],
+                         ["cloudwatch", "tempo"])
+        cw = rep["datasources_to_add"][0]
+        self.assertEqual(cw["panel_ids"], [9])
+        self.assertIn("CloudWatch", cw["reason"])
+        # unknown plugin template still names the universal url field
+        tempo = rep["datasources_to_add"][1]["template"]
+        self.assertEqual(tempo["fields"][0]["name"], "url")
+
+    def test_add_datasource_template_never_fills_secrets(self):
+        tpl = aicontext.add_datasource_template("cloudwatch",
+                                                templates=_TEMPLATES)
+        self.assertEqual(tpl["api"]["body"]["values"],
+                         {"defaultRegion": "us-east-1"})
+        secret = next(f for f in tpl["fields"] if f["name"] == "secretKey")
+        self.assertTrue(secret["secret"])
+        self.assertEqual(secret["placeholder"], "")
+        self.assertNotIn("AKIA", json.dumps(tpl))
+
+    def test_missing_report_never_raises_on_odd_shapes(self):
+        rep = aicontext.missing_report(None, "garbage")
+        self.assertEqual(rep["missing_datasources"], [])
+        self.assertTrue(rep["ready"])
+        rep = aicontext.missing_report({"datasources": [1, "x"]},
+                                       [None, 3])
+        self.assertEqual(rep["manual_panels"], [])
+
+    def test_context_missing_section_offline(self):
+        self.store.save_artifact("svc-1", "requirements",
+                                 _REQUIREMENTS_UNBOUND)
+        self.store.save_artifact("svc-1", "widget-report",
+                                 _WIDGET_REPORT_SEAM)
+        ctx = aicontext.build_context(self.store, "svc-1")
+        self.assertIn("missing", ctx)
+        self.assertIn("missing", ctx["legend"])
+        what = ctx["missing"]
+        self.assertEqual(what["missing_datasources"],
+                         ["cloudwatch", "loki", "prometheus"])
+        self.assertEqual(what["manual_panels"][0]["panel_id"], 5)
+        self.assertEqual(what["counts"]["needs_review"], 1)
+        self.assertFalse(what["ready"])
+        # determinism holds with the new section
+        again = aicontext.build_context(self.store, "svc-1")
+        self.assertEqual(json.dumps(ctx, sort_keys=True),
+                         json.dumps(again, sort_keys=True))
+
+    def test_context_missing_caller_override_wins(self):
+        self.store.save_artifact("svc-1", "requirements",
+                                 _REQUIREMENTS_UNBOUND)
+        live = aicontext.missing_report(
+            _REQUIREMENTS_UNBOUND, [], templates=_TEMPLATES,
+            instance_types={"prometheus"})
+        ctx = aicontext.build_context(self.store, "svc-1", missing=live)
+        self.assertEqual(ctx["missing"]["missing_datasources"], ["loki"])
+
+    def test_context_missing_lists_capped(self):
+        many = {"widgets": [
+            {"panel_id": i, "widget": "w%d" % i,
+             "confidence": "untranslatable", "notes": ["n"]}
+            for i in range(60)]}
+        self.store.save_artifact("svc-1", "widget-report", many)
+        ctx = aicontext.build_context(self.store, "svc-1")
+        self.assertLessEqual(len(ctx["missing"]["manual_panels"]),
+                             aicontext._MAX_LIST)
+        self.assertEqual(ctx["missing"]["counts"]["manual_panels"], 60)
+
+    def test_what_to_add_rendered_in_markdown(self):
+        self.store.save_artifact("svc-1", "requirements",
+                                 _REQUIREMENTS_UNBOUND)
+        self.store.save_artifact("svc-1", "widget-report",
+                                 _WIDGET_REPORT_SEAM)
+        ctx = aicontext.build_context(self.store, "svc-1")
+        md = aicontext.to_markdown(ctx)
+        self.assertIn(aicontext.WHAT_TO_ADD_HEADING, md)
+        self.assertIn("missing datasources: cloudwatch, loki, prometheus",
+                      md)
+        self.assertIn("api: POST /api/grafana/datasource", md)
+        self.assertIn('"type": "prometheus"', md)
+        self.assertIn("mcp: add_datasource", md)
+        self.assertIn("cli: nr2grafana grafana add-datasource --type loki",
+                      md)
+        self.assertIn("FinanceSample has no LGTM equivalent", md)
+        self.assertIn("AWS Cost Explorer", md)
+        self.assertIn("needs review (1)", md)
+        # per-panel SEAM fields in the translations section
+        self.assertIn("metric_kind: acme_backend_order_created_total="
+                      "counter", md)
+        self.assertIn("missing_datasource: cloudwatch", md)
+        self.assertIn("closest_equivalent:", md)
+        self.assertIn("[untranslatable] MANUAL", md)
+
+    def test_what_to_add_all_bound_says_so(self):
+        md = aicontext.to_markdown(
+            aicontext.build_context(self.store, "svc-1"))
+        # svc-1's requirements carry concrete uids -> nothing to add
+        self.assertIn("all required families are bound", md)
 
     # -- cost-anomaly trio: flowlogs / rca / mitigation ----------------
 

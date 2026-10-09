@@ -192,7 +192,7 @@ parse_anomaly_report MUST accept this JSON directly AND a pasted human report.
 ## Reference worked example (the target output shape)
 A real investigation the feature should be able to reproduce/assist:
 - **Anomaly**: `EBS DataTransfer-Regional-Bytes` cost spike, acct
-  348342704569 / us-east-1. EBS *storage* is negligible; the label is a
+  123456789012 / us-east-1. EBS *storage* is negligible; the label is a
   **classification artifact** — the charge is entirely **cross-AZ network
   transfer** (~16,470 GB/day, ~$164/day), true step-change 2026-08-31.
   (Consistent with 0.1: Regional-Bytes = cross-AZ; $164/day / $0.02 per

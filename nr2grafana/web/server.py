@@ -88,7 +88,14 @@ API_SPEC_ENDPOINTS = (
      "List stored converted dashboards with per-slug summaries."),
     ("GET", "/api/dashboards/<slug>", False,
      "One stored dashboard plus its artifacts (requirements, "
-     "widget-report, datatest, parity, diagnosis, samples, review)."),
+     "widget-report, datatest, parity, diagnosis, samples, review) and "
+     "the SEAM-REPORT 'missing' summary."),
+    ("GET", "/api/dashboards/<slug>/missing", False,
+     "What is missing before the dashboard works: "
+     "{missing_datasources:[family], datasources_to_add:[{template}], "
+     "manual_panels:[{panel_id,title,why,closest_equivalent}], "
+     "needs_review:[...]} resolved against the live Grafana when one "
+     "is configured."),
     ("GET", "/api/jobs/<id>", False,
      "Poll a background job: {status, log, result, error}."),
     ("GET", "/api/readiness", False,
@@ -103,7 +110,11 @@ API_SPEC_ENDPOINTS = (
      "Update the in-memory session (keys stay in memory only)."),
     ("POST", "/api/convert", False,
      "Convert NR dashboards from an input_dir or pasted nr_json -> "
-     "job. Body: {input_dir?|nr_json?, out_dir?, package?}."),
+     "job. Body: {input_dir?|nr_json?, out_dir?, package?, live?: "
+     "bool (collect live Mimir/NR hints when keys are set), env?: "
+     "str (target env for $env), bind?: bool (also write "
+     "dashboard.bound.json with concrete datasource uids when a "
+     "Grafana connection exists)}."),
     ("POST", "/api/nr/list", False,
      "List New Relic dashboards (needs NR key) -> job."),
     ("POST", "/api/nr/fetch", False,
@@ -114,7 +125,15 @@ API_SPEC_ENDPOINTS = (
      "{slug}."),
     ("POST", "/api/grafana/import", False,
      "Import stored dashboards into Grafana -> job. Body: "
-     "{slug|slugs, folder?, overwrite?}."),
+     "{slug|slugs, folder?, overwrite?, bind?: bool (bind datasource "
+     "refs to the instance's concrete uids first), env?: str}."),
+    ("GET", "/download/dashboard/<slug>.json", False,
+     "Download one dashboard JSON; ?bind=1 (and ?env=) returns the "
+     "bound JSON with concrete datasource uids (needs a Grafana "
+     "connection); ?force=1 skips the readiness gate."),
+    ("GET", "/download/package/<slug>.zip", False,
+     "Download the package directory as a zip; ?bind=1 adds "
+     "dashboard.bound.json next to the portable dashboard.json."),
     ("POST", "/api/parity", False,
      "NR-vs-Grafana parity for a slug -> job."),
     ("POST", "/api/compare", False,
@@ -1070,6 +1089,251 @@ def _comparison_inputs(store, slug: str):
 
 
 # ---------------------------------------------------------------------------
+# 1.11 translation-fidelity helpers: SEAM-REPORT / SEAM-HINTS / SEAM-BIND
+# ---------------------------------------------------------------------------
+
+def _truthy(val: Any) -> bool:
+    """Truthiness for JSON bodies AND query strings ("1"/"true"/"yes")."""
+    if isinstance(val, str):
+        return val.strip().lower() in ("1", "true", "yes", "on")
+    return bool(val)
+
+
+def _ds_templates() -> Dict[str, Any]:
+    """grafana.live.DS_TEMPLATES, or {} while that sibling is mid-build."""
+    try:
+        tpl = getattr(_lazy("grafana.live"), "DS_TEMPLATES", None)
+        return dict(tpl) if isinstance(tpl, dict) else {}
+    except Exception:
+        return {}
+
+
+def _basic_missing(reqs: Dict[str, Any],
+                   widgets: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Minimal SEAM-REPORT when aicontext.missing_report is unavailable:
+    every ${var}/empty datasource ref counts as unbound; untranslatable
+    rows are the manual panels; needs-review rows are listed."""
+    families: List[str] = []
+    rows: List[Dict[str, Any]] = []
+    for d in (reqs or {}).get("datasources") or []:
+        if not isinstance(d, dict):
+            continue
+        fam = str(d.get("family") or "")
+        ref = str(d.get("uid_ref") or "")
+        if fam and (not ref or ref.startswith("$")) and fam not in families:
+            families.append(fam)
+            rows.append({"family": fam,
+                         "plugin_id": d.get("plugin_id") or fam,
+                         "panel_ids": list(d.get("panel_ids") or []),
+                         "uid_ref": ref,
+                         "reason": "datasource ref not bound",
+                         "template": {"type": d.get("plugin_id") or fam,
+                                      "name": fam}})
+    manual: List[Dict[str, Any]] = []
+    review: List[Dict[str, Any]] = []
+    for w in widgets or []:
+        if not isinstance(w, dict):
+            continue
+        row = {"panel_id": w.get("panel_id"),
+               "title": w.get("widget") or w.get("panel_title") or "",
+               "why": "; ".join(str(n) for n in (w.get("notes") or [])),
+               "closest_equivalent": w.get("closest_equivalent")}
+        conf = str(w.get("confidence") or "").lower()
+        if w.get("manual") or conf == "untranslatable":
+            manual.append(row)
+        elif conf == "needs-review":
+            row["metric_kind"] = w.get("metric_kind")
+            row["missing_datasource"] = w.get("missing_datasource")
+            review.append(row)
+    return {"missing_datasources": sorted(families),
+            "datasources_to_add": sorted(rows, key=lambda r: r["family"]),
+            "manual_panels": manual, "needs_review": review,
+            "counts": {"missing_datasources": len(families),
+                       "manual_panels": len(manual),
+                       "needs_review": len(review)},
+            "ready": not families and not manual}
+
+
+def _missing_report(store, slug: str, live=None) -> Dict[str, Any]:
+    """SEAM-REPORT for one stored dashboard: which datasource families
+    are required but have no uid bound (plus the exact add-datasource
+    template for each), the [MANUAL] panels with WHY + closest
+    equivalent, and the needs-review panels. When a Grafana connection
+    is configured (or ``live`` is given) the families are resolved
+    against the instance -- a family whose plugin type exists there is
+    not missing; without one every ``${var}`` ref counts as unbound."""
+    row = store.get_dashboard(slug)
+    if not row:
+        raise ApiError("no dashboard with slug %r -- run Convert first"
+                       % slug, 404)
+    reqs = _artifact(store, slug, "requirements") or {}
+    widgets = (_artifact(store, slug, "widget-report") or {}).get(
+        "widgets", [])
+    instance_types: Optional[List[str]] = None
+    bound_refs: Optional[List[str]] = None
+    if live is None and SESSION.grafana_url:
+        try:
+            live = _grafana_live()
+        except ApiError:
+            live = None
+    grafana_checked = False
+    if live is not None:
+        try:
+            instance_types = sorted(set(
+                str(d.get("type") or "") for d in (live.datasources()
+                                                   or []) if d.get("type")))
+            grafana_checked = True
+        except Exception:
+            instance_types = None  # unreachable instance: offline rules
+        if grafana_checked:
+            try:
+                dash = _dash_from_row(slug, row)
+                bound_refs = sorted(live.resolve_ds_map(dash) or {})
+            except Exception:
+                bound_refs = None
+    out: Optional[Dict[str, Any]] = None
+    try:
+        fn = getattr(_lazy("aicontext"), "missing_report", None)
+    except Exception:
+        fn = None
+    if callable(fn):
+        try:
+            out = fn(reqs, widgets, templates=_ds_templates(),
+                     bound_refs=bound_refs, instance_types=instance_types,
+                     cfg=_load_cfg())
+        except Exception:
+            out = None
+    if not isinstance(out, dict):
+        out = _basic_missing(reqs, widgets)
+    out["slug"] = slug
+    out["grafana_checked"] = grafana_checked
+    return out
+
+
+def _safe_missing(store, slug: str) -> Optional[Dict[str, Any]]:
+    """_missing_report that never raises (detail routes stay up)."""
+    try:
+        return _missing_report(store, slug)
+    except Exception:
+        return None
+
+
+def _live_hints(cfg: Dict[str, Any], nr_dash: Any, job: _Job) \
+        -> Optional[Dict[str, Any]]:
+    """SEAM-HINTS: collect live translation hints (Mimir metric types /
+    names, NR entity names, attribute values) via translate.hints when
+    the session has a New Relic key and/or a Grafana URL. Strictly
+    read-only. Returns the hints dict, or None (with a job note) when
+    nothing could be collected -- convert never fails because of it."""
+    nr = None
+    if SESSION.nr_api_key:
+        try:
+            nr = _nerdgraph()
+        except ApiError:
+            nr = None
+    grafana = _optional_grafana_live()
+    if nr is None and grafana is None:
+        job.add("note: live hints requested but no New Relic key or "
+                "Grafana URL is configured -- translating offline")
+        return None
+    try:
+        hints_mod = _lazy("translate.hints")
+    except Exception as e:
+        job.add("note: live hints unavailable (nr2grafana.translate.hints "
+                "not importable: %s) -- translating offline" % _errmsg(e))
+        return None
+    collect = getattr(hints_mod, "collect_hints", None)
+    if not callable(collect):
+        job.add("note: translate.hints.collect_hints missing -- "
+                "translating offline")
+        return None
+    try:
+        hints = _call_filtered(collect, nr=nr, grafana=grafana,
+                               dash=nr_dash, cfg=cfg, log=job.add)
+    except Exception as e:
+        job.add("note: live hint collection failed (%s) -- translating "
+                "offline" % _errmsg(e))
+        return None
+    if not isinstance(hints, dict) or not hints:
+        job.add("note: live hint collection returned nothing -- "
+                "translating offline")
+        return None
+    kinds = hints.get("metric_types")
+    job.add("live hints: %d metric type(s), %d entit(y/ies), %d "
+            "attribute value set(s)"
+            % (len(kinds) if isinstance(kinds, dict) else 0,
+               len(hints.get("entities") or {}),
+               len(hints.get("attr_values") or {})))
+    return hints
+
+
+def _bind_mod():
+    """The SEAM-BIND module, or an actionable ApiError."""
+    try:
+        mod = _lazy("bind")
+    except Exception:
+        raise ApiError("datasource binding is unavailable "
+                       "(nr2grafana.bind not importable)", 400)
+    if not callable(getattr(mod, "bind_datasources", None)):
+        raise ApiError("datasource binding is unavailable "
+                       "(nr2grafana.bind.bind_datasources missing)", 400)
+    return mod
+
+
+def _bind_dashboard(dash: Dict[str, Any], env: str = "", live=None,
+                    cfg: Optional[Dict[str, Any]] = None,
+                    keep_vars: bool = False) \
+        -> Tuple[Dict[str, Any], Dict[str, str]]:
+    """SEAM-BIND: a deep copy of ``dash`` whose ``${datasource}``-style
+    refs are rewritten to the concrete {type, uid} the live Grafana
+    resolves (GrafanaLive.resolve_ds_map), with the ``env`` variable
+    pinned when ``env`` is given. Returns (bound_dash, ds_map). Raises
+    an actionable ApiError when no Grafana connection exists, the bind
+    module is unavailable, or nothing on the instance matches (a bound
+    export that is still unbound would be a silent F8)."""
+    bind = _bind_mod()
+    if live is None:
+        live = _grafana_live()
+    try:
+        ds_map = live.resolve_ds_map(dash) or {}
+    except Exception as e:
+        raise ApiError("could not resolve datasources on %s: %s"
+                       % (SESSION.grafana_url, _errmsg(e)), 502)
+    if not ds_map:
+        raise ApiError("no datasource on the Grafana instance matches "
+                       "this dashboard's datasource families -- add them "
+                       "first (GET /api/dashboards/<slug>/missing lists "
+                       "exactly which, with the add-datasource template)",
+                       400)
+    bound = _call_filtered(bind.bind_datasources, copy.deepcopy(dash),
+                           ds_map, keep_vars=keep_vars)
+    if not isinstance(bound, dict):
+        bound = copy.deepcopy(dash)
+    if env:
+        set_env = getattr(bind, "set_target_env", None)
+        if callable(set_env):
+            res = _call_filtered(set_env, bound, env,
+                                 env_map=(cfg or {}).get("env_map"))
+            if isinstance(res, dict):
+                bound = res
+    return bound, dict(ds_map)
+
+
+def _write_bound_dashboard(pkg_dir: str, out_dir: str, slug: str,
+                           bound: Dict[str, Any]) -> str:
+    """Write dashboard.bound.json next to the portable dashboard.json
+    (package) or <slug>.bound.json (flat output). Returns the path."""
+    if pkg_dir:
+        path = os.path.join(pkg_dir, "dashboard.bound.json")
+    else:
+        path = os.path.join(out_dir, slug + ".bound.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(bound, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+    return path
+
+
+# ---------------------------------------------------------------------------
 # cost / efficiency helpers (section 6)
 # ---------------------------------------------------------------------------
 
@@ -1264,11 +1528,19 @@ def _job_convert(job: _Job, body: Dict[str, Any], store,
     if config_path is None:
         config_path = SESSION.config_path
     package = bool(body.get("package", True))
+    # 1.11: live hints (SEAM-HINTS), target env and datasource binding
+    # (SEAM-BIND) -- all optional, all degrade with a job note.
+    live_flag = _truthy(body.get("live"))
+    env = str(body.get("env") or "").strip()
+    bind_flag = _truthy(body.get("bind"))
 
     try:
         cfg = load_config(config_path)
     except (FileNotFoundError, json.JSONDecodeError) as e:
         raise ApiError("config: %s" % e, 400)
+    if env:
+        cfg["target_env"] = env
+        job.add("Target env: %s" % env)
 
     # inputs: (source label, zero-arg loader returning the NR json).
     inputs: List[Tuple[str, Callable[[], Any]]] = []
@@ -1289,7 +1561,22 @@ def _job_convert(job: _Job, body: Dict[str, Any], store,
                     "package": package}
         job.add("Converting %d file(s) from %s"
                 % (len(inputs), input_dir))
+    run_meta.update({"live": live_flag, "env": env, "bind": bind_flag})
     os.makedirs(out_dir, exist_ok=True)
+
+    bind_live = None
+    if bind_flag:
+        if SESSION.grafana_url:
+            try:
+                bind_live = _grafana_live()
+            except ApiError as e:
+                job.add("note: %s -- dashboards stay portable (unbound)"
+                        % e)
+        else:
+            job.add("note: bind requested but no Grafana URL is "
+                    "configured -- dashboards stay portable (unbound); "
+                    "set it in Setup and re-run, or download with "
+                    "?bind=1 later")
 
     run_id = None
     try:
@@ -1303,10 +1590,17 @@ def _job_convert(job: _Job, body: Dict[str, Any], store,
     seen_slugs: Dict[str, int] = {}
     for source, loader in inputs:
         label = os.path.basename(source)
+        hints = None
         try:
             data = loader()
             nr = parse_nr_dashboard(data)
-            outputs = build_dashboards(nr, cfg)
+            run_cfg = cfg
+            if live_flag:
+                hints = _live_hints(cfg, nr, job)
+                if hints:
+                    run_cfg = dict(cfg)
+                    run_cfg["live_hints"] = hints
+            outputs = build_dashboards(nr, run_cfg)
         except Exception as e:  # one bad input must not kill the batch
             job.add("FAIL %s: %s" % (label, _errmsg(e)))
             failed.append({"source": source, "error": _errmsg(e)})
@@ -1340,7 +1634,41 @@ def _job_convert(job: _Job, body: Dict[str, Any], store,
                      "datasources": families,
                      "domains": [d.get("domain", "")
                                  for d in reqs.get("domains", [])],
-                     "package_dir": pkg_dir}
+                     "package_dir": pkg_dir,
+                     "live_hints": bool(hints), "env": env,
+                     "bound": False}
+            if bind_live is not None:
+                try:
+                    bound, ds_map = _bind_dashboard(
+                        dash, env=env, live=bind_live, cfg=cfg)
+                    path = _write_bound_dashboard(pkg_dir, out_dir,
+                                                  slug, bound)
+                    try:
+                        store.save_artifact(slug, "dashboard-bound",
+                                            bound)
+                    except Exception:
+                        pass  # the file on disk is the deliverable
+                    entry["bound"] = True
+                    entry["bound_file"] = path
+                    entry["ds_map"] = ds_map
+                    job.add("bound %d datasource ref(s) -> %s"
+                            % (len(ds_map), path))
+                except ApiError as e:
+                    entry["bind_error"] = str(e)
+                    job.add("note: %s not bound: %s" % (slug, e))
+            try:
+                missing = _missing_report(store, slug, live=bind_live)
+                entry["missing_datasources"] = missing.get(
+                    "missing_datasources", [])
+                entry["manual_panels"] = len(
+                    missing.get("manual_panels") or [])
+                if entry["missing_datasources"]:
+                    job.add("%s needs datasource(s): %s (see "
+                            "/api/dashboards/%s/missing)"
+                            % (slug, ", ".join(
+                                entry["missing_datasources"]), slug))
+            except Exception:
+                pass  # the summary is a bonus; never fail convert
             entries.append(entry)
             results.append(entry)
             job.add("%s -> %s  (%s)"
@@ -1414,7 +1742,15 @@ def _job_grafana_import(job: _Job, body: Dict[str, Any], store) \
         raise ApiError("missing 'slug' or 'slugs'", 400)
     folder = body.get("folder") or ""
     overwrite = bool(body.get("overwrite"))
+    # 1.11 SEAM-BIND: bind ${datasource}-style refs to the instance's
+    # concrete uids before import (opt-in; the Grafana connection the
+    # import needs anyway is what resolves them).
+    bind_flag = _truthy(body.get("bind"))
+    env = str(body.get("env") or "").strip()
     live = _grafana_live()
+    if bind_flag:
+        _bind_mod()  # fail the whole job early with an actionable error
+    cfg = _load_cfg() if (bind_flag or env) else {}
     clog = _lazy("changelog").ChangeLog(store)
     folder_uid = ""
     if folder:
@@ -1425,6 +1761,13 @@ def _job_grafana_import(job: _Job, body: Dict[str, Any], store) \
     for slug in slugs:
         try:
             dash = _dash_from_row(slug, store.get_dashboard(slug))
+            bound_n = 0
+            if bind_flag:
+                dash, ds_map = _bind_dashboard(dash, env=env, live=live,
+                                               cfg=cfg)
+                bound_n = len(ds_map)
+                job.add("bound %d datasource ref(s) for %s"
+                        % (bound_n, slug))
             res = live.import_dashboard(
                 dash, folder_uid=folder_uid, overwrite=overwrite,
                 message="Imported by nr2grafana web")
@@ -1434,14 +1777,20 @@ def _job_grafana_import(job: _Job, body: Dict[str, Any], store) \
             # the page is served from a different origin (localhost).
             if url.startswith("/") and SESSION.grafana_url:
                 url = SESSION.grafana_url.rstrip("/") + url
-            out.append({"slug": slug, "status": "ok", "url": url,
-                        "uid": res.get("uid", "")})
+            item = {"slug": slug, "status": "ok", "url": url,
+                    "uid": res.get("uid", "")}
+            if bind_flag:
+                item["bound"] = bound_n
+            out.append(item)
             ok += 1
             job.add("ok    %s -> %s" % (slug, url or "imported"))
             try:
                 clog.record(slug, "import", "grafana:%s"
                             % SESSION.grafana_url, "", url or "imported",
-                            why="web import", source="user")
+                            why="web import%s" % (
+                                " (datasources bound)" if bind_flag
+                                else ""),
+                            source="user")
             except Exception:
                 pass
         except Exception as e:
@@ -1737,6 +2086,20 @@ def _optional_grafana_live():
         return None
 
 
+def _build_ai_context(store, slug: str, grafana=None,
+                      deepdive=None) -> Dict[str, Any]:
+    """aicontext.build_context with the SEAM-REPORT ``missing`` report
+    resolved against the live Grafana (when configured) threaded in,
+    so the bundle's "what to add" section reflects the instance. The
+    kwarg is passed only when the (possibly mid-build) aicontext
+    accepts it; redact=True strips secret-looking values."""
+    aicontext = _lazy("aicontext")
+    missing = _safe_missing(store, slug) if slug else None
+    return _call_filtered(aicontext.build_context, store, slug=slug,
+                          grafana=grafana, deepdive=deepdive,
+                          redact=True, missing=missing)
+
+
 def _job_deepdive(job: _Job, body: Dict[str, Any], store) \
         -> Dict[str, Any]:
     """Deep LGTM stack analysis: run deepdive.analyze against the
@@ -1794,9 +2157,8 @@ def _job_troubleshoot(job: _Job, body: Dict[str, Any], store,
     deepdive = _artifact(store, _cost_slug(slug), "deepdive")
     aicontext = _lazy("aicontext")
     job.add("Assembling the AI context bundle...")
-    context = aicontext.build_context(
-        store, slug=slug, grafana=grafana, deepdive=deepdive,
-        redact=True)
+    context = _build_ai_context(store, slug, grafana=grafana,
+                                deepdive=deepdive)
     job.add("Asking the %s AI backend..." % SESSION.ai_backend())
     result = aicontext.troubleshoot(assistant, context, question)
     SESSION.status["ai"] = "ok"
@@ -2082,9 +2444,8 @@ def _job_rca_analyze(job: _Job, body: Dict[str, Any], store,
     deepdive = _artifact(store, store_slug, "deepdive")
     aicontext = _lazy("aicontext")
     job.add("Assembling the RCA / mitigation AI context bundle...")
-    context = aicontext.build_context(
-        store, slug=slug, grafana=grafana, deepdive=deepdive,
-        redact=True)
+    context = _build_ai_context(store, slug, grafana=grafana,
+                                deepdive=deepdive)
     if isinstance(context, dict):
         context["mode"] = "rca"
     job.add("Asking the %s AI backend to analyze the anomaly..."
@@ -2355,7 +2716,11 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/dashboards":
             self._get_dashboards()
         elif path.startswith("/api/dashboards/"):
-            self._get_dashboard(path[len("/api/dashboards/"):])
+            rest = path[len("/api/dashboards/"):]
+            if rest.endswith("/missing"):
+                self._get_dashboard_missing(rest[:-len("/missing")])
+            else:
+                self._get_dashboard(rest)
         elif path.startswith("/api/jobs/"):
             self._get_job(path[len("/api/jobs/"):])
         elif path == "/api/changes/suggest-config":
@@ -2692,7 +3057,18 @@ class Handler(BaseHTTPRequestHandler):
             "review": art("review"),
             "changes": self.store.list_changes(slug),
             "package_dir": _package_dir(self.store, slug),
+            "missing": _safe_missing(self.store, slug),
         })
+
+    def _get_dashboard_missing(self, slug: str) -> None:
+        """SEAM-REPORT: exactly what is missing before ``slug`` shows
+        data -- unbound datasource families (with the add-datasource
+        template), [MANUAL] panels (why + closest equivalent) and the
+        needs-review panels. Resolved against the live Grafana when
+        one is configured; 404 for an unknown slug."""
+        if not slug or not _SLUG_RE.match(slug):
+            raise ApiError("no dashboard with slug %r" % slug, 404)
+        self._json(_missing_report(self.store, slug))
 
     def _get_job(self, jid: str) -> None:
         with _JOBS_LOCK:
@@ -2943,9 +3319,8 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError("no dashboard with slug %r" % slug, 404)
         grafana = _optional_grafana_live()
         deepdive = _artifact(self.store, _cost_slug(slug), "deepdive")
-        return _lazy("aicontext").build_context(
-            self.store, slug=slug, grafana=grafana, deepdive=deepdive,
-            redact=True)
+        return _build_ai_context(self.store, slug, grafana=grafana,
+                                 deepdive=deepdive)
 
     def _get_ai_context(self, q: Dict[str, List[str]]) -> None:
         slug = (q.get("slug") or [""])[0]
@@ -3110,14 +3485,36 @@ class Handler(BaseHTTPRequestHandler):
         if reason:
             raise ApiError(reason, 409)
 
+    def _bind_opts(self) -> Tuple[bool, str]:
+        """(bind, env) from ?bind=1&env=<name> on a download URL."""
+        q = parse_qs(urlsplit(self.path).query)
+        return (_truthy((q.get("bind") or [""])[0]),
+                (q.get("env") or [""])[0].strip())
+
+    def _bound_for_download(self, slug: str, dash: Dict[str, Any],
+                            env: str) -> Dict[str, Any]:
+        """The bound JSON for a ?bind=1 download, or an actionable 400
+        when no Grafana connection exists to resolve the uids."""
+        if not SESSION.grafana_url:
+            raise ApiError("?bind=1 needs a Grafana connection to resolve "
+                           "datasource uids -- set the Grafana URL in "
+                           "Setup, or download without bind for the "
+                           "portable (template-variable) JSON", 400)
+        bound, _ds_map = _bind_dashboard(dash, env=env, cfg=_load_cfg())
+        return bound
+
     def _download_dashboard(self, slug: str) -> None:
         row = self._known_slug(slug)
         self._gate_download(slug)
         dash = _dash_from_row(slug, row)
+        bind, env = self._bind_opts()
+        filename = slug + ".json"
+        if bind:
+            dash = self._bound_for_download(slug, dash, env)
+            filename = slug + ".bound.json"
         raw = (json.dumps(dash, indent=2, ensure_ascii=False)
                + "\n").encode("utf-8")
-        self._bytes(raw, "application/json; charset=utf-8",
-                    slug + ".json")
+        self._bytes(raw, "application/json; charset=utf-8", filename)
 
     @staticmethod
     def _zip_dir(zf: "zipfile.ZipFile", root: str, prefix: str) -> None:
@@ -3133,15 +3530,24 @@ class Handler(BaseHTTPRequestHandler):
                     pass  # unreadable file must not kill the download
 
     def _download_package(self, slug: str) -> None:
-        self._known_slug(slug)
+        row = self._known_slug(slug)
         self._gate_download(slug)
         pkg = _package_dir(self.store, slug)
         if not pkg:
             raise ApiError("no package directory for %r -- run Convert "
                            "with packaging first" % slug, 404)
+        bind, env = self._bind_opts()
+        bound = None
+        if bind:  # resolve BEFORE streaming so a failure is a clean 400
+            bound = self._bound_for_download(
+                slug, _dash_from_row(slug, row), env)
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
             self._zip_dir(zf, pkg, slug)
+            if bound is not None:
+                zf.writestr(slug + "/dashboard.bound.json",
+                            json.dumps(bound, indent=2,
+                                       ensure_ascii=False) + "\n")
         self._bytes(buf.getvalue(), "application/zip", slug + ".zip")
 
     def _download_all(self) -> None:
@@ -3164,24 +3570,47 @@ class Handler(BaseHTTPRequestHandler):
                     "set anyway" % (len(blocked),
                                     ", ".join(sorted(blocked)[:10])),
                     409)
+        bind, env = self._bind_opts()
+        if bind and not SESSION.grafana_url:
+            raise ApiError("?bind=1 needs a Grafana connection to resolve "
+                           "datasource uids -- set the Grafana URL in "
+                           "Setup, or download without bind", 400)
+        bind_notes: List[str] = []
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
             for row in rows:
                 slug = row.get("slug", "")
                 if not slug or not _SLUG_RE.match(slug):
                     continue
-                pkg = _package_dir(self.store, slug)
-                if pkg and os.path.isdir(pkg):
-                    self._zip_dir(zf, pkg, slug)
-                    continue
                 try:
                     dash = _dash_from_row(
                         slug, self.store.get_dashboard(slug))
                 except ApiError:
-                    continue
-                zf.writestr(slug + "/dashboard.json",
-                            json.dumps(dash, indent=2,
-                                       ensure_ascii=False) + "\n")
+                    dash = None
+                pkg = _package_dir(self.store, slug)
+                if pkg and os.path.isdir(pkg):
+                    self._zip_dir(zf, pkg, slug)
+                elif dash is not None:
+                    zf.writestr(slug + "/dashboard.json",
+                                json.dumps(dash, indent=2,
+                                           ensure_ascii=False) + "\n")
+                if bind and dash is not None:
+                    # Best-effort per dashboard: one unbindable
+                    # dashboard must not block the whole set; the
+                    # reason is recorded in the archive, never silent.
+                    try:
+                        bound, _m = _bind_dashboard(dash, env=env,
+                                                    cfg=_load_cfg())
+                        zf.writestr(slug + "/dashboard.bound.json",
+                                    json.dumps(bound, indent=2,
+                                               ensure_ascii=False)
+                                    + "\n")
+                    except ApiError as e:
+                        bind_notes.append("%s: not bound -- %s"
+                                          % (slug, e))
+            if bind_notes:
+                zf.writestr("BIND-NOTES.txt",
+                            "\n".join(bind_notes) + "\n")
         self._bytes(buf.getvalue(), "application/zip",
                     "nr2grafana-dashboards.zip")
 

@@ -17,14 +17,14 @@ from nr2grafana import rca
 # ---------------------------------------------------------------------------
 # canned inputs (GENERIC placeholders, self-consistent with 0.1)
 # ---------------------------------------------------------------------------
-REFERENCE_ACCOUNT = "348342704569"
+REFERENCE_ACCOUNT = "123456789012"
 REGION = "us-east-1"
 AZ_A, AZ_B, AZ_C = "us-east-1a", "us-east-1b", "us-east-1c"
 
 # A pasted human report like the reference worked example.
 PASTED_REPORT = (
     "Anomaly: EBS DataTransfer-Regional-Bytes cost spike, acct "
-    "348342704569 / us-east-1. EBS storage is negligible. The charge is "
+    "123456789012 / us-east-1. EBS storage is negligible. The charge is "
     "cross-AZ network transfer, ~16,470 GB/day, ~$164/day, true "
     "step-change 2026-08-31. Anomaly score 0.92."
 )
@@ -37,7 +37,7 @@ CE_ANOMALY = {
         "AnomalyStartDate": "2026-08-31",
         "AnomalyEndDate": "2026-08-31",
         "DimensionValue": "EBS",
-        "MonitorArn": "arn:aws:ce::348342704569:anomalymonitor/x",
+        "MonitorArn": "arn:aws:ce::123456789012:anomalymonitor/x",
         "AnomalyScore": {"CurrentScore": 0.88, "MaxScore": 0.92},
         "Impact": {
             "MaxImpact": 180.0,
@@ -49,14 +49,14 @@ CE_ANOMALY = {
         "RootCauses": [{
             "Service": "EBS",
             "Region": "us-east-1",
-            "LinkedAccount": "348342704569",
+            "LinkedAccount": "123456789012",
             "LinkedAccountName": "prod",
             "UsageType": "USE1-DataTransfer-Regional-Bytes",
             "Impact": {"Contribution": 150.0},
         }, {
             "Service": "EC2",
             "Region": "us-east-1",
-            "LinkedAccount": "348342704569",
+            "LinkedAccount": "123456789012",
             "UsageType": "USE1-DataTransfer-Regional-Bytes",
             "Impact": {"Contribution": 14.0},
         }],

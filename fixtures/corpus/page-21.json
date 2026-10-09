@@ -1,0 +1,303 @@
+{
+ "schema": 1,
+ "page": "Titration",
+ "widgets": [
+  {
+   "id": "p21-w001",
+   "title": "Orders Created",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT count(acme_backend.order.created.hub) FROM Metric\nWHERE clusterName = concat('acme-cluster-', {{env}})\nAND ndc IN (\n  10000000072, 10000000074, 10000000036, 10000000037, 10000000038,\n  10000000047, 10000000067, 10000000039, 10000000040, 10000000041,\n  10000000042, 10000000043, 10000000044, 10000000045, 10000000046,\n  10000000048, 10000000049, 10000000050, 10000000051, 10000000052,\n  10000000053, 10000000054, 10000000055, 10000000056, 10000000057,\n  10000000058, 10000000059, 10000000060, 10000000061, 10000000062,\n  10000000063, 10000000064, 10000000065, 10000000066, 10000000073,\n  10000000068\n)\nTIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(increase(acme_backend_order_created_hub_total{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",ndc=~\"10000000072|10000000074|100000002|100000003|100000004|100000013|100000033|100000005|100000006|100000007|100000008|100000009|100000010|100000011|100000012|100000014|100000015|100000016|100000017|100000018|100000019|100000020|100000021|100000022|100000023|100000024|100000025|100000026|100000027|100000028|100000029|100000030|100000031|100000032|10000000073|100000034\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'ndc' not in label_map; used 'ndc' \u2014 verify the label exists in your stack",
+     "assumed counter 'acme_backend_order_created_hub_total'; verify name/type in Mimir (/api/v1/metadata)",
+     "unit:short",
+     "count() on a Metric counter emitted as the summed increase (event count); NRQL count() strictly counts datapoints \u2014 use sum() in NR to compare like for like"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(rate(acme_backend_order_created_hub_total{ndc=~\"10000000072|10000000074|100000002|100000003|100000004|100000013|100000033|100000005|100000006|100000007|100000008|100000009|100000010|100000011|100000012|100000014|100000015|100000016|100000017|100000018|100000019|100000020|100000021|100000022|100000023|100000024|100000025|100000026|100000027|100000028|100000029|100000030|100000031|100000032|10000000073|100000034\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p21-w002",
+   "title": "Titration Config Success",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT count(acme_backend.titration.config_enrichment.success) FROM Metric\nWHERE clusterName = concat('acme-cluster-', {{env}})\nFACET family_code\nTIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (family_code)(increase(acme_backend_titration_config_enrichment_success_total{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'family_code' not in label_map; used 'family_code'",
+     "assumed counter 'acme_backend_titration_config_enrichment_success_total'; verify name/type in Mimir (/api/v1/metadata)",
+     "unit:short",
+     "count() on a Metric counter emitted as the summed increase (event count); NRQL count() strictly counts datapoints \u2014 use sum() in NR to compare like for like",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (family_code)(rate(acme_backend_titration_config_enrichment_success_total[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p21-w003",
+   "title": "Titration Config Failure",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT count(acme_backend.titration.config_enrichment.failure) FROM Metric\nWHERE clusterName = concat('acme-cluster-', {{env}})\nTIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(increase(acme_backend_titration_config_enrichment_failure_total{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "assumed counter 'acme_backend_titration_config_enrichment_failure_total'; verify name/type in Mimir (/api/v1/metadata)",
+     "unit:short",
+     "count() on a Metric counter emitted as the summed increase (event count); NRQL count() strictly counts datapoints \u2014 use sum() in NR to compare like for like"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(rate(acme_backend_titration_config_enrichment_failure_total[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p21-w004",
+   "title": "Titration Order Disposition Task",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT count(acme_backend.sched_task.titration_order_disposition) FROM Metric\nWHERE clusterName = concat('acme-cluster-', {{env}})\nFACET status\nTIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (status)(increase(acme_backend_sched_task_titration_order_disposition_total{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'status' not in label_map; used 'status'",
+     "assumed counter 'acme_backend_sched_task_titration_order_disposition_total'; verify name/type in Mimir (/api/v1/metadata)",
+     "unit:short",
+     "count() on a Metric counter emitted as the summed increase (event count); NRQL count() strictly counts datapoints \u2014 use sum() in NR to compare like for like",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (status)(rate(acme_backend_sched_task_titration_order_disposition_total[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p21-w005",
+   "title": "Titration Disposition Success",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT count(acme_backend.titration.disposition.success) FROM Metric\nWHERE clusterName = concat('acme-cluster-', {{env}})\nFACET family_code, order_decision\nTIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (family_code, order_decision)(increase(acme_backend_titration_disposition_success_total{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'family_code' not in label_map; used 'family_code'",
+     "FACET attribute 'order_decision' not in label_map; used 'order_decision'",
+     "assumed counter 'acme_backend_titration_disposition_success_total'; verify name/type in Mimir (/api/v1/metadata)",
+     "unit:short",
+     "count() on a Metric counter emitted as the summed increase (event count); NRQL count() strictly counts datapoints \u2014 use sum() in NR to compare like for like",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (family_code, order_decision)(rate(acme_backend_titration_disposition_success_total[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p21-w006",
+   "title": "Titration Disposition Failure",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT count(acme_backend.titration.disposition.failure) FROM Metric\nWHERE clusterName = concat('acme-cluster-', {{env}})\nFACET family_code, trigger\nTIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (family_code, trigger)(increase(acme_backend_titration_disposition_failure_total{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'family_code' not in label_map; used 'family_code'",
+     "FACET attribute 'trigger' not in label_map; used 'trigger'",
+     "assumed counter 'acme_backend_titration_disposition_failure_total'; verify name/type in Mimir (/api/v1/metadata)",
+     "unit:short",
+     "count() on a Metric counter emitted as the summed increase (event count); NRQL count() strictly counts datapoints \u2014 use sum() in NR to compare like for like",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (family_code, trigger)(rate(acme_backend_titration_disposition_failure_total[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p21-w007",
+   "title": "Titration Refill Task",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT count(acme_backend.sched_task.titration_refill) FROM Metric\nWHERE clusterName = concat('acme-cluster-', {{env}})\nFACET status\nTIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (status)(increase(acme_backend_sched_task_titration_refill_total{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'status' not in label_map; used 'status'",
+     "assumed counter 'acme_backend_sched_task_titration_refill_total'; verify name/type in Mimir (/api/v1/metadata)",
+     "unit:short",
+     "count() on a Metric counter emitted as the summed increase (event count); NRQL count() strictly counts datapoints \u2014 use sum() in NR to compare like for like",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (status)(rate(acme_backend_sched_task_titration_refill_total[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p21-w008",
+   "title": "Next Fill Scheduled",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT count(acme_backend.titration.next_fill.scheduled) FROM Metric\nWHERE clusterName = concat('acme-cluster-', {{env}})\nFACET family_code\nTIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (family_code)(increase(acme_backend_titration_next_fill_scheduled_total{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'family_code' not in label_map; used 'family_code'",
+     "assumed counter 'acme_backend_titration_next_fill_scheduled_total'; verify name/type in Mimir (/api/v1/metadata)",
+     "unit:short",
+     "count() on a Metric counter emitted as the summed increase (event count); NRQL count() strictly counts datapoints \u2014 use sum() in NR to compare like for like",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (family_code)(rate(acme_backend_titration_next_fill_scheduled_total[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p21-w009",
+   "title": "Next Fill Failure",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT count(acme_backend.titration.next_fill.failure) FROM Metric\nWHERE clusterName = concat('acme-cluster-', {{env}})\nFACET family_code, trigger\nTIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (family_code, trigger)(increase(acme_backend_titration_next_fill_failure_total{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'family_code' not in label_map; used 'family_code'",
+     "FACET attribute 'trigger' not in label_map; used 'trigger'",
+     "assumed counter 'acme_backend_titration_next_fill_failure_total'; verify name/type in Mimir (/api/v1/metadata)",
+     "unit:short",
+     "count() on a Metric counter emitted as the summed increase (event count); NRQL count() strictly counts datapoints \u2014 use sum() in NR to compare like for like",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (family_code, trigger)(rate(acme_backend_titration_next_fill_failure_total[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  }
+ ]
+}

@@ -1,0 +1,257 @@
+{
+ "schema": 1,
+ "page": "Price Publish",
+ "widgets": [
+  {
+   "id": "p15-w001",
+   "title": "(untitled)",
+   "visualization": "viz.markdown",
+   "grafana_type": "text",
+   "nrql": [],
+   "before": {
+    "confidence": "exact",
+    "queries": [],
+    "notes": []
+   },
+   "expected": []
+  },
+  {
+   "id": "p15-w002",
+   "title": "Publish Price",
+   "visualization": "viz.billboard",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT count(*) AS 'NRx, Renewal' FROM Log WHERE `cluster_name` = 'acme-cluster-prod' AND allColumnSearch('Price publish dmn returned', insensitive: true) AND `should_publish_price` = true AND script_type != 'refill'"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "NRQL could not be parsed: expected comparison operator, got 'AND' near: ...rue) AND `should_publish_price"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p15-w003",
+   "title": "Skip Publish Price",
+   "visualization": "viz.billboard",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT count(*) AS 'NRx, Renewal' FROM Log WHERE `cluster_name` = 'acme-cluster-prod' AND allColumnSearch('Price publish dmn returned', insensitive: true) AND `should_publish_price` = false AND script_type != 'refill'"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "NRQL could not be parsed: expected comparison operator, got 'AND' near: ...rue) AND `should_publish_price"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p15-w004",
+   "title": "Publish Price",
+   "visualization": "viz.billboard",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT filter(count(*), WHERE allColumnSearch('Price publish dmn returned', insensitive: true) AND should_publish_price = true) * 100.0 / count(*) AS 'NRx, Renewal %' FROM Log WHERE cluster_name = 'acme-cluster-prod' AND script_type = 'new' OR script_type = 'renewal'"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "NRQL could not be parsed: expected comparison operator, got 'AND' near: ...rue) AND should_publish_price "
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p15-w005",
+   "title": "Publish Price",
+   "visualization": "viz.billboard",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT count(*) AS 'Refill' FROM Log WHERE `cluster_name` = 'acme-cluster-prod' AND allColumnSearch('Price publish dmn returned', insensitive: true) AND `should_publish_price` = true AND script_type = 'refill'"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "NRQL could not be parsed: expected comparison operator, got 'AND' near: ...rue) AND `should_publish_price"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p15-w006",
+   "title": "Skip Publish Price",
+   "visualization": "viz.billboard",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT count(*) AS 'Refill' FROM Log WHERE `cluster_name` = 'acme-cluster-prod' AND allColumnSearch('Price publish dmn returned', insensitive: true) AND `should_publish_price` = false AND script_type = 'refill'"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "NRQL could not be parsed: expected comparison operator, got 'AND' near: ...rue) AND `should_publish_price"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p15-w007",
+   "title": "Publish Price",
+   "visualization": "viz.billboard",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT filter(count(*), WHERE allColumnSearch('Price publish dmn returned', insensitive: true) AND should_publish_price = true) * 100.0 / count(*) AS 'Refill %' FROM Log WHERE cluster_name = 'acme-cluster-prod' AND script_type = 'refill'"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "NRQL could not be parsed: expected comparison operator, got 'AND' near: ...rue) AND should_publish_price "
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p15-w008",
+   "title": "Price Publish Decisions",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT count(*) FROM Log WHERE `cluster_name` = 'acme-cluster-prod' AND allColumnSearch('Price publish dmn returned', insensitive: true) FACET script_type, should_publish_price TIMESERIES"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "NRQL could not be parsed: expected comparison operator, got 'FACET' near: ...rue) FACET script_type, should"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p15-w009",
+   "title": "Price Publish Decisions",
+   "visualization": "logger.log-table-widget",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT fill_id, script_type,program, should_publish_price, price_publish_reason FROM Log WHERE `cluster_name` = 'acme-cluster-prod' AND allColumnSearch('Price publish dmn returned', insensitive: true)"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "NRQL could not be parsed: dangling predicate near: ...true)"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p15-w010",
+   "title": "NRx, Renewal Price Publish Success",
+   "visualization": "viz.table",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT count(*) FROM Log WHERE `cluster_name` = 'acme-cluster-prod' AND allColumnSearch('Price publish dmn returned', insensitive: true) AND should_publish_price = true and script_type != 'refill' FACET price_publish_reason"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "NRQL could not be parsed: expected comparison operator, got 'AND' near: ...rue) AND should_publish_price "
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p15-w011",
+   "title": "Refill Price Publish Success",
+   "visualization": "viz.table",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT count(*) FROM Log WHERE `cluster_name` = 'acme-cluster-prod' AND allColumnSearch('Price publish dmn returned', insensitive: true) AND should_publish_price = true and script_type = 'refill' FACET price_publish_reason"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "NRQL could not be parsed: expected comparison operator, got 'AND' near: ...rue) AND should_publish_price "
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p15-w012",
+   "title": "NRx, Renewal Price Publish Blocks",
+   "visualization": "viz.table",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT count(*) FROM Log WHERE `cluster_name` = 'acme-cluster-prod' AND allColumnSearch('Price publish dmn returned', insensitive: true) AND should_publish_price = false and script_type != 'refill' FACET price_publish_reason"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "NRQL could not be parsed: expected comparison operator, got 'AND' near: ...rue) AND should_publish_price "
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p15-w013",
+   "title": "Refill Price Publish Blocks",
+   "visualization": "viz.table",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT count(*) FROM Log WHERE `cluster_name` = 'acme-cluster-prod' AND allColumnSearch('Price publish dmn returned', insensitive: true) AND should_publish_price = false and script_type = 'refill' FACET price_publish_reason"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "NRQL could not be parsed: expected comparison operator, got 'AND' near: ...rue) AND should_publish_price "
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p15-w014",
+   "title": "Price Publish Success",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT count(*) FROM Log WHERE `cluster_name` = 'acme-cluster-prod' AND allColumnSearch('Price publish dmn returned', insensitive: true) AND should_publish_price = true FACET price_publish_reason TIMESERIES"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "NRQL could not be parsed: expected comparison operator, got 'AND' near: ...rue) AND should_publish_price "
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p15-w015",
+   "title": "Price Publish Blocks",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT count(*) FROM Log WHERE `cluster_name` = 'acme-cluster-prod' AND allColumnSearch('Price publish dmn returned', insensitive: true) AND should_publish_price = false FACET price_publish_reason TIMESERIES"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "NRQL could not be parsed: expected comparison operator, got 'AND' near: ...rue) AND should_publish_price "
+    ]
+   },
+   "expected": []
+  }
+ ]
+}

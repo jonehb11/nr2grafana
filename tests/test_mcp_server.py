@@ -34,6 +34,7 @@ EXPECTED_TOOLS = {
     "diagnose", "deepdive", "cost_analyze", "tco", "cost_rca",
     "mitigate", "ai_context", "readiness",
     "add_datasource", "grafana_import", "grafana_test", "heal",
+    "missing_datasources",
 }
 
 
@@ -184,6 +185,84 @@ class DispatchTests(unittest.TestCase):
                                self.ctx))
         self.assertEqual(md["format"], "markdown")
         self.assertIsInstance(md["markdown"], str)
+
+    # -- 1.11 SEAM-REPORT / live / bind pass-through ---------------------
+
+    def _convert(self, **extra):
+        args = {"nr_json": _nr_fixture(), "out_dir": self.out_dir}
+        args.update(extra)
+        conv = _text(handle_call("convert", args, self.ctx))
+        self.assertTrue(conv["dashboards"], conv)
+        return conv
+
+    def test_missing_datasources_tool_shape(self):
+        slug = self._convert()["dashboards"][0]["slug"]
+        res = _text(handle_call("missing_datasources", {"slug": slug},
+                                self.ctx))
+        self.assertEqual(res["slug"], slug)
+        for key in ("missing_datasources", "datasources_to_add",
+                    "manual_panels", "needs_review", "counts"):
+            self.assertIn(key, res)
+        # Offline (no Grafana configured) every ${var} ref is unbound,
+        # so the converted dashboard's families are reported missing,
+        # each with the exact add-datasource template.
+        self.assertFalse(res["grafana_checked"])
+        self.assertIn("prometheus", res["missing_datasources"])
+        prom = next(d for d in res["datasources_to_add"]
+                    if d["family"] == "prometheus")
+        tpl = prom["template"]
+        self.assertEqual(tpl["type"], "prometheus")
+        self.assertEqual(tpl["api"]["path"], "/api/grafana/datasource")
+        self.assertEqual(tpl["mcp"]["tool"], "add_datasource")
+        self.assertIn("url", tpl["mcp"]["arguments"])
+        self.assertIn("add-datasource", tpl["cli"])
+        for row in res["manual_panels"]:
+            self.assertIn("panel_id", row)
+            self.assertIn("why", row)
+            self.assertIn("closest_equivalent", row)
+
+    def test_missing_datasources_unknown_slug_raises(self):
+        with self.assertRaises(ToolError) as cm:
+            handle_call("missing_datasources", {"slug": "ghost"},
+                        self.ctx)
+        self.assertIn("ghost", str(cm.exception))
+
+    def test_missing_datasources_requires_slug(self):
+        with self.assertRaises(ToolError):
+            handle_call("missing_datasources", {}, self.ctx)
+
+    def test_convert_accepts_live_env_bind_offline(self):
+        # No NR key / Grafana URL: live hints and bind degrade to job
+        # notes, env still pins the target env; the convert succeeds.
+        conv = self._convert(live=True, env="prod", bind=True)
+        entry = conv["dashboards"][0]
+        self.assertEqual(entry["env"], "prod")
+        self.assertFalse(entry["live_hints"])
+        self.assertFalse(entry["bound"])
+        self.assertIn("missing_datasources", entry)
+        self.assertIsInstance(entry["manual_panels"], int)
+
+    def test_get_dashboard_and_readiness_surface_missing(self):
+        slug = self._convert()["dashboards"][0]["slug"]
+        got = _text(handle_call("get_dashboard", {"slug": slug},
+                                self.ctx))
+        self.assertIn("missing", got)
+        self.assertIn("missing_datasources", got["missing"])
+        rd = _text(handle_call("readiness", {"slug": slug}, self.ctx))
+        self.assertIn("missing_datasources", rd)
+        self.assertIn("manual_panels", rd)
+
+    def test_tool_schemas_advertise_live_env_bind(self):
+        by_name = {t["name"]: t for t in TOOLS}
+        props = by_name["convert"]["inputSchema"]["properties"]
+        for key in ("live", "env", "bind"):
+            self.assertIn(key, props)
+        imp = by_name["grafana_import"]["inputSchema"]["properties"]
+        self.assertIn("bind", imp)
+        self.assertIn("env", imp)
+        self.assertEqual(
+            by_name["missing_datasources"]["inputSchema"]["required"],
+            ["slug"])
 
 
 class StdioServerTests(unittest.TestCase):

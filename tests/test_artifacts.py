@@ -393,6 +393,304 @@ class WriteIndexTests(unittest.TestCase):
         self.assertIn("no dashboards packaged", text)
 
 
+CW_TARGET = {
+    "refId": "A",
+    "datasource": {"type": "cloudwatch", "uid": "${cloudwatch_datasource}"},
+    "namespace": "AWS/RDS", "metricName": "CPUUtilization",
+    "statistic": "Average", "region": "default",
+    "dimensions": {"DBInstanceIdentifier": ["*"]},
+    "queryMode": "Metrics", "metricEditorMode": 0,
+}
+
+
+def make_cw_dash():
+    dash = make_dash()
+    dash["panels"].append({
+        "id": 7, "type": "timeseries", "title": "RDS CPU",
+        "gridPos": {"x": 0, "y": 24, "w": 12, "h": 8},
+        "targets": [dict(CW_TARGET)]})
+    dash["panels"].append({
+        "id": 8, "type": "text", "title": "Cost [MANUAL]",
+        "gridPos": {"x": 12, "y": 24, "w": 12, "h": 8},
+        "options": {"mode": "markdown", "content": "why"}})
+    return dash
+
+
+def make_cw_report():
+    report = make_report()
+    report.append({
+        "page": "Main", "widget": "RDS CPU", "panel_id": 7,
+        "panel_type": "timeseries", "confidence": "approximate",
+        "nrql": ["SELECT average(`aws.rds.CPUUtilization`) FROM Metric "
+                 "FACET aws.rds.DBInstanceIdentifier TIMESERIES"],
+        "queries": [{"datasource": "cloudwatch"}], "notes": [],
+        "cloudwatch": True, "missing_datasource": "cloudwatch"})
+    report.append({
+        "page": "Main", "widget": "Cost", "panel_id": 8,
+        "panel_type": "text", "confidence": "untranslatable",
+        "nrql": ["SELECT sum(cost) FROM FinanceSample"], "queries": [],
+        "notes": ["FinanceSample exists only in New Relic"],
+        "manual": True, "missing_datasource": None,
+        "closest_equivalent": {
+            "datasource": "prometheus",
+            "example_query": "sum(aws_cost_daily_usd)",
+            "note": "AWS Cost Explorer via `nr2grafana tco`"}})
+    return report
+
+
+def make_cw_requirements():
+    req = make_requirements()
+    req["datasources"].append({
+        "family": "cloudwatch", "plugin_id": "cloudwatch", "core": True,
+        "uid_ref": "${cloudwatch_datasource}",
+        "purpose": "AWS metrics (CloudWatch)", "panel_ids": [7],
+        "required": True})
+    req["missing_datasources"] = [{
+        "family": "cloudwatch", "plugin_id": "cloudwatch", "core": True,
+        "uid_ref": "${cloudwatch_datasource}", "reason": "unbound",
+        "detail": "no concrete datasource uid bound",
+        "panel_ids": [7], "purpose": "AWS metrics (CloudWatch)",
+        "fix": "Add a cloudwatch datasource",
+        "add_datasource": {
+            "cli": "nr2grafana grafana add-datasource --type cloudwatch "
+                   "--name cloudwatch",
+            "ui": "Connections -> Data sources -> Add new data source "
+                  "-> cloudwatch",
+            "api": "curl -sS -X POST \"$GRAFANA_URL/api/datasources\"",
+            "payload": {"name": "cloudwatch", "type": "cloudwatch",
+                        "access": "proxy",
+                        "jsonData": {"authType": "keys",
+                                     "defaultRegion": "us-east-1"},
+                        "secureJsonData": {"accessKey": "<accessKey>",
+                                           "secretKey": "<secretKey>"}},
+            "required_fields": ["authType", "defaultRegion"],
+            "notes": "needs cloudwatch:GetMetricData (read only)"}}]
+    req["manual_panels"] = [{
+        "panel_id": 8, "title": "Cost", "page": "Main",
+        "visualization": "viz.billboard", "confidence": "untranslatable",
+        "why": "FinanceSample exists only in New Relic",
+        "nrql": "SELECT sum(cost) FROM FinanceSample",
+        "missing_datasource": None,
+        "closest_equivalent": {
+            "datasource": "prometheus",
+            "example_query": "sum(aws_cost_daily_usd)",
+            "note": "AWS Cost Explorer via `nr2grafana tco`"},
+        "equivalent": "prometheus: sum(aws_cost_daily_usd)"}, {
+        "panel_id": 7, "title": "RDS CPU", "page": "Main",
+        "visualization": "viz.line", "confidence": "needs-review",
+        "why": "aws.* metric has no data in Mimir",
+        "nrql": "SELECT average(`aws.rds.CPUUtilization`) FROM Metric",
+        "missing_datasource": "cloudwatch",
+        "closest_equivalent": {
+            "datasource": "cloudwatch",
+            "cw_target": {"namespace": "AWS/RDS",
+                          "metricName": "CPUUtilization",
+                          "statistic": "Average",
+                          "dimensions": {"DBInstanceIdentifier": ["*"]}},
+            "note": "bind ${cloudwatch_datasource}"},
+        "equivalent": ""}]
+    return req
+
+
+class CloudWatchDatatestTests(unittest.TestCase):
+    def setUp(self):
+        self.dt = build_datatest(make_cw_dash(), make_cw_report())
+
+    def target(self, pid):
+        return [t for t in self.dt["targets"] if t["panel_id"] == pid][0]
+
+    def test_cw_target_marked_and_skipped(self):
+        ids = sorted(t["panel_id"] for t in self.dt["targets"])
+        self.assertEqual(ids, [1, 2, 3, 6, 7])  # text panel 8 skipped
+        cw = self.target(7)
+        self.assertEqual(cw["datasource_family"], "cloudwatch")
+        self.assertEqual(cw["ds_uid_ref"], "${cloudwatch_datasource}")
+        self.assertEqual(cw["expect"], "skip")
+        self.assertIn("AWS", cw["skip_reason"])
+        self.assertEqual(cw["cw"]["namespace"], "AWS/RDS")
+        self.assertEqual(cw["cw"]["metricName"], "CPUUtilization")
+        self.assertEqual(cw["cw"]["dimensions"],
+                         {"DBInstanceIdentifier": ["*"]})
+        self.assertNotIn("refId", cw["cw"])
+        self.assertIn("AWS/RDS CPUUtilization Average", cw["expr"])
+
+    def test_prom_targets_unchanged(self):
+        self.assertEqual(self.target(1)["expect"], "data")
+        self.assertNotIn("cw", self.target(1))
+
+    def test_json_serializable(self):
+        json.dumps(self.dt)
+
+
+class CloudWatchTestShTests(unittest.TestCase):
+    """The embedded helper skips CloudWatch rows (exit 4) and the shell
+    loop reports them as SKIP without failing the run."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="n2g-cw-")
+        cls.pkg = package_dashboard(cls.tmp, "cw", make_cw_dash(),
+                                    make_cw_report(),
+                                    make_cw_requirements(), {})
+        script = render_test_sh("CW")
+        start = script.index("<<'PYEOF'\n") + len("<<'PYEOF'\n")
+        end = script.index("\nPYEOF")
+        cls.helper = script[start:end]
+        cls.manifest = os.path.join(cls.pkg, "datatest.json")
+        cls.dsfile = os.path.join(cls.tmp, "ds.json")
+        with open(cls.dsfile, "w") as f:
+            json.dump([{"type": "prometheus", "uid": "mimir-uid"},
+                       {"type": "loki", "uid": "loki-uid"},
+                       {"type": "tempo", "uid": "tempo-uid"},
+                       {"type": "nrgrafanaplugin-newrelic-datasource",
+                        "uid": "nr-uid"},
+                       {"type": "cloudwatch", "uid": "cw-uid"}], f)
+        # Fake curl: GET /api/datasources -> ds list; POST -> one frame
+        # with data. Prints the HTTP code like `-w '%{http_code}'`.
+        cls.bin = os.path.join(cls.tmp, "bin")
+        os.makedirs(cls.bin)
+        fake = os.path.join(cls.bin, "curl")
+        with open(fake, "w") as f:
+            f.write("#!/bin/sh\n"
+                    "out=''; post=0\n"
+                    "while [ $# -gt 0 ]; do\n"
+                    "  case \"$1\" in\n"
+                    "    -o) out=$2; shift ;;\n"
+                    "    -X) [ \"$2\" = POST ] && post=1; shift ;;\n"
+                    "  esac\n"
+                    "  shift\n"
+                    "done\n"
+                    "if [ $post -eq 1 ]; then\n"
+                    "  cat >/dev/null\n"
+                    "  printf '%s' '{\"results\":{\"A\":{\"frames\":"
+                    "[{\"data\":{\"values\":[[1],[2]]}}]}}}' >\"$out\"\n"
+                    "else\n"
+                    "  cp \"@DS@\" \"$out\"\n"
+                    "fi\n"
+                    "printf 200\n".replace("@DS@", cls.dsfile))
+        os.chmod(fake, 0o755)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, True)
+
+    def helper_run(self, *args):
+        return subprocess.run([sys.executable, "-c", self.helper]
+                              + list(args), capture_output=True, text=True)
+
+    def test_helper_skips_cloudwatch_row(self):
+        proc = self.helper_run("count", self.manifest)
+        n = int(proc.stdout.strip())
+        self.assertEqual(n, 5)
+        proc = self.helper_run("line", self.manifest, "4")
+        self.assertEqual(proc.stdout.strip(), "7|A|cloudwatch|RDS CPU")
+        proc = self.helper_run("body", self.manifest, self.dsfile, "4")
+        self.assertEqual(proc.returncode, 4)
+        self.assertIn("CloudWatch", proc.stderr)
+        self.assertIn("verify in Grafana", proc.stderr)
+
+    def test_helper_still_builds_prom_body(self):
+        proc = self.helper_run("body", self.manifest, self.dsfile, "0")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(
+            json.loads(proc.stdout)["queries"][0]["datasource"]["uid"],
+            "mimir-uid")
+
+    def test_test_sh_reports_skip_and_exits_zero(self):
+        env = {"PATH": self.bin + os.pathsep + "/usr/bin:/bin",
+               "GRAFANA_URL": "http://grafana.example.com",
+               "GRAFANA_TOKEN": "glsa_test"}
+        proc = subprocess.run(["sh", "test.sh"], cwd=self.pkg, env=env,
+                              capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("SKIP     panel 7 [A] (cloudwatch) RDS CPU",
+                      proc.stdout)
+        self.assertIn("PASS     panel 1 [A] (prometheus) Throughput",
+                      proc.stdout)
+        self.assertIn("4 passed, 0 no-data, 0 failed, 1 skipped (of 5)",
+                      proc.stdout)
+
+
+class CloudWatchReadmeTests(unittest.TestCase):
+    def setUp(self):
+        self.text = render_readme("cw", make_cw_dash(), make_cw_report(),
+                                  make_cw_requirements(), {})
+
+    def test_before_you_import_lists_missing_with_template(self):
+        before = self.text.index("## Before you import")
+        missing = self.text.index("### Missing datasources")
+        imp = self.text.index("## Import")
+        self.assertTrue(before < missing < imp)
+        section = self.text[missing:imp]
+        self.assertIn("**cloudwatch** (`cloudwatch`, unbound) -- panels 7",
+                      section)
+        self.assertIn("nr2grafana grafana add-datasource --type cloudwatch",
+                      section)
+        self.assertIn("POST $GRAFANA_URL/api/datasources", section)
+        self.assertIn('"type": "cloudwatch"', section)
+        self.assertIn('"defaultRegion": "us-east-1"', section)
+        self.assertIn('"secretKey": "<secretKey>"', section)
+        self.assertIn("required: `authType`, `defaultRegion`", section)
+        self.assertIn("GetMetricData", section)
+
+    def test_required_table_includes_cloudwatch(self):
+        self.assertIn("| Cloudwatch | `cloudwatch` | yes |", self.text)
+        self.assertIn("${cloudwatch_datasource}", self.text)
+
+    def test_manual_section_lists_why_and_equivalent(self):
+        start = self.text.index("## [MANUAL] panels")
+        end = self.text.index("## New Relic-native widgets")
+        section = self.text[start:end]
+        self.assertIn("Panel 8 'Cost'", section)
+        self.assertIn("why: FinanceSample exists only in New Relic",
+                      section)
+        self.assertIn("closest equivalent (prometheus): "
+                      "`sum(aws_cost_daily_usd)`", section)
+        self.assertIn("how: AWS Cost Explorer", section)
+        self.assertIn("original NRQL: `SELECT sum(cost) FROM "
+                      "FinanceSample`", section)
+        self.assertIn("Panel 7 'RDS CPU'", section)
+        self.assertIn("missing datasource: `cloudwatch`", section)
+        self.assertIn("closest equivalent (cloudwatch target):", section)
+        self.assertIn("CPUUtilization", section)
+
+    def test_manual_section_falls_back_to_report(self):
+        req = make_cw_requirements()
+        del req["manual_panels"]
+        text = render_readme("cw", make_cw_dash(), make_cw_report(),
+                             req, {})
+        self.assertIn("## [MANUAL] panels", text)
+        self.assertIn("Panel 8 'Cost'", text)
+        self.assertIn("`sum(aws_cost_daily_usd)`", text)
+        self.assertIn("Panel 6 'Usage'", text)  # untranslatable, no CE
+        self.assertIn("none known", text)
+
+    def test_troubleshooting_mentions_skip(self):
+        self.assertIn("SKIP lines are CloudWatch targets", self.text)
+
+    def test_no_missing_section_when_nothing_missing(self):
+        req = make_cw_requirements()
+        req["missing_datasources"] = []
+        text = render_readme("cw", make_cw_dash(), make_cw_report(),
+                             req, {})
+        self.assertNotIn("### Missing datasources", text)
+
+
+class CloudWatchIndexTests(unittest.TestCase):
+    def test_index_missing_column(self):
+        tmp = tempfile.mkdtemp(prefix="n2g-cwindex-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        path = write_index(tmp, [{
+            "slug": "cw", "title": "CW", "dir": os.path.join(tmp, "cw"),
+            "widget_report": make_cw_report(),
+            "requirements": make_cw_requirements()}])
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+        self.assertIn("| Missing DS |", text)
+        self.assertIn("prometheus, loki, cloudwatch | nr-consumption | "
+                      "cloudwatch |", text)
+
+
 class RobustnessTests(unittest.TestCase):
     def test_package_with_empty_requirements_and_report(self):
         tmp = tempfile.mkdtemp(prefix="n2g-min-")

@@ -32,14 +32,49 @@ _EXPR_KEYS = ("expr", "query", "queryText")
 # small helpers
 # ---------------------------------------------------------------------------
 
+# Families test.sh can exercise through /api/ds/query with a bare
+# expression. CloudWatch targets are structured (namespace/metricName/
+# dimensions) and need AWS credentials on the Grafana server, so the
+# smoke test records them and skips them instead of failing.
+_TESTABLE_FAMILIES = ("prometheus", "loki", "tempo", "newrelic")
+_CW_KEYS = ("namespace", "metricName", "statistic", "dimensions",
+            "region", "expression", "queryMode", "metricEditorMode",
+            "period", "label")
+
+
 def _family(ds_type: str) -> str:
     """Map a target's datasource plugin type to a datasource family."""
     t = (ds_type or "").lower()
     if "newrelic" in t:
         return "newrelic"
-    if t in ("prometheus", "loki", "tempo"):
+    if t in ("prometheus", "loki", "tempo", "cloudwatch"):
         return t
     return t or "prometheus"
+
+
+def _is_cloudwatch_target(tgt: Dict[str, Any]) -> bool:
+    ds_type = ((tgt.get("datasource") or {}).get("type") or "").lower()
+    if ds_type == "cloudwatch":
+        return True
+    return bool(not ds_type and tgt.get("namespace")
+                and tgt.get("metricName"))
+
+
+def _cw_describe(tgt: Dict[str, Any]) -> str:
+    """Human one-liner for a CloudWatch target (datatest ``expr``)."""
+    if tgt.get("expression"):
+        return "SEARCH %s" % tgt["expression"]
+    parts = [str(tgt.get("namespace") or "?"),
+             str(tgt.get("metricName") or "?")]
+    if tgt.get("statistic"):
+        parts.append(str(tgt["statistic"]))
+    dims = tgt.get("dimensions")
+    if isinstance(dims, dict) and dims:
+        parts.append("{%s}" % ", ".join(
+            "%s=%s" % (k, ",".join(str(x) for x in v)
+                       if isinstance(v, list) else v)
+            for k, v in sorted(dims.items())))
+    return " ".join(parts)
 
 
 def _md_cell(text: Any) -> str:
@@ -96,20 +131,29 @@ def build_datatest(dash: Dict[str, Any],
             if isinstance(val, str) and val.strip():
                 expr = val
                 break
-        if not expr:
+        cloudwatch = _is_cloudwatch_target(tgt)
+        if not expr and not cloudwatch:
             continue
         ds = tgt.get("datasource") or {}
         confidence = conf_by_id.get(panel.get("id"), "")
-        targets.append({
+        row: Dict[str, Any] = {
             "panel_id": panel.get("id"),
             "panel_title": panel.get("title") or "",
             "refId": tgt.get("refId") or "A",
-            "datasource_family": _family(ds.get("type", "")),
+            "datasource_family": ("cloudwatch" if cloudwatch
+                                  else _family(ds.get("type", ""))),
             "ds_uid_ref": ds.get("uid", ""),
-            "expr": expr,
+            "expr": expr or (_cw_describe(tgt) if cloudwatch else ""),
             "expect": ("data" if confidence in ("exact", "approximate")
                        else "any"),
-        })
+        }
+        if cloudwatch:
+            row["cw"] = {k: tgt[k] for k in _CW_KEYS if k in tgt}
+            row["expect"] = "skip"
+            row["skip_reason"] = ("CloudWatch target: test.sh does not "
+                                  "query AWS (needs credentials on the "
+                                  "Grafana server); verify in Grafana")
+        targets.append(row)
     return {
         "schema": SCHEMA_DATATEST,
         "dashboard": dash.get("title", ""),
@@ -139,7 +183,9 @@ _TEST_SH = r'''#!/bin/sh
 #   NO-DATA  query ran but returned nothing (warning: metric/labels may
 #            not exist in your stack yet -- see README troubleshooting)
 #   FAIL     Grafana rejected the query or the request errored
-# Exit code: 1 if any query FAILed, else 0. NO-DATA never fails the run.
+#   SKIP     not exercised here (CloudWatch targets need AWS credentials
+#            on the Grafana server -- verify those panels in Grafana)
+# Exit code: 1 if any query FAILed, else 0. NO-DATA/SKIP never fail.
 #
 # Needs: curl, python3 (used to read datatest.json -- no jq required).
 
@@ -234,6 +280,12 @@ def cmd_line(manifest, i):
 def cmd_body(manifest, dsfile, i):
     t = targets(manifest)[int(i)]
     fam = t.get("datasource_family") or "prometheus"
+    if t.get("expect") == "skip" or (fam not in TYPE_OF
+                                     and fam != "newrelic"):
+        sys.stderr.write("%s\n" % (
+            t.get("skip_reason")
+            or "%s targets are not exercised by test.sh" % fam))
+        sys.exit(4)
     uid, dstype = resolve(dsfile, fam)
     if not uid:
         sys.stderr.write(
@@ -323,7 +375,7 @@ if [ "$n" -eq 0 ]; then
 fi
 
 echo "Testing $n queries against $GRAFANA_URL ..."
-pass=0; nodata=0; fail=0
+pass=0; nodata=0; fail=0; skip=0
 i=0
 while [ "$i" -lt "$n" ]; do
     line=$(python3 -c "$HELPER" line "$MANIFEST" "$i")
@@ -332,8 +384,9 @@ while [ "$i" -lt "$n" ]; do
     fam=${rest%%|*};  title=${rest#*|}
     label="panel $pid [$refid] ($fam) $title"
 
-    if body=$(python3 -c "$HELPER" body "$MANIFEST" "$DSFILE" "$i" \
-            2>"$WORK/err"); then
+    body=$(python3 -c "$HELPER" body "$MANIFEST" "$DSFILE" "$i" \
+            2>"$WORK/err"); rc=$?
+    if [ "$rc" -eq 0 ]; then
         code=$(printf '%s' "$body" | curl -sS -m 60 -o "$WORK/resp.json" \
             -w '%{http_code}' \
             -H "Authorization: Bearer $GRAFANA_TOKEN" \
@@ -341,6 +394,8 @@ while [ "$i" -lt "$n" ]; do
             -X POST "$GRAFANA_URL/api/ds/query" -d @-) || code=000
         verdict=$(python3 -c "$HELPER" check "$WORK/resp.json" \
             "$refid" "$code")
+    elif [ "$rc" -eq 4 ]; then
+        verdict="SKIP $(cat "$WORK/err")"
     else
         verdict="FAIL $(cat "$WORK/err")"
     fi
@@ -348,6 +403,8 @@ while [ "$i" -lt "$n" ]; do
     case "$verdict" in
         PASS*)    pass=$((pass + 1));     echo "PASS     $label" ;;
         NO-DATA*) nodata=$((nodata + 1)); echo "NO-DATA  $label" ;;
+        SKIP*)    skip=$((skip + 1));     echo "SKIP     $label"
+                  echo "         ${verdict#SKIP }" ;;
         *)        fail=$((fail + 1));     echo "FAIL     $label"
                   echo "         ${verdict#FAIL }" ;;
     esac
@@ -355,7 +412,8 @@ while [ "$i" -lt "$n" ]; do
 done
 
 echo
-echo "result: $pass passed, $nodata no-data, $fail failed (of $n)"
+echo "result: $pass passed, $nodata no-data, $fail failed," \
+    "$skip skipped (of $n)"
 if [ "$fail" -gt 0 ]; then
     exit 1
 fi
@@ -395,12 +453,154 @@ def _readme_datasources(req: Dict[str, Any]) -> List[str]:
         "",
         "To add one in the Grafana UI: **Connections -> Data sources ->",
         "Add new data source**, pick the plugin above, set the URL of your",
-        "backend (Mimir/Prometheus, Loki, Tempo, ...), then **Save & test**.",
+        "backend (Mimir/Prometheus, Loki, Tempo, ...) or, for CloudWatch,",
+        "the AWS region and credentials, then **Save & test**.",
         "The dashboard references datasources through template variables,",
         "so your datasource names do not need to match anything -- you pick",
         "them at import time.",
         "",
     ]
+    return lines
+
+
+def _readme_missing(req: Dict[str, Any]) -> List[str]:
+    """'Missing datasources' subsection: each family the dashboard needs
+    that nothing binds yet, with the exact add-datasource template."""
+    missing = req.get("missing_datasources") or []
+    if not missing:
+        return []
+    lines = [
+        "### Missing datasources",
+        "",
+        "These datasource families are required by the dashboard but are",
+        "not bound to a concrete datasource yet (`unbound`: the JSON still",
+        "references a template variable; `absent`: the target Grafana",
+        "instance has no datasource of that type). Add each one before",
+        "importing, or bind it when the import prompts you:",
+        "",
+    ]
+    for m in missing:
+        fam = m.get("family", "?")
+        pids = ", ".join(str(p) for p in m.get("panel_ids") or [])
+        lines.append("- **%s** (`%s`, %s)%s" % (
+            fam, m.get("plugin_id") or fam, m.get("reason") or "unbound",
+            (" -- panels %s" % pids) if pids else ""))
+        if m.get("detail"):
+            lines.append("  - %s" % _md_cell(m["detail"]))
+        if m.get("fix"):
+            lines.append("  - fix: %s" % _md_cell(m["fix"]))
+        tpl = m.get("add_datasource") or {}
+        if tpl.get("ui"):
+            lines.append("  - UI: %s" % tpl["ui"])
+        if tpl.get("cli"):
+            lines.append("  - CLI: `%s`" % tpl["cli"])
+        payload = tpl.get("payload")
+        if isinstance(payload, dict) and payload:
+            lines.append("  - API: `POST $GRAFANA_URL/api/datasources` "
+                         "with this body (fill in the `<...>` values%s):"
+                         % ((", required: " + ", ".join(
+                             "`%s`" % f for f in tpl["required_fields"]))
+                            if tpl.get("required_fields") else ""))
+            lines.append("")
+            lines.append("    ```json")
+            for ln in json.dumps(payload, indent=2,
+                                 sort_keys=True).splitlines():
+                lines.append("    " + ln)
+            lines.append("    ```")
+            lines.append("")
+        if tpl.get("notes"):
+            lines.append("  - note: %s" % _md_cell(tpl["notes"]))
+    lines.append("")
+    return lines
+
+
+def _manual_panels(req: Dict[str, Any],
+                   report: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """[MANUAL] panels from requirements.manual_panels, else derived from
+    the widget report (older requirements.json without that key)."""
+    manual = req.get("manual_panels")
+    if isinstance(manual, list):
+        return [m for m in manual if isinstance(m, dict)]
+    out: List[Dict[str, Any]] = []
+    for e in report or []:
+        if not (e.get("manual") or e.get("confidence") == "untranslatable"):
+            continue
+        notes = [str(n) for n in e.get("notes") or [] if n]
+        nrql = [q for q in e.get("nrql") or [] if q]
+        ce = e.get("closest_equivalent")
+        out.append({
+            "panel_id": e.get("panel_id"), "title": _widget_label(e),
+            "page": e.get("page") or "",
+            "visualization": e.get("visualization") or "",
+            "confidence": e.get("confidence") or "",
+            "why": "; ".join(notes[:3]) or "query could not be translated",
+            "nrql": nrql[0] if nrql else "",
+            "missing_datasource": e.get("missing_datasource") or None,
+            "closest_equivalent": ce if isinstance(ce, dict) else None,
+            "equivalent": ce if isinstance(ce, str) else "",
+        })
+    return out
+
+
+def _equivalent_lines(m: Dict[str, Any]) -> List[str]:
+    """Bullet lines describing a manual panel's closest equivalent."""
+    lines: List[str] = []
+    ce = m.get("closest_equivalent")
+    if isinstance(ce, dict) and ce:
+        ds = ce.get("datasource") or ""
+        query = ce.get("example_query") or ce.get("expr") or ""
+        cw = ce.get("cw_target")
+        if query:
+            lines.append("  - closest equivalent (%s): `%s`"
+                         % (ds or "query", _md_cell(query)))
+        elif isinstance(cw, dict) and cw:
+            lines.append("  - closest equivalent (%s target): `%s`"
+                         % (ds or "cloudwatch",
+                            _md_cell(json.dumps(cw, sort_keys=True))))
+        elif ds:
+            lines.append("  - closest equivalent: %s datasource" % ds)
+        if ce.get("note"):
+            lines.append("  - how: %s" % _md_cell(ce["note"]))
+    elif m.get("equivalent"):
+        lines.append("  - closest equivalent: %s" % _md_cell(m["equivalent"]))
+    else:
+        lines.append("  - closest equivalent: none known -- recreate the "
+                     "query against your LGTM stack by hand")
+    return lines
+
+
+def _readme_manual(req: Dict[str, Any],
+                   report: List[Dict[str, Any]]) -> List[str]:
+    manual = _manual_panels(req, report)
+    if not manual:
+        return []
+    lines = [
+        "## [MANUAL] panels",
+        "",
+        "These panels were exported as `[MANUAL]` placeholders: the",
+        "converter could not produce a working query, so each one shows",
+        "WHY plus the closest equivalent to recreate by hand (nothing is",
+        "silently left empty):",
+        "",
+    ]
+    for m in manual:
+        head = "- Panel %s %r" % (m.get("panel_id"), m.get("title") or "")
+        bits = []
+        if m.get("page"):
+            bits.append("page %r" % m["page"])
+        if m.get("visualization"):
+            bits.append("`%s`" % m["visualization"])
+        if bits:
+            head += " (%s)" % ", ".join(bits)
+        lines.append(head)
+        lines.append("  - why: %s" % _md_cell(m.get("why") or "?"))
+        if m.get("missing_datasource"):
+            lines.append("  - missing datasource: `%s` (see 'Missing "
+                         "datasources' above)" % m["missing_datasource"])
+        lines += _equivalent_lines(m)
+        if m.get("nrql"):
+            lines.append("  - original NRQL: `%s`" % _md_cell(m["nrql"]))
+    lines.append("")
     return lines
 
 
@@ -527,9 +727,9 @@ def _readme_troubleshooting(req: Dict[str, Any]) -> List[str]:
         "",
         "**Import prompts for datasources** -- expected. The dashboard",
         "references datasources through template variables; pick your",
-        "Prometheus/Mimir, Loki and Tempo instances when asked. If a",
-        "dropdown is empty, the matching datasource does not exist yet",
-        "(see the table above).",
+        "Prometheus/Mimir, Loki, Tempo (and CloudWatch) instances when",
+        "asked. If a dropdown is empty, the matching datasource does not",
+        "exist yet (see 'Missing datasources' above).",
         "",
         "**Panels show \"No data\"** -- the query is valid but nothing in",
         "your stack matches it yet. Each panel expects specific",
@@ -574,8 +774,12 @@ def _readme_troubleshooting(req: Dict[str, Any]) -> List[str]:
         "",
         "FAIL lines mean Grafana rejected the query (bad datasource,",
         "missing plugin, or a query needing manual review); NO-DATA lines",
-        "are warnings only. `datatest.json` is the machine-readable",
-        "manifest behind `test.sh`.",
+        "are warnings only; SKIP lines are CloudWatch targets, which the",
+        "smoke test does not run (they need AWS credentials on the Grafana",
+        "server) -- open those panels in Grafana to verify them.",
+        "`datatest.json` is the machine-readable manifest behind `test.sh`",
+        "(CloudWatch rows carry `datasource_family: cloudwatch` and the",
+        "`cw` target).",
     ]
     return lines
 
@@ -626,8 +830,10 @@ def render_readme(slug: str, dash: Dict[str, Any],
 
     lines += ["## Before you import", ""]
     lines += _readme_datasources(req)
+    lines += _readme_missing(req)
     lines += _readme_plugins(req)
     lines += _readme_domains(req)
+    lines += _readme_manual(req, report)
     lines += _readme_nr_native(req, report)
     lines += _readme_import(req)
     lines += _readme_troubleshooting(req)
@@ -684,6 +890,12 @@ def _index_row(entry: Dict[str, Any]) -> Tuple[str, ...]:
     if not domains:
         domains = [d.get("domain", "") for d in req.get("domains") or []]
     domains = [str(d) for d in domains if d]
+    missing = entry.get("missing_datasources")
+    if not missing:
+        missing = [m.get("family", "") for m in
+                   req.get("missing_datasources") or []
+                   if isinstance(m, dict)]
+    missing = [str(m) for m in missing if m]
     link = "[`%s/`](%s/README.md)" % (dirname, dirname) if dirname else ""
     return (
         _md_cell(title), link, str(panels),
@@ -692,6 +904,7 @@ def _index_row(entry: Dict[str, Any]) -> Tuple[str, ...]:
         str(counts.get("untranslatable", 0)),
         _md_cell(", ".join(datasources) or "-"),
         _md_cell(", ".join(domains) or "-"),
+        _md_cell(", ".join(missing) or "-"),
     )
 
 
@@ -710,6 +923,10 @@ def write_index(out_dir: str, entries: List[Dict[str, Any]]) -> str:
         "- `widget-report.json` -- per-panel translation confidence",
         "- `test.sh` + `datatest.json` -- live per-query data smoke test",
         "",
+        "`Missing DS` lists datasource families a dashboard needs that are",
+        "not bound to a concrete datasource yet (see each README's",
+        "'Missing datasources' section for the exact add template).",
+        "",
         "Suggested workflow per dashboard:",
         "",
         "1. Read `<dir>/README.md`; create the required datasources.",
@@ -719,13 +936,13 @@ def write_index(out_dir: str, entries: List[Dict[str, Any]]) -> str:
         "   into the converter config, reconvert.",
         "",
         "| Dashboard | Package | Panels | Exact | Approx | Review "
-        "| Manual | Datasources | Domains |",
-        "|---|---|--:|--:|--:|--:|--:|---|---|",
+        "| Manual | Datasources | Domains | Missing DS |",
+        "|---|---|--:|--:|--:|--:|--:|---|---|---|",
     ]
     for entry in entries or []:
         lines.append("| " + " | ".join(_index_row(entry)) + " |")
     if not entries:
-        lines.append("| _no dashboards packaged_ | | | | | | | | |")
+        lines.append("| _no dashboards packaged_ | | | | | | | | | |")
     path = os.path.join(out_dir, "INDEX.md")
     os.makedirs(out_dir, exist_ok=True)
     _write_text(path, "\n".join(lines))

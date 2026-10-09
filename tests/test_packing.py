@@ -309,8 +309,8 @@ class KarpenterTest(unittest.TestCase):
         kar = karpenter_analyze(topo, packing_sim(topo))
         blob = (kar["proposed_nodepool_yaml"]
                 + kar["proposed_ec2nodeclass_note"])
-        for secret in ("348342704569", "prod-shared-use1", "prod-shared-use1"
-                       "-mimir", "prod-shared-use1-loki"):
+        for secret in ("123456789012", "prod-example-use1", "prod-example-use1"
+                       "-mimir", "prod-example-use1-loki"):
             self.assertNotIn(secret, blob)
         # Uses placeholders for cluster-specific names.
         self.assertIn("${OBS_EC2NODECLASS}", kar["proposed_nodepool_yaml"])

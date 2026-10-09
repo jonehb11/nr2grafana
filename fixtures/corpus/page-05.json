@@ -1,0 +1,1088 @@
+{
+ "schema": 1,
+ "page": "System Health",
+ "widgets": [
+  {
+   "id": "p05-w001",
+   "title": "(untitled)",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT rate(sum(`acme_backend.http.request.status.400`), 5 minutes) AS 'HTTP 400 Rate' FROM Metric WHERE clusterName = concat('acme-cluster-', {{env}})"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum(rate(acme_backend_http_request_status_400_total{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__range])) * 300"
+     }
+    ],
+    "notes": [
+     "assumed counter 'acme_backend_http_request_status_400_total'; verify name/type in Mimir (/api/v1/metadata)",
+     "unit:short"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(rate(acme_backend_http_request_status_400_total[$__range])) * 300"
+    }
+   ]
+  },
+  {
+   "id": "p05-w002",
+   "title": "(untitled)",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT rate(sum(`acme_backend.http.request.status.500`), 5 minutes) AS 'HTTP 500 Rate' FROM Metric WHERE clusterName = concat('acme-cluster-', {{env}})"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum(rate(acme_backend_http_request_status_500_total{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__range])) * 300"
+     }
+    ],
+    "notes": [
+     "assumed counter 'acme_backend_http_request_status_500_total'; verify name/type in Mimir (/api/v1/metadata)",
+     "unit:short"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(rate(acme_backend_http_request_status_500_total[$__range])) * 300"
+    }
+   ]
+  },
+  {
+   "id": "p05-w003",
+   "title": "(untitled)",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT rate(sum(acme_backend.celery.signals), 5 minutes) AS 'Celery Failure Rate' FROM Metric WHERE clusterName = concat('acme-cluster-', {{env}}) AND status = 'failure'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum(rate(acme_backend_celery_signals_total{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",status=\"failure\"}[$__range])) * 300"
+     }
+    ],
+    "notes": [
+     "attribute 'status' not in label_map; used 'status' \u2014 verify the label exists in your stack",
+     "assumed counter 'acme_backend_celery_signals_total'; verify name/type in Mimir (/api/v1/metadata)",
+     "unit:short"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(rate(acme_backend_celery_signals_total{status=\"failure\"}[$__range])) * 300"
+    }
+   ]
+  },
+  {
+   "id": "p05-w004",
+   "title": "(untitled)",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "select rate(count(*), 5 minutes) AS 'Camunda Task Error Rate' FROM Log where message like '[WORKER_ID:%]%' and log_level = 'ERROR' and cluster_name = concat('acme-cluster-', {{env}})"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "loki",
+      "type": "instant",
+      "expr": "sum(rate({cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"} |~ \"(?i)\\\\[WORKER.ID:.*\\\\].*\" | json | log_level=\"ERROR\" | __error__=\"\" [$__range])) * 300"
+     }
+    ],
+    "notes": [
+     "attribute 'log_level' not in label_map; used 'log_level' \u2014 verify the label exists in your stack",
+     "filter on 'log_level' assumes it is a parsed json field in Loki"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "loki",
+     "refId": "A",
+     "expr": "sum(rate({service_name=~\".+\"} |~ \"(?i)\\\\[WORKER.ID:.*\\\\].*\" | json | log_level=~\"(?i)ERROR\" | __error__=\"\" [$__range])) * 300"
+    }
+   ]
+  },
+  {
+   "id": "p05-w005",
+   "title": "Placeholder",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT rate(sum(acme_backend.message_queue.process_message), 5 minutes) AS 'SQS Failure Rate' FROM Metric WHERE status = 'failed' and clusterName = concat('acme-cluster-', {{env}})"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum(rate(acme_backend_message_queue_process_message_total{status=\"failed\",cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__range])) * 300"
+     }
+    ],
+    "notes": [
+     "attribute 'status' not in label_map; used 'status' \u2014 verify the label exists in your stack",
+     "assumed counter 'acme_backend_message_queue_process_message_total'; verify name/type in Mimir (/api/v1/metadata)",
+     "unit:short"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(rate(acme_backend_message_queue_process_message_total{status=\"failed\"}[$__range])) * 300"
+    }
+   ]
+  },
+  {
+   "id": "p05-w006",
+   "title": "SQS DLQ Size",
+   "visualization": "viz.billboard",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT\n(filter(latest(aws.sqs.ApproximateNumberOfMessagesVisible), WHERE aws.sqs.QueueName = concat('acme-queue-1-', {{env}})) +\nfilter(latest(aws.sqs.ApproximateNumberOfMessagesVisible), WHERE aws.sqs.QueueName = concat('acme-queue-3-', {{env}})) +\nfilter(latest(aws.sqs.ApproximateNumberOfMessagesVisible), WHERE aws.sqs.QueueName = concat('acme-backend-',{{env}},'-input-dlq'))) AS 'SQS DLQ Size' FROM Metric TIMESERIES"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "NRQL could not be parsed: unexpected character '+' near: ...}})) +\nfilter(latest(aws.sqs.A"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "cloudwatch",
+     "refId": "A",
+     "expression": "SEARCH('{AWS/SQS,QueueName} MetricName=\"ApproximateNumberOfMessagesVisible\" QueueName=\"*dlq*\"', 'Average', 300)",
+     "queryMode": "Metrics",
+     "region": "default",
+     "metricEditorMode": 1
+    }
+   ]
+  },
+  {
+   "id": "p05-w007",
+   "title": "(untitled)",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT latest(aws.rds.DatabaseConnections) AS 'DB Connections' FROM Metric WHERE `aws.rds.dbClusterIdentifier` = concat('acme-backend-', {{env}}) TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(aws_rds_DatabaseConnections{aws_rds_dbClusterIdentifier=\"Func(name='concat', args=[Lit(value='acme-backend-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__interval])"
+     }
+    ],
+    "notes": [
+     "attribute 'aws.rds.dbClusterIdentifier' not in label_map; used 'aws_rds_dbClusterIdentifier' \u2014 verify the label exists in your stack",
+     "assumed gauge 'aws_rds_DatabaseConnections'; verify metric name/type in Mimir and add to metric_map if wrong"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "cloudwatch",
+     "refId": "A",
+     "namespace": "AWS/RDS",
+     "metricName": "DatabaseConnections",
+     "statistic": "Average",
+     "dimensions": {
+      "DBInstanceIdentifier": [
+       "*"
+      ]
+     },
+     "dimension_keys": [
+      "DBInstanceIdentifier"
+     ],
+     "queryMode": "Metrics",
+     "region": "default",
+     "metricEditorMode": 0
+    }
+   ]
+  },
+  {
+   "id": "p05-w008",
+   "title": "Placeholder",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT latest(k8s.deployment.podsAvailable) as 'Public Pods' from Metric where k8s.namespaceName = 'acme-backend' AND k8s.clusterName = concat('acme-cluster-', {{env}}) AND k8s.deploymentName = 'acme-backend-public' TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_deployment_podsAvailable{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-public\"}[$__interval])"
+     }
+    ],
+    "notes": [
+     "attribute 'k8s.namespaceName' not in label_map; used 'k8s_namespaceName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName' \u2014 verify the label exists in your stack",
+     "assumed gauge 'k8s_deployment_podsAvailable'; verify metric name/type in Mimir and add to metric_map if wrong"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "last_over_time(kube_deployment_status_replicas_available{namespace=\"acme-backend\",deployment=\"acme-backend-public\"}[$__interval])"
+    }
+   ]
+  },
+  {
+   "id": "p05-w009",
+   "title": "Placeholder",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT latest(k8s.deployment.podsAvailable) as 'Internal Pods' from Metric where k8s.namespaceName = 'acme-backend' AND k8s.clusterName = concat('acme-cluster-', {{env}}) AND k8s.deploymentName = 'acme-backend-internal' TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_deployment_podsAvailable{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-internal\"}[$__interval])"
+     }
+    ],
+    "notes": [
+     "attribute 'k8s.namespaceName' not in label_map; used 'k8s_namespaceName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName' \u2014 verify the label exists in your stack",
+     "assumed gauge 'k8s_deployment_podsAvailable'; verify metric name/type in Mimir and add to metric_map if wrong"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "last_over_time(kube_deployment_status_replicas_available{namespace=\"acme-backend\",deployment=\"acme-backend-internal\"}[$__interval])"
+    }
+   ]
+  },
+  {
+   "id": "p05-w010",
+   "title": "Placeholder",
+   "visualization": "viz.billboard",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT sum(0) AS Placeholder"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "FROM Metric needs a metric name argument in sum()"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p05-w011",
+   "title": "Placeholder",
+   "visualization": "viz.billboard",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT sum(0) AS Placeholder"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "FROM Metric needs a metric name argument in sum()"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p05-w012",
+   "title": "Placeholder",
+   "visualization": "viz.billboard",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT sum(0) AS Placeholder"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "FROM Metric needs a metric name argument in sum()"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p05-w013",
+   "title": "(untitled)",
+   "visualization": "viz.billboard",
+   "grafana_type": "text",
+   "nrql": [
+    "select rate(count(duration), 1 second) / uniqueCount(podName) AS 'Public Pod Average TPS' FROM Transaction WHERE appName = 'acme-backend (prod)' and name not in ('<REDACTED_BLOB>.middleware:CorsMiddleware', 'WebTransaction/Function/acme_backend.common.middleware.request_healthcheck_middleware:RequestHealthcheckMiddleware') AND podName LIKE '%-public-%' and clusterName = concat('acme-cluster-', {{env}})"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "aggregation _ratio() is not supported by the translator"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "(sum(rate(acme_backend_http_request_duration_mean_count{job=\"acme-backend\",http_route!~\"corsheaders\\\\.middleware:CorsMiddleware|acme_backend\\\\.common\\\\.middleware\\\\.request_healthcheck_middleware:RequestHealthcheckMiddleware\",pod=~\"(?i).*-public-.*\"}[$__range]))) / (count(count by (pod)(last_over_time(acme_backend_http_request_duration_mean_count{job=\"acme-backend\",http_route!~\"corsheaders\\\\.middleware:CorsMiddleware|acme_backend\\\\.common\\\\.middleware\\\\.request_healthcheck_middleware:RequestHealthcheckMiddleware\",pod=~\"(?i).*-public-.*\"}[$__range]))))"
+    }
+   ]
+  },
+  {
+   "id": "p05-w014",
+   "title": "(untitled)",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT latest(acme_backend.camunda.external_task.in_queue) AS 'Camunda Queue Size' FROM Metric WHERE clusterName = concat('acme-cluster-', {{env}}) TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(acme_backend_camunda_external_task_in_queue{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__interval])"
+     }
+    ],
+    "notes": [
+     "assumed gauge 'acme_backend_camunda_external_task_in_queue'; verify metric name/type in Mimir and add to metric_map if wrong"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "last_over_time(acme_backend_camunda_external_task_in_queue[$__interval])"
+    }
+   ]
+  },
+  {
+   "id": "p05-w015",
+   "title": "(untitled)",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT filter(\n  average(apm.service.overview.web * 1000),\n  WHERE segmentName LIKE 'Web external'\n) AS 'Web External APM'\nFROM Metric\nWHERE (\n  ({{env}} = 'prod' AND entity.guid = '<REDACTED_BLOB>')\n  OR ({{env}} = 'staging' AND entity.guid = '<REDACTED_BLOB>')\n  OR ({{env}} = 'dev' AND entity.guid = '<REDACTED_BLOB>')\n)\nTIMESERIES\nSINCE 24 hours ago UNTIL now"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg(avg_over_time(apm_service_overview_web{segmentName=~\"(?i)Web external\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "an OR clause in WHERE could not be merged into a single label matcher (different attributes, variables, or mixed predicate shapes); that clause was DROPPED \u2014 verify filter logic",
+     "attribute 'segmentName' not in label_map; used 'segmentName' \u2014 verify the label exists in your stack",
+     "assumed gauge 'apm_service_overview_web'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "timefrom:now-24h",
+     "UNTIL 'now' cannot be expressed per-panel in Grafana; adjust the dashboard time range manually"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p05-w016",
+   "title": "(untitled)",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT filter(\n  rate(sum(apm.service.transaction.duration), 1 second),\n  WHERE transactionName IN (\n    'WebTransaction/Function/api.v2.views.order_views:OrderViewSet.queue'\n  )\n) AS 'Order Queue Duration'\nFROM Metric\nWHERE (\n  ({{env}} = 'prod' AND entity.guid = '<REDACTED_BLOB>')\n  OR ({{env}} = 'staging' AND entity.guid = '<REDACTED_BLOB>')\n  OR ({{env}} = 'dev' AND entity.guid = '<REDACTED_BLOB>')\n)\nAND transactionType = 'Web'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum(rate(apm_service_transaction_duration_total{transactionType=\"Web\",span_name=~\"WebTransaction/Function/api\\\\.v2\\\\.views\\\\.order_views:OrderViewSet\\\\.queue\"}[$__range]))"
+     }
+    ],
+    "notes": [
+     "an OR clause in WHERE could not be merged into a single label matcher (different attributes, variables, or mixed predicate shapes); that clause was DROPPED \u2014 verify filter logic",
+     "attribute 'transactionType' not in label_map; used 'transactionType' \u2014 verify the label exists in your stack",
+     "assumed counter 'apm_service_transaction_duration_total'; verify name/type in Mimir (/api/v1/metadata)",
+     "unit:short"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum((rate(acme_backend_http_request_duration_mean_sum{$env=\"prod\",service_name_instance=\"<REDACTED_ENTITY>\",http_route=~\"api\\\\.v2\\\\.views\\\\.order_views:OrderViewSet\\\\.queue\"}[$__range]) or rate(acme_backend_http_request_duration_mean_sum{$env=\"staging\",service_name_instance=\"<REDACTED_ENTITY>\",http_route=~\"api\\\\.v2\\\\.views\\\\.order_views:OrderViewSet\\\\.queue\"}[$__range]) or rate(acme_backend_http_request_duration_mean_sum{$env=\"dev\",service_name_instance=\"<REDACTED_ENTITY>\",http_route=~\"api\\\\.v2\\\\.views\\\\.order_views:OrderViewSet\\\\.queue\"}[$__range])))"
+    }
+   ]
+  },
+  {
+   "id": "p05-w017",
+   "title": "Placeholder",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "select average(event_tags.duration_seconds) AS 'Order Summary Update Duration' FROM Log where cluster_name = concat('acme-cluster-', {{env}}) and event_name = 'recurring_task.success' and event_tags.task_name = 'update_order_summary' TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "loki",
+      "type": "range",
+      "expr": "avg_over_time({cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"} | json | event_name=\"recurring_task.success\" | event_tags_task_name=\"update_order_summary\" | unwrap event_tags_duration_seconds | __error__=\"\" [$__auto]) by ()"
+     }
+    ],
+    "notes": [
+     "attribute 'event_name' not in label_map; used 'event_name' \u2014 verify the label exists in your stack",
+     "attribute 'event_tags.task_name' not in label_map; used 'event_tags_task_name' \u2014 verify the label exists in your stack",
+     "unwrap of 'event_tags_duration_seconds' assumes it is a numeric field after parsing",
+     "filter on 'event_name' assumes it is a parsed json field in Loki",
+     "filter on 'event_tags_task_name' assumes it is a parsed json field in Loki"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "loki",
+     "refId": "A",
+     "expr": "avg_over_time({service_name=~\".+\"} | json | event_name=\"recurring_task.success\" | event_tags_task_name=\"update_order_summary\" | unwrap event_tags_duration_seconds | __error__=\"\" [$__auto]) by ()"
+    }
+   ]
+  },
+  {
+   "id": "p05-w018",
+   "title": "Placeholder",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT percentile(duration, 95) AS 'Fetch and Lock Duration' FROM Log WHERE `namespace_name` = 'acme-backend' AND `cluster_name` = concat('acme-cluster-', {{env}}) AND `message` like 'S<= POST (200) https://engine-acme-name-4.%.example.com/engine-rest/external-task/fetchAndLock' TIMESERIES"
+   ],
+   "before": {
+    "confidence": "approximate",
+    "queries": [
+     {
+      "datasource": "loki",
+      "type": "range",
+      "expr": "quantile_over_time(0.95, {namespace=\"acme-backend\", cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"} |~ \"(?i)S<= POST \\\\(200\\\\) https://engine-acme-name-4\\\\..*\\\\.blink\\\\.codes/engine-rest/external-task/fetchAndLock\" | json | unwrap duration | __error__=\"\" [$__auto]) by ()"
+     }
+    ],
+    "notes": [
+     "unwrap of 'duration' assumes it is a numeric field after parsing"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "loki",
+     "refId": "A",
+     "expr": "quantile_over_time(0.95, {namespace=\"acme-backend\"} |~ \"(?i)S<= POST \\\\(200\\\\) https://engine-acme-name-4\\\\..*\\\\.blink\\\\.codes/engine-rest/external-task/fetchAndLock\" | json | unwrap duration | __error__=\"\" [$__auto]) by ()"
+    }
+   ]
+  },
+  {
+   "id": "p05-w019",
+   "title": "Placeholder",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT rate(sum(`acme_backend.grx.prescription_sync`), 5 minutes) AS 'Rx Sync Rate' FROM Metric WHERE status = 'success' and clusterName = concat('acme-cluster-', {{env}})"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "instant",
+      "expr": "sum(rate(acme_backend_grx_prescription_sync_total{status=\"success\",cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__range])) * 300"
+     }
+    ],
+    "notes": [
+     "attribute 'status' not in label_map; used 'status' \u2014 verify the label exists in your stack",
+     "assumed counter 'acme_backend_grx_prescription_sync_total'; verify name/type in Mimir (/api/v1/metadata)",
+     "unit:short"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(rate(acme_backend_grx_prescription_sync_total{status=\"success\"}[$__range])) * 300"
+    }
+   ]
+  },
+  {
+   "id": "p05-w020",
+   "title": "Placeholder",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT latest(k8s.deployment.podsAvailable) as 'Worker Pods' from Metric where k8s.namespaceName = 'acme-backend' AND k8s.clusterName = concat('acme-cluster-', {{env}}) AND k8s.deploymentName = 'acme-backend-worker' TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_deployment_podsAvailable{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-worker\"}[$__interval])"
+     }
+    ],
+    "notes": [
+     "attribute 'k8s.namespaceName' not in label_map; used 'k8s_namespaceName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName' \u2014 verify the label exists in your stack",
+     "assumed gauge 'k8s_deployment_podsAvailable'; verify metric name/type in Mimir and add to metric_map if wrong"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "last_over_time(kube_deployment_status_replicas_available{namespace=\"acme-backend\",deployment=\"acme-backend-worker\"}[$__interval])"
+    }
+   ]
+  },
+  {
+   "id": "p05-w021",
+   "title": "Placeholder",
+   "visualization": "viz.billboard",
+   "grafana_type": "stat",
+   "nrql": [
+    "SELECT latest(k8s.deployment.podsAvailable) as 'Camunda Pods' from Metric where k8s.namespaceName = 'acme-backend' AND k8s.clusterName = concat('acme-cluster-', {{env}}) AND k8s.deploymentName = 'acme-backend-workflow-automation-worker' TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "last_over_time(k8s_deployment_podsAvailable{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",k8s_deploymentName=\"acme-backend-workflow-automation-worker\"}[$__interval])"
+     }
+    ],
+    "notes": [
+     "attribute 'k8s.namespaceName' not in label_map; used 'k8s_namespaceName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName' \u2014 verify the label exists in your stack",
+     "assumed gauge 'k8s_deployment_podsAvailable'; verify metric name/type in Mimir and add to metric_map if wrong"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "last_over_time(kube_deployment_status_replicas_available{namespace=\"acme-backend\",deployment=\"acme-backend-workflow-automation-worker\"}[$__interval])"
+    }
+   ]
+  },
+  {
+   "id": "p05-w022",
+   "title": "Placeholder",
+   "visualization": "viz.billboard",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT sum(0) AS Placeholder"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "FROM Metric needs a metric name argument in sum()"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p05-w023",
+   "title": "Placeholder",
+   "visualization": "viz.billboard",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT sum(0) AS Placeholder"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "FROM Metric needs a metric name argument in sum()"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p05-w024",
+   "title": "Placeholder",
+   "visualization": "viz.billboard",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT sum(0) AS Placeholder"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "FROM Metric needs a metric name argument in sum()"
+    ]
+   },
+   "expected": []
+  },
+  {
+   "id": "p05-w025",
+   "title": "Web transactions time",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT average(apm.service.transaction.duration * 1000) AS 'Response time'\nFROM Metric\nWHERE (\n  ({{env}} = 'prod' AND entity.guid = '<REDACTED_BLOB>')\n  OR ({{env}} = 'staging' AND entity.guid = '<REDACTED_BLOB>')\n  OR ({{env}} = 'dev' AND entity.guid = '<REDACTED_BLOB>')\n)\nAND transactionType = 'Web'\nLIMIT MAX\nTIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(rate(apm_service_transaction_duration_sum{transactionType=\"Web\"}[$__rate_interval])) / sum(rate(apm_service_transaction_duration_count{transactionType=\"Web\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "an OR clause in WHERE could not be merged into a single label matcher (different attributes, variables, or mixed predicate shapes); that clause was DROPPED \u2014 verify filter logic",
+     "attribute 'transactionType' not in label_map; used 'transactionType' \u2014 verify the label exists in your stack",
+     "name suggests a duration histogram; verify 'apm_service_transaction_duration' type in Mimir"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "(sum((rate(acme_backend_http_request_duration_mean_sum{$env=\"prod\",service_name_instance=\"<REDACTED_ENTITY>\"}[$__rate_interval]) or rate(acme_backend_http_request_duration_mean_sum{$env=\"staging\",service_name_instance=\"<REDACTED_ENTITY>\"}[$__rate_interval]) or rate(acme_backend_http_request_duration_mean_sum{$env=\"dev\",service_name_instance=\"<REDACTED_ENTITY>\"}[$__rate_interval]))) / sum((rate(acme_backend_http_request_duration_mean_count{$env=\"prod\",service_name_instance=\"<REDACTED_ENTITY>\"}[$__rate_interval]) or rate(acme_backend_http_request_duration_mean_count{$env=\"staging\",service_name_instance=\"<REDACTED_ENTITY>\"}[$__rate_interval]) or rate(acme_backend_http_request_duration_mean_count{$env=\"dev\",service_name_instance=\"<REDACTED_ENTITY>\"}[$__rate_interval])))) * 1000"
+    }
+   ]
+  },
+  {
+   "id": "p05-w026",
+   "title": "Pod CPU Usage",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT percentile(k8s.container.cpuUsedCores, 95) * 100 as 'cpuUsed' from Metric where k8s.namespaceName = 'acme-backend' AND k8s.clusterName = concat('acme-cluster-', {{env}}) FACET k8s.deploymentName TIMESERIES 1 hour\n"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "(histogram_quantile(0.95, sum by (le, k8s_deploymentName)(rate(k8s_container_cpuUsedCores_bucket{k8s_namespaceName=\"acme-backend\",k8s_clusterName=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval])))) * 100"
+     }
+    ],
+    "notes": [
+     "attribute 'k8s.namespaceName' not in label_map; used 'k8s_namespaceName' \u2014 verify the label exists in your stack",
+     "attribute 'k8s.clusterName' not in label_map; used 'k8s_clusterName' \u2014 verify the label exists in your stack",
+     "FACET attribute 'k8s.deploymentName' not in label_map; used 'k8s_deploymentName'",
+     "assumed 'k8s.container.cpuUsedCores' is a histogram (required by percentile()); add it to metric_map with the exact Prometheus name/type",
+     "histogram_quantile interpolates within buckets; NR percentiles are computed from event data",
+     "SELECT arithmetic '* 100' preserved; the derived panel unit no longer applies \u2014 set it manually",
+     "TIMESERIES 1h: Grafana buckets by the query interval; set the panel's 'Min interval' to 1h to mirror NR bucketing",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "(quantile_over_time(0.95, (avg by (deployment)(rate(container_cpu_usage_seconds_total{container!=\"\",namespace=\"acme-backend\"}[$__rate_interval])))[$__rate_interval:])) * 100"
+    }
+   ]
+  },
+  {
+   "id": "p05-w027",
+   "title": "Pod Memory Utilization",
+   "visualization": "viz.line",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT percentile(k8s.container.memoryWorkingSetBytes, 95) / latest(k8s.container.memoryLimitBytes) * 100 AS 'Memory Utilization %' FROM Metric WHERE k8s.namespaceName = 'acme-backend' AND k8s.clusterName = concat('acme-cluster-', {{env}}) FACET k8s.deploymentName TIMESERIES 1 hour\n\n"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "aggregation _ratio() is not supported by the translator"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "((avg by (deployment)(quantile_over_time(0.95, container_memory_working_set_bytes{namespace=\"acme-backend\",container!=\"\"}[$__rate_interval]))) / (max by (deployment)(last_over_time(kube_pod_container_resource_limits{namespace=\"acme-backend\",resource=\"memory\"}[$__interval])))) * 100"
+    }
+   ]
+  },
+  {
+   "id": "p05-w028",
+   "title": "Task Duration",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT average(acme_backend.celery.task.duration.mean) AS 'Celery' FROM Metric WHERE clusterName = concat('acme-cluster-', {{env}}) AND status = 'success' TIMESERIES ",
+    "SELECT average(apm.service.transaction.duration) AS 'Camunda' FROM Metric WHERE entity.guid = '<REDACTED_BLOB>' AND transactionName LIKE 'OtherTransaction/camunda_tasks/%' TIMESERIES ",
+    "SELECT average(apm.service.transaction.duration) AS 'Web' FROM Metric WHERE entity.guid = '<REDACTED_BLOB>' AND transactionType = 'Web' and name not like '%HealthCheck%' and name not like '%middleware%' TIMESERIES "
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(rate(acme_backend_celery_task_duration_mean_sum{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",status=\"success\"}[$__rate_interval])) / sum(rate(acme_backend_celery_task_duration_mean_count{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",status=\"success\"}[$__rate_interval]))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(rate(apm_service_transaction_duration_sum{entity_guid=\"<REDACTED_BLOB>\",span_name=~\"(?i)OtherTransaction/camunda.tasks/.*\"}[$__rate_interval])) / sum(rate(apm_service_transaction_duration_count{entity_guid=\"<REDACTED_BLOB>\",span_name=~\"(?i)OtherTransaction/camunda.tasks/.*\"}[$__rate_interval]))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum(rate(apm_service_transaction_duration_sum{entity_guid=\"<REDACTED_BLOB>\",transactionType=\"Web\",span_name!~\"(?i).*HealthCheck.*\",span_name!~\"(?i).*middleware.*\"}[$__rate_interval])) / sum(rate(apm_service_transaction_duration_count{entity_guid=\"<REDACTED_BLOB>\",transactionType=\"Web\",span_name!~\"(?i).*HealthCheck.*\",span_name!~\"(?i).*middleware.*\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'status' not in label_map; used 'status' \u2014 verify the label exists in your stack",
+     "name suggests a duration histogram; verify 'acme_backend_celery_task_duration_mean' type in Mimir",
+     "attribute 'entity.guid' not in label_map; used 'entity_guid' \u2014 verify the label exists in your stack",
+     "name suggests a duration histogram; verify 'apm_service_transaction_duration' type in Mimir",
+     "attribute 'entity.guid' not in label_map; used 'entity_guid' \u2014 verify the label exists in your stack",
+     "attribute 'transactionType' not in label_map; used 'transactionType' \u2014 verify the label exists in your stack",
+     "name suggests a duration histogram; verify 'apm_service_transaction_duration' type in Mimir"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum(rate(acme_backend_celery_task_duration_mean_sum{status=\"success\"}[$__rate_interval])) / sum(rate(acme_backend_celery_task_duration_mean_count{status=\"success\"}[$__rate_interval]))"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "sum(rate(acme_backend_http_request_duration_mean_sum{service_name_instance=\"<REDACTED_ENTITY>\",http_route=~\"(?i).*\"}[$__rate_interval])) / sum(rate(acme_backend_http_request_duration_mean_count{service_name_instance=\"<REDACTED_ENTITY>\",http_route=~\"(?i).*\"}[$__rate_interval]))"
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "C",
+     "expr": "sum(rate(acme_backend_http_request_duration_mean_sum{service_name_instance=\"<REDACTED_ENTITY>\",http_route!~\"(?i).*HealthCheck.*\",http_route!~\"(?i).*middleware.*\"}[$__rate_interval])) / sum(rate(acme_backend_http_request_duration_mean_count{service_name_instance=\"<REDACTED_ENTITY>\",http_route!~\"(?i).*HealthCheck.*\",http_route!~\"(?i).*middleware.*\"}[$__rate_interval]))"
+    }
+   ]
+  },
+  {
+   "id": "p05-w029",
+   "title": "Database CPU (p95)",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT percentile(aws.rds.CPUUtilization, 95) FROM Metric TIMESERIES FACET aws.rds.DBInstanceIdentifier WHERE `aws.rds.dbClusterIdentifier` = concat('acme-backend-', {{env}})",
+    "SELECT average(host.cpuPercent) AS 'Guardian' FROM Metric WHERE `entityGuid` = '<REDACTED_BLOB>' TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "histogram_quantile(0.95, sum by (le, aws_rds_DBInstanceIdentifier)(rate(aws_rds_CPUUtilization_bucket{aws_rds_dbClusterIdentifier=\"Func(name='concat', args=[Lit(value='acme-backend-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval])))"
+     },
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg(avg_over_time(host_cpuPercent{entityGuid=\"<REDACTED_BLOB>\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'aws.rds.dbClusterIdentifier' not in label_map; used 'aws_rds_dbClusterIdentifier' \u2014 verify the label exists in your stack",
+     "FACET attribute 'aws.rds.DBInstanceIdentifier' not in label_map; used 'aws_rds_DBInstanceIdentifier'",
+     "assumed 'aws.rds.CPUUtilization' is a histogram (required by percentile()); add it to metric_map with the exact Prometheus name/type",
+     "histogram_quantile interpolates within buckets; NR percentiles are computed from event data",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high",
+     "attribute 'entityGuid' not in label_map; used 'entityGuid' \u2014 verify the label exists in your stack",
+     "assumed gauge 'host_cpuPercent'; verify metric name/type in Mimir and add to metric_map if wrong"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "cloudwatch",
+     "refId": "A",
+     "namespace": "AWS/RDS",
+     "metricName": "CPUUtilization",
+     "statistic": "p95",
+     "dimensions": {
+      "DBInstanceIdentifier": [
+       "*"
+      ]
+     },
+     "dimension_keys": [
+      "DBInstanceIdentifier"
+     ],
+     "queryMode": "Metrics",
+     "region": "default",
+     "metricEditorMode": 0
+    },
+    {
+     "datasource": "prometheus",
+     "refId": "B",
+     "expr": "100 * (1 - avg(rate(node_cpu_seconds_total{mode=\"idle\",service_name_instance=\"<REDACTED_ENTITY>\"}[$__rate_interval])))"
+    }
+   ]
+  },
+  {
+   "id": "p05-w030",
+   "title": "Database Memory Utilization",
+   "visualization": "viz.line",
+   "grafana_type": "text",
+   "nrql": [
+    "SELECT percentile(aws.rds.SwapUsage, 95) / percentile(aws.rds.FreeableMemory, 95) FROM Metric WHERE `aws.rds.dbClusterIdentifier` = concat('acme-backend-', {{env}}) FACET aws.rds.DBInstanceIdentifier TIMESERIES",
+    "SELECT average(host.memoryUsedPercent) AS 'Guardian' FROM Metric WHERE `entityGuid` = '<REDACTED_BLOB>' TIMESERIES"
+   ],
+   "before": {
+    "confidence": "untranslatable",
+    "queries": [],
+    "notes": [
+     "aggregation _ratio() is not supported by the translator",
+     "attribute 'entityGuid' not in label_map; used 'entityGuid' \u2014 verify the label exists in your stack",
+     "assumed gauge 'host_memoryUsedPercent'; verify metric name/type in Mimir and add to metric_map if wrong"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "cloudwatch",
+     "refId": "A",
+     "namespace": "AWS/RDS",
+     "metricName": "SwapUsage",
+     "statistic": "p95",
+     "dimensions": {
+      "DBInstanceIdentifier": [
+       "*"
+      ]
+     },
+     "dimension_keys": [
+      "DBInstanceIdentifier"
+     ],
+     "queryMode": "Metrics",
+     "region": "default",
+     "metricEditorMode": 0
+    },
+    {
+     "datasource": "cloudwatch",
+     "refId": "B",
+     "namespace": "AWS/RDS",
+     "metricName": "FreeableMemory",
+     "statistic": "p95",
+     "dimensions": {
+      "DBInstanceIdentifier": [
+       "*"
+      ]
+     },
+     "dimension_keys": [
+      "DBInstanceIdentifier"
+     ],
+     "queryMode": "Metrics",
+     "region": "default",
+     "metricEditorMode": 0
+    },
+    {
+     "datasource": "cloudwatch",
+     "refId": "C",
+     "expression": "m1/m2",
+     "queryMode": "Metrics",
+     "region": "default",
+     "metricEditorMode": 1
+    }
+   ]
+  },
+  {
+   "id": "p05-w031",
+   "title": "(untitled)",
+   "visualization": "viz.markdown",
+   "grafana_type": "text",
+   "nrql": [],
+   "before": {
+    "confidence": "exact",
+    "queries": [],
+    "notes": []
+   },
+   "expected": []
+  },
+  {
+   "id": "p05-w032",
+   "title": "Failed SQS messages",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.message_queue.process_message) FROM Metric WHERE status = 'failed' and clusterName = concat('acme-cluster-', {{env}}) FACET name, namespace, version TIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (span_name, namespace, version)(avg_over_time(acme_backend_message_queue_process_message{status=\"failed\",cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "attribute 'status' not in label_map; used 'status' \u2014 verify the label exists in your stack",
+     "FACET attribute 'version' not in label_map; used 'version'",
+     "assumed gauge 'acme_backend_message_queue_process_message'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (span_name, namespace, version)(rate(acme_backend_message_queue_process_message_total{status=\"failed\"}[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p05-w033",
+   "title": "Failed Celery Tasks",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(acme_backend.celery.signals) FROM Metric TIMESERIES FACET `task_name` LIMIT 10 SINCE 1800 seconds ago  WHERE clusterName = concat('acme-cluster-', {{env}}) AND status = 'failure'"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "topk(10, sum by (task_name)(avg_over_time(acme_backend_celery_signals{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\",status=\"failure\"}[$__rate_interval])))"
+     }
+    ],
+    "notes": [
+     "attribute 'status' not in label_map; used 'status' \u2014 verify the label exists in your stack",
+     "FACET attribute 'task_name' not in label_map; used 'task_name'",
+     "assumed gauge 'acme_backend_celery_signals'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET LIMIT 10 became topk(10, ...); on range queries topk is evaluated per step so series may flicker",
+     "timefrom:now-1800s"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "topk(10, sum by (task_name)(rate(acme_backend_celery_signals_total{status=\"failure\"}[$__rate_interval])) * $__interval_ms / 1000)"
+    }
+   ]
+  },
+  {
+   "id": "p05-w034",
+   "title": "HTTP 500 Errors",
+   "visualization": "viz.stacked-bar",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT sum(`acme_backend.http.request.status.500`) FROM Metric TIMESERIES FACET `view_name` WHERE clusterName = concat('acme-cluster-', {{env}}) LIMIT max"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "sum by (view_name)(avg_over_time(acme_backend_http_request_status_500{cluster=\"Func(name='concat', args=[Lit(value='acme-cluster-'), Attr(name='{{env}}')], where=None, cases=[])\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'view_name' not in label_map; used 'view_name'",
+     "assumed gauge 'acme_backend_http_request_status_500'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "sum() of a gauge: NR sums datapoints; emitted sum of per-series averages (current-total semantics)",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "prometheus",
+     "refId": "A",
+     "expr": "sum by (view_name)(rate(acme_backend_http_request_status_500_total[$__rate_interval])) * $__interval_ms / 1000"
+    }
+   ]
+  },
+  {
+   "id": "p05-w035",
+   "title": "SQS Queue Size",
+   "visualization": "viz.line",
+   "grafana_type": "timeseries",
+   "nrql": [
+    "SELECT average(aws.sqs.ApproximateNumberOfMessagesVisible)\nFROM Metric\nWHERE aws.sqs.QueueName = concat('acme-queue-2-', {{env}})\n   OR aws.sqs.QueueName = concat('acme-queue-1-', {{env}})\n   OR aws.sqs.QueueName = concat('acme-queue-4-', {{env}})\n   OR aws.sqs.QueueName = concat('acme-queue-3-', {{env}})\n   OR aws.sqs.QueueName = concat('acme-backend-', {{env}}, '-input')\n   OR aws.sqs.QueueName = concat('acme-backend-', {{env}}, '-input-dlq')\nFACET aws.sqs.QueueName\nTIMESERIES"
+   ],
+   "before": {
+    "confidence": "needs-review",
+    "queries": [
+     {
+      "datasource": "prometheus",
+      "type": "range",
+      "expr": "avg by (aws_sqs_QueueName)(avg_over_time(aws_sqs_ApproximateNumberOfMessagesVisible{aws_sqs_QueueName=~\"Func\\\\(name='concat', args=\\\\[Lit\\\\(value='acme-queue-2-'\\\\), Attr\\\\(name='\\\\{\\\\{env\\\\}\\\\}'\\\\)\\\\], where=None, cases=\\\\[\\\\]\\\\)|Func\\\\(name='concat', args=\\\\[Lit\\\\(value='acme-queue-1-'\\\\), Attr\\\\(name='\\\\{\\\\{env\\\\}\\\\}'\\\\)\\\\], where=None, cases=\\\\[\\\\]\\\\)|Func\\\\(name='concat', args=\\\\[Lit\\\\(value='acme-queue-4-'\\\\), Attr\\\\(name='\\\\{\\\\{env\\\\}\\\\}'\\\\)\\\\], where=None, cases=\\\\[\\\\]\\\\)|Func\\\\(name='concat', args=\\\\[Lit\\\\(value='acme-queue-3-'\\\\), Attr\\\\(name='\\\\{\\\\{env\\\\}\\\\}'\\\\)\\\\], where=None, cases=\\\\[\\\\]\\\\)|Func\\\\(name='concat', args=\\\\[Lit\\\\(value='acme-backend-'\\\\), Attr\\\\(name='\\\\{\\\\{env\\\\}\\\\}'\\\\), Lit\\\\(value='-input'\\\\)\\\\], where=None, cases=\\\\[\\\\]\\\\)|Func\\\\(name='concat', args=\\\\[Lit\\\\(value='acme-backend-'\\\\), Attr\\\\(name='\\\\{\\\\{env\\\\}\\\\}'\\\\), Lit\\\\(value='-input-dlq'\\\\)\\\\], where=None, cases=\\\\[\\\\]\\\\)\"}[$__rate_interval]))"
+     }
+    ],
+    "notes": [
+     "FACET attribute 'aws.sqs.QueueName' not in label_map; used 'aws_sqs_QueueName'",
+     "assumed gauge 'aws_sqs_ApproximateNumberOfMessagesVisible'; verify metric name/type in Mimir and add to metric_map if wrong",
+     "FACET without LIMIT: NR returns the top 10 groups by default, the translated query returns ALL groups \u2014 wrap in topk(10, ...) if the cardinality is high"
+    ]
+   },
+   "expected": [
+    {
+     "datasource": "cloudwatch",
+     "refId": "A",
+     "namespace": "AWS/SQS",
+     "metricName": "ApproximateNumberOfMessagesVisible",
+     "statistic": "Average",
+     "dimensions": {
+      "QueueName": [
+       "*"
+      ]
+     },
+     "dimension_keys": [
+      "QueueName"
+     ],
+     "queryMode": "Metrics",
+     "region": "default",
+     "metricEditorMode": 0
+    }
+   ]
+  }
+ ]
+}

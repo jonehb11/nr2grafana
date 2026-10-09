@@ -56,7 +56,7 @@ def _rca(dom_share=0.91, sec_share=0.08, usd_per_day=164.0,
         "incident": {
             "usage_type": "USE1-DataTransfer-Regional-Bytes",
             "service": "EBS",
-            "account": "348342704569",
+            "account": "123456789012",
             "region": "us-east-1",
             "usd_per_day": usd_per_day,
             "gb_per_day": gb_per_day,
@@ -177,7 +177,7 @@ class GenericConfigTest(unittest.TestCase):
             self.assertIsNone(_ACCOUNT_RE.search(body),
                               "account id leaked into %s" % m["kind"])
             # the reference customer's cluster/account must not appear
-            self.assertNotIn("348342704569", body)
+            self.assertNotIn("123456789012", body)
             # generic templates use angle-bracket placeholders
             self.assertIn("<", body)
 

@@ -39,9 +39,29 @@ What it does:
   confidence tag (`exact` / `approximate` / `needs-review` /
   `untranslatable`), and a machine-readable `migration-report.json`
   summarizes the run.
-- **No dead panels**: untranslatable widgets become documented
-  placeholders — or, with `--passthrough`, live panels that run the
+- **No dead panels**: untranslatable widgets become `[MANUAL]`
+  placeholders that say *why* and name the closest equivalent (plus the
+  original NRQL) — or, with `--passthrough`, live panels that run the
   original NRQL through the official [New Relic Grafana datasource plugin](https://grafana.com/grafana/plugins/nrgrafanaplugin-newrelic-datasource/).
+- **Translation fidelity taught by real migrations** (1.11):
+  deterministic metric renames and kind inference (counters get
+  `_total` + `increase`/`rate`, never a gauge average), NR summary
+  metrics → `_sum`/`_count`, a Kubernetes-integration → kube-state-
+  metrics/cAdvisor map, `aws.*` metrics → real **CloudWatch** targets,
+  `concat('acme-cluster-', {{env}})` → `acme-cluster-$env` with a
+  target-environment switch (`--env`), and `[MANUAL]` placeholders
+  with closest equivalents. See [docs/live-translation.md](docs/live-translation.md).
+- **Live translation** (`convert --live`): reads metric types from
+  your Mimir, entity names and environment values from New Relic
+  (read-only) before translating, so `_total`-vs-bare, counter-vs-
+  gauge and `entity.guid` filters are decided by data, not guesses.
+- **Datasource binding at export** (`export --bind-datasources`,
+  `grafana import --bind-datasources`): writes `dashboard.bound.json`
+  with your instance's concrete datasource uids next to the portable
+  `dashboard.json`, so an imported dashboard never renders empty
+  waiting for a datasource pick. `missing_datasources` in
+  `requirements.json` (and `GET /api/dashboards/<slug>/missing`, MCP
+  `missing_datasources`) says exactly which families still need adding.
 - **Requirements analysis + packages** (`--package`): per-dashboard
   directories with a README, requirements manifest, and smoke test.
 - **Live testing**: verify requirements and pull real data through your
@@ -180,13 +200,15 @@ python3 -m nr2grafana fetch -o ./newrelic-dashboards
 # ...or skip the API: New Relic UI -> dashboard -> "..." -> Copy JSON
 #    and save it as a .json file in ./newrelic-dashboards/
 
-# 2. Convert everything into per-dashboard packages
-python3 -m nr2grafana convert ./newrelic-dashboards -o ./out --package \
-    --config config/mappings.example.json
-
-# 3. Point the grafana subcommands at your instance (service account token)
+# 2. Point the grafana subcommands at your instance (service account token)
 export GRAFANA_URL=https://grafana.example.com
 export GRAFANA_TOKEN=glsa_...
+
+# 3. Convert everything into per-dashboard packages. --live reads metric
+#    types from Mimir and entity/env values from New Relic (read-only);
+#    --env sets the target environment for $env
+python3 -m nr2grafana convert ./newrelic-dashboards -o ./out --package \
+    --config config/mappings.example.json --live --env prod
 
 # 4. Check requirements; create whatever is missing
 python3 -m nr2grafana grafana check ./out/*/          # exit 1 if anything is missing
@@ -198,8 +220,11 @@ python3 -m nr2grafana grafana test ./out/*/           # exit 1 on error panels
 python3 -m nr2grafana grafana heal ./out/*/           # safe fixes, applied
 python3 -m nr2grafana grafana diagnose ./out/*/       # root cause per failure
 
-# 6. Import, then prove the panels show the same data New Relic does
-python3 -m nr2grafana grafana import ./out --folder "Migrated from NR"
+# 6. Bind datasource variables to this instance's uids, import, then
+#    prove the panels show the same data New Relic does
+python3 -m nr2grafana export ./out/*/ --bind-datasources --env prod
+python3 -m nr2grafana grafana import ./out --folder "Migrated from NR" \
+    --bind-datasources --env prod
 python3 -m nr2grafana grafana parity ./out/*/ --account-id 1234567
 
 # 7. Codify the fixes so the next conversion is right the first time
@@ -226,11 +251,13 @@ package directory each, plus an `INDEX.md` for the run:
 out/
 ├── INDEX.md                        # one summary row per dashboard
 └── checkout-service-overview/
-    ├── dashboard.json              # import this
-    ├── README.md                   # datasources to create, import steps, troubleshooting
+    ├── dashboard.json              # portable (datasource variables)
+    ├── dashboard.bound.json        # same, bound to your Grafana's uids (export --bind-datasources)
+    ├── README.md                   # datasources to create ("Before you import"), [MANUAL] panels, troubleshooting
     ├── requirements.json           # machine-readable requirements
     ├── widget-report.json          # per-panel confidence + original NRQL
     ├── datatest.json               # per-panel test queries
+    ├── live-hints.json             # what --live learned (replayable offline)
     └── test.sh                     # executable data smoke test
 ```
 
@@ -326,7 +353,8 @@ never fix that panel again. Details:
 |---|---|
 | `fetch` | Bulk-export dashboards from New Relic via NerdGraph. `--guid` to cherry-pick, `--region US\|EU`, `--out DIR`. |
 | `list` | List all dashboards (guid, name, account) visible to the key. |
-| `convert` | Convert NR dashboard JSON files/dirs → Grafana JSON + `migration-report.json`. `--config`, `--page-strategy rows\|split`, `--passthrough`, `--package` for per-dashboard package dirs + `INDEX.md`. |
+| `convert` | Convert NR dashboard JSON files/dirs → Grafana JSON + `migration-report.json`. `--config`, `--page-strategy rows\|split`, `--passthrough`, `--package` for per-dashboard package dirs + `INDEX.md`, `--live` (read-only Mimir/NR hints via `--grafana-url`/`--api-key`), `--env NAME` (target environment for `$env`). |
+| `export` | Write `dashboard.bound.json` next to converted dashboards: `--bind-datasources` (resolve `${datasource}`-style variables to the instance's uids), `--ds VAR=UID` (explicit, offline), `--keep-vars`, `--env NAME`, `--pin-env`. |
 | `analyze` | (Re)generate requirements + packages for already-converted output. `-o DIR`. |
 | `validate` | Statically validate Grafana dashboard JSON (schema requirements, unique panel ids, balanced query expressions, datasource variable wiring, grid bounds). |
 | `grafana check` | Verify required datasources/plugins exist on a live instance; exit 1 on missing. |
@@ -336,7 +364,7 @@ never fix that panel again. Details:
 | `grafana heal` | Auto-apply the safe fixes in a test→diagnose→fix loop. `--push`, `--max-rounds`. |
 | `grafana datasources` | List the instance's datasources with live health. |
 | `grafana add-datasource` | Create a datasource from a guided template. `--type`, `--name`, `--set field=value`. |
-| `grafana import` | Bulk import dashboards. `--folder`, `--overwrite`. |
+| `grafana import` | Bulk import dashboards. `--folder`, `--overwrite`, `--bind-datasources`, `--env NAME`, `--pin-env`. |
 | `changes report` | Show the recorded change log. `--slug`, `--markdown`. |
 | `changes suggest-config` | Infer a config overlay from recorded fixes. |
 | `web` | Localhost web UI. `--port`, `--host`, `--no-browser`. |
@@ -365,11 +393,17 @@ never fix that panel again. Details:
 
 - `Metric`, `Transaction`, `SystemSample`, `K8s*Sample`, ... → **PromQL**
   (Mimir). APM events map to OTel semconv metrics
-  (`http_server_request_duration_seconds_*`); infra samples map to
-  node_exporter / kube-state-metrics / cAdvisor metrics; `FROM Metric` names
-  are normalized (dots→underscores) with type-aware aggregation
-  (counter→`rate`/`increase`, histogram→`histogram_quantile`,
-  gauge→`avg_over_time`).
+  (`http_server_request_duration_seconds_*`); infra samples and
+  `k8s.*` integration metrics map to node_exporter / kube-state-metrics
+  / cAdvisor metrics; `FROM Metric` names are renamed deterministically
+  (dots/dashes→underscores, counters get `_total`) and their kind is
+  inferred (`metric_map` > `metric_kinds` > live Mimir metadata > name
+  rules > aggregation rules) with kind-aware aggregation
+  (counter→`increase`/`rate`, histogram→`histogram_quantile`,
+  summary→`_sum/_count`, gauge→`avg_over_time`/`last_over_time`).
+- `Metric` names starting with `aws.` → **CloudWatch** datasource
+  targets (`AWS/RDS CPUUtilization Average`, dimensions from WHERE/FACET);
+  the dashboard then requires a `cloudwatch` datasource.
 - `Log` → **LogQL** (Loki). WHERE splits into stream selectors
   (configurable label set), line filters (`message` predicates), and
   parsed-field pipeline filters.
@@ -381,7 +415,9 @@ never fix that panel again. Details:
 aggregates the whole window — a naive instant query would not);
 `FACET` → `by (...)` + legend; `FACET ... LIMIT n` → `topk(n, ...)`;
 `COMPARE WITH` → second target with `offset`; `SINCE` → dashboard/panel time
-range; NR `{{variables}}` → Grafana `$variables`; multi-page dashboards →
+range; NR `{{variables}}` → Grafana `$variables` and
+`concat('acme-cluster-', {{env}})` → `"acme-cluster-$env"` (`--env prod`
+sets the variable; `env_map` renames); multi-page dashboards →
 collapsed rows (or `--page-strategy split` → one dashboard per page with a
 linked dropdown).
 
@@ -398,6 +434,13 @@ commands that discover each answer from your live stack. Or copy
 
 - `label_map` — NR attribute → your Prometheus/Loki label names
 - `metric_map` — your custom NR metrics → exact Prometheus names + types
+- `metric_kinds` — NR metric → `counter|gauge|histogram|summary` only
+  (keeps the deterministic rename); `metric_total_suffix` for `_total`
+- `k8s_metric_map` / `cloudwatch_namespaces` — extend the K8s and
+  CloudWatch tables
+- `env_var` / `env_map` / `target_env` — the environment variable and
+  NR→Grafana environment name mapping; `entity_label` for resolved
+  `entity.guid` filters
 - `loki_stream_labels` — which labels are Loki *index* labels in your setup
 - `spanmetrics_flavor` / `http_metrics_flavor` — your metric naming generation
 - `domain_map` — extend the requirements analyzer's NR-domain table
@@ -440,7 +483,10 @@ builder, validator, live client), `nr2grafana/requirements.py` +
 `diagnose.py` + `remediate.py` (data parity, root-cause engine,
 fix application), `nr2grafana/web/` (localhost UI), `nr2grafana/ai.py`
 (Claude client), `nr2grafana/nerdgraph.py` (bulk export client),
-`nr2grafana/cli.py`. More docs in [docs/](docs/):
+`nr2grafana/cli.py`, `nr2grafana/bind.py` (datasource binding),
+`nr2grafana/translate/hints.py` (live hints). More docs in [docs/](docs/):
+[live-translation.md](docs/live-translation.md),
+[translation-notes.md](docs/translation-notes.md),
 [translation-spec.md](docs/translation-spec.md),
 [requirements-analysis.md](docs/requirements-analysis.md),
 [live-testing.md](docs/live-testing.md),
